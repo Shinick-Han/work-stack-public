@@ -58,6 +58,18 @@ function Test-WorkStackReady {
     }
 }
 
+function Test-LoopbackPortListening {
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+        $client.Connect('127.0.0.1', $port)
+        return $true
+    } catch [Net.Sockets.SocketException] {
+        return $false
+    } finally {
+        $client.Dispose()
+    }
+}
+
 function ConvertTo-WindowsCommandLineArgument {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
     if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
@@ -99,6 +111,9 @@ if (Test-WorkStackReady) {
     if (-not $NoBrowser) { Open-WorkStackBrowser -Url $url -ProfileRoot $browserProfilePath }
     Write-Host "Work Stack is already running at $url"
     exit 0
+}
+if (Test-LoopbackPortListening) {
+    throw "Configured port $port is already in use by a non-Work Stack process. Re-run the installer to select an available port."
 }
 
 New-Item -ItemType Directory -Force -Path $dataPath, $backupPath, $logPath | Out-Null

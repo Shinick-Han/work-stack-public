@@ -14,12 +14,26 @@ $runtimeSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3
 function Remove-PythonBytecode {
     param([Parameter(Mandatory = $true)][string]$Root)
 
-    $resolvedRoot = [IO.Path]::GetFullPath($Root)
-    Get-ChildItem -LiteralPath $resolvedRoot -Directory -Filter '__pycache__' -Recurse -Force |
-        Sort-Object FullName -Descending |
-        Remove-Item -Recurse -Force
-    Get-ChildItem -LiteralPath $resolvedRoot -File -Include '*.pyc', '*.pyo' -Recurse -Force |
-        Remove-Item -Force
+    $separator = [IO.Path]::DirectorySeparatorChar
+    $resolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd($separator)
+    $cacheDirectories = Get-ChildItem -LiteralPath $resolvedRoot -Directory -Filter '__pycache__' -Recurse -Force |
+        Sort-Object FullName -Descending
+    foreach ($cacheDirectory in $cacheDirectories) {
+        $resolved = [IO.Path]::GetFullPath($cacheDirectory.FullName)
+        if (-not $resolved.StartsWith($resolvedRoot + $separator, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove bytecode cache outside the payload: $resolved"
+        }
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
+    $bytecodeFiles = Get-ChildItem -LiteralPath $resolvedRoot -File -Recurse -Force |
+        Where-Object { $_.Extension -in @('.pyc', '.pyo') }
+    foreach ($bytecodeFile in $bytecodeFiles) {
+        $resolved = [IO.Path]::GetFullPath($bytecodeFile.FullName)
+        if (-not $resolved.StartsWith($resolvedRoot + $separator, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove bytecode outside the payload: $resolved"
+        }
+        Remove-Item -LiteralPath $resolved -Force
+    }
 }
 
 if (-not $SourceRoot) { $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
@@ -41,6 +55,9 @@ try {
     foreach ($directory in @('workstack', 'contracts', 'licenses', 'web', 'desktop')) {
         Copy-Item -LiteralPath (Join-Path $sourcePath $directory) -Destination (Join-Path $payload $directory) -Recurse
     }
+    if (-not (Test-Path -LiteralPath (Join-Path $payload 'workstack\__init__.py') -PathType Leaf)) {
+        throw 'Bundled Work Stack package was not copied into the payload root.'
+    }
     New-Item -ItemType Directory -Force -Path (Join-Path $payload 'frontend'), (Join-Path $payload 'scripts') | Out-Null
     Copy-Item -LiteralPath (Join-Path $sourcePath 'frontend\dist') -Destination (Join-Path $payload 'frontend\dist') -Recurse
     Copy-Item -LiteralPath (Join-Path $sourcePath 'scripts\windows') -Destination (Join-Path $payload 'scripts\windows') -Recurse
@@ -48,6 +65,9 @@ try {
         Copy-Item -LiteralPath (Join-Path $sourcePath $file) -Destination (Join-Path $payload $file)
     }
     Remove-PythonBytecode -Root $payload
+    if (-not (Test-Path -LiteralPath (Join-Path $payload 'workstack\__init__.py') -PathType Leaf)) {
+        throw 'Bundled Work Stack package was removed during bytecode cleanup.'
+    }
 
     if ($RuntimeArchivePath) {
         $runtimeArchive = [IO.Path]::GetFullPath($RuntimeArchivePath)
@@ -94,7 +114,11 @@ try {
     }
     python -m pip install --disable-pip-version-check --no-index --find-links $wheels --no-deps --no-build-isolation --require-hashes --target $sitePackages -r (Join-Path $sourcePath 'requirements.txt') -r (Join-Path $sourcePath 'requirements-windows-desktop.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Locked runtime dependency installation failed.' }
-    & $runtimePython -c "import struct,sys,unicodedata2,workstack,webview; from webview.platforms.edgechromium import WebView2; assert f'{sys.version_info.major}.{sys.version_info.minor}:{struct.calcsize(chr(80))*8}' == '3.12:64'; assert unicodedata2.unidata_version == '17.0.0'; print(workstack.__version__)"
+    $bundledPackage = Join-Path $payload 'workstack\__init__.py'
+    if (-not (Test-Path -LiteralPath $bundledPackage -PathType Leaf)) {
+        throw "Bundled Work Stack package is missing: $bundledPackage"
+    }
+    & $runtimePython -c "import sys; sys.path.insert(0, sys.argv[1]); import struct,unicodedata2,workstack,webview; from pathlib import Path; from webview.platforms.edgechromium import WebView2; assert Path(workstack.__file__).resolve() == (Path(sys.argv[1]) / 'workstack' / '__init__.py').resolve(); assert f'{sys.version_info.major}.{sys.version_info.minor}:{struct.calcsize(chr(80))*8}' == '3.12:64'; assert unicodedata2.unidata_version == '17.0.0'; print(workstack.__version__)" $payload
     if ($LASTEXITCODE -ne 0) {
         throw 'Bundled Python runtime smoke test failed.'
     }

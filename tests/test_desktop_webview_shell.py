@@ -153,6 +153,13 @@ class PythonDesktopShellContractTest(unittest.TestCase):
         self.assertIn("_acquire_single_instance", source)
         self.assertIn("--auto-close-seconds", source)
 
+    def test_launcher_failure_preserves_the_actionable_powershell_error(self) -> None:
+        source = self.read("workstack_desktop.py")
+
+        self.assertIn("capture_output=True", source)
+        self.assertIn("Work Stack launcher failed:", source)
+        self.assertIn("completed.returncode", source)
+
     def test_native_bridge_requires_the_exact_workstack_origin_and_health_shape(self) -> None:
         source = self.read("workstack_desktop.py")
 

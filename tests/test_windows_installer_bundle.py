@@ -22,6 +22,7 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         )
         self.assertRegex(script, r"(?i)runtime\\python\.exe")
         self.assertIn("RuntimeArchivePath", script)
+        self.assertIn("sys.path.insert(0, sys.argv[1])", script)
 
     def test_builder_emits_a_portable_sha256_sidecar(self) -> None:
         script = self.read("Build-WindowsInstaller.ps1")
@@ -35,7 +36,7 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
 
         self.assertIn("function Remove-PythonBytecode", script)
         self.assertIn("'__pycache__'", script)
-        self.assertIn("'*.pyc', '*.pyo'", script)
+        self.assertIn("$_.Extension -in @('.pyc', '.pyo')", script)
         self.assertGreaterEqual(script.count("Remove-PythonBytecode -Root $payload"), 2)
         self.assertIn("$dependencyBin = Join-Path $sitePackages 'bin'", script)
         self.assertIn("Remove-Item -LiteralPath $dependencyBin -Recurse -Force", script)
@@ -103,6 +104,23 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn("-Status 'started'", start)
         self.assertIn("-Status 'reused'", start)
         self.assertIn("[int]$ProcessId", stop)
+
+    def test_installer_selects_an_available_loopback_port_after_stopping_an_upgrade(self) -> None:
+        installer = self.read("Install-WorkStack.ps1")
+
+        self.assertIn("function Resolve-AvailableLoopbackPort", installer)
+        self.assertIn("$resolvedPort = Resolve-AvailableLoopbackPort -PreferredPort $Port", installer)
+        self.assertIn("port = $resolvedPort", installer)
+        self.assertLess(
+            installer.index("& $stopScript -InstallRoot $installPath"),
+            installer.index("$resolvedPort = Resolve-AvailableLoopbackPort -PreferredPort $Port"),
+        )
+
+    def test_launcher_reports_a_non_workstack_port_collision_explicitly(self) -> None:
+        start = self.read("Start-WorkStack.ps1")
+
+        self.assertIn("Test-LoopbackPortListening", start)
+        self.assertIn("is already in use by a non-Work Stack process", start)
 
     def test_offline_bundle_installs_every_requirement_with_hash_checking(self) -> None:
         script = self.read("Build-WindowsInstaller.ps1")

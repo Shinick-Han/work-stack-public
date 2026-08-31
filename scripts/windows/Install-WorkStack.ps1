@@ -35,6 +35,31 @@ function Assert-PathsDisjoint {
     }
 }
 
+function Test-LoopbackPortAvailable {
+    param([Parameter(Mandatory = $true)][int]$CandidatePort)
+
+    $listener = $null
+    try {
+        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $CandidatePort)
+        $listener.Start()
+        return $true
+    } catch [Net.Sockets.SocketException] {
+        return $false
+    } finally {
+        if ($null -ne $listener) { $listener.Stop() }
+    }
+}
+
+function Resolve-AvailableLoopbackPort {
+    param([Parameter(Mandatory = $true)][int]$PreferredPort)
+
+    $lastCandidate = [Math]::Min(65535, $PreferredPort + 100)
+    for ($candidate = $PreferredPort; $candidate -le $lastCandidate; $candidate++) {
+        if (Test-LoopbackPortAvailable -CandidatePort $candidate) { return $candidate }
+    }
+    throw "No available loopback port was found between $PreferredPort and $lastCandidate."
+}
+
 function New-WorkStackIcon {
     param([Parameter(Mandatory = $true)][string]$Path)
     Add-Type -AssemblyName System.Drawing
@@ -123,6 +148,10 @@ try {
         }
         Move-Item -LiteralPath $installPath -Destination $rollback
     }
+    $resolvedPort = Resolve-AvailableLoopbackPort -PreferredPort $Port
+    if ($resolvedPort -ne $Port) {
+        Write-Warning "Port $Port is already in use; Work Stack will use $resolvedPort instead."
+    }
     Move-Item -LiteralPath $staging -Destination $installPath
 
     New-Item -ItemType Directory -Force -Path $statePath, $dataPath, $backupRoot | Out-Null
@@ -132,7 +161,7 @@ try {
         data_dir = $dataPath
         backup_dir = $backupRoot
         backup_retention = [Math]::Max(1, $BackupRetention)
-        port = $Port
+        port = $resolvedPort
     } | ConvertTo-Json
     [IO.File]::WriteAllText((Join-Path $statePath 'config.json'), $configJson, [Text.UTF8Encoding]::new($false))
 
@@ -166,6 +195,7 @@ try {
     if (Test-Path -LiteralPath $rollback) { Remove-Item -LiteralPath $rollback -Recurse -Force }
     Write-Host "Work Stack installed at $installPath"
     Write-Host "Planning data remains at $dataPath"
+    Write-Host "Local endpoint: http://127.0.0.1:$resolvedPort/"
 } catch {
     if (Test-Path -LiteralPath $rollback) {
         if (Test-Path -LiteralPath $installPath) {

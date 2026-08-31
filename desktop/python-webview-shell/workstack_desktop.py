@@ -693,7 +693,7 @@ class WorkStackDesktopHost:
         launch_root.mkdir(parents=True, exist_ok=True)
         status_path = launch_root / f"launch-{uuid.uuid4().hex}.json"
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 [
                 "powershell.exe",
                 "-NoProfile",
@@ -711,10 +711,21 @@ class WorkStackDesktopHost:
                 "-StatusPath",
                 str(status_path),
                 ],
-                check=True,
+                check=False,
                 creationflags=creation_flags,
+                capture_output=True,
+                text=True,
+                errors="replace",
             )
+            if completed.returncode != 0:
+                combined = "\n".join(part for part in (completed.stderr, completed.stdout) if part)
+                lines = [line.strip() for line in combined.splitlines() if line.strip()]
+                detail = lines[0] if lines else f"PowerShell exited with code {completed.returncode}"
+                self._trace(f"launcher failed with exit {completed.returncode}: {combined.strip()}")
+                raise RuntimeError(f"Work Stack launcher failed: {detail}")
             result = json.loads(status_path.read_text(encoding="utf-8-sig"))
+        except RuntimeError:
+            raise
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
             raise RuntimeError("The installed launcher did not report server ownership.") from error
         finally:
