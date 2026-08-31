@@ -1,3 +1,7 @@
 # These files are a frozen, hash-pinned conformance kit. Preserve repository bytes
 # exactly on every platform; newline conversion invalidates the bundle root.
 contracts/workstack-conduit-v1/** -text
+
+# The self-extracting PowerShell installer has a checksum over its exact bytes.
+# Never normalize its line endings during commit, checkout, or download.
+installer/WorkStack-Setup-*.ps1 -text
