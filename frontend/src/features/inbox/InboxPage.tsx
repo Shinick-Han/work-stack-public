@@ -11,7 +11,7 @@ import { formatDateTime, getErrorMessage, safeExternalUrl } from '../../utils/fo
 import { captureTrust } from './captureTrust'
 import { SourceCaptureDialog } from './SourceCaptureDialog'
 import { sourceProviders, type SourceProviderKey } from './sourceProviders'
-import { embeddedSourceHostAvailable, hideEmbeddedSource, requestEmbeddedSourceDraft, showEmbeddedSource } from './sourceHostBridge'
+import { embeddedSourceHostAvailable, hideEmbeddedSource, requestEmbeddedSourceDraft, requestEmbeddedSourceZoom, setEmbeddedSourceZoom, showEmbeddedSource, subscribeEmbeddedSourceZoom, type EmbeddedSourceZoom } from './sourceHostBridge'
 import {
   EXTERNAL_CAPTURE_ACK,
   EXTERNAL_CAPTURE_MESSAGE,
@@ -191,6 +191,7 @@ export function InboxPage({
   const [sourceDialogSeed, setSourceDialogSeed] = useState<ExternalSourceCapture | null>(null)
   const [activeSourceProvider, setActiveSourceProvider] = useState<SourceProviderKey>('outlook')
   const [embeddedSourceHost] = useState(embeddedSourceHostAvailable)
+  const [sourceZoom, setSourceZoom] = useState<EmbeddedSourceZoom>({ outlook: 100, teams: 100, onenote: 100 })
   const sourceHostRef = useRef<HTMLDivElement>(null)
   const microsoftReadAvailable = anyProviderReadVerified(providerGates)
   const visibleCaptures = useMemo(() => {
@@ -271,6 +272,13 @@ export function InboxPage({
     }
   }, [activeSourceProvider, embeddedSourceHost])
 
+  useEffect(() => {
+    if (!embeddedSourceHost) return
+    const unsubscribe = subscribeEmbeddedSourceZoom(setSourceZoom)
+    requestEmbeddedSourceZoom()
+    return unsubscribe
+  }, [embeddedSourceHost])
+
   const activeProviderDefinition = sourceProviders.find((provider) => provider.key === activeSourceProvider)!
 
   return (
@@ -313,6 +321,12 @@ export function InboxPage({
             </div>
             <footer className="embedded-source-actions">
               <div><strong>{activeProviderDefinition.label} → Task</strong><span>{activeSourceProvider === 'outlook' ? 'Open a message, then capture its visible subject and body for review.' : 'Copy the selected message or note, then review the Task draft before saving.'}</span></div>
+              <div aria-label={`${activeProviderDefinition.label} zoom`} className="source-zoom-control" role="group">
+                <button aria-label={`Zoom out ${activeProviderDefinition.label}`} disabled={sourceZoom[activeSourceProvider] <= 50} onClick={() => setEmbeddedSourceZoom(activeSourceProvider, Math.max(50, sourceZoom[activeSourceProvider] - 10))} type="button">−</button>
+                <output aria-live="polite">{sourceZoom[activeSourceProvider]}%</output>
+                <button aria-label={`Zoom in ${activeProviderDefinition.label}`} disabled={sourceZoom[activeSourceProvider] >= 200} onClick={() => setEmbeddedSourceZoom(activeSourceProvider, Math.min(200, sourceZoom[activeSourceProvider] + 10))} type="button">+</button>
+                <button aria-label={`Reset ${activeProviderDefinition.label} zoom`} disabled={sourceZoom[activeSourceProvider] === 100} onClick={() => setEmbeddedSourceZoom(activeSourceProvider, 100)} type="button">Reset</button>
+              </div>
               <a className="button button--ghost" href={activeProviderDefinition.webUrl} rel="noopener noreferrer" target="_blank"><Icon name="arrowUpRight" size={15} /> Open separately</a>
               <Button aria-label={`Capture ${activeProviderDefinition.label} source`} onClick={() => void openSourceDraft(activeSourceProvider)} variant="primary">Capture source</Button>
             </footer>

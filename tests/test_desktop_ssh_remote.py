@@ -146,21 +146,49 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         self.assertEqual(host.workstack_url, "http://127.0.0.1:19876/")
         self.assertEqual(host.workstack_origin, ("http", "127.0.0.1", 19876))
 
-    @mock.patch.object(MODULE.urllib.request, "urlopen")
-    def test_remote_workspace_identity_mismatch_fails_closed(self, urlopen: mock.Mock) -> None:
+    def test_remote_workspace_identity_mismatch_fails_closed(self) -> None:
         response = mock.MagicMock()
         response.read.return_value = json.dumps({
             "data": {"workspace_id": "22222222-2222-4222-8222-222222222222"}
         }).encode("utf-8")
-        urlopen.return_value.__enter__.return_value = response
         host = object.__new__(MODULE.WorkStackDesktopHost)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
         host.workstack_url = "http://127.0.0.1:18765/"
 
-        with self.assertRaisesRegex(RuntimeError, "workspace identity"):
-            host._verify_remote_workspace()
+        with mock.patch.object(MODULE.urllib.request, "urlopen", return_value=response):
+            response.__enter__.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "workspace identity"):
+                host._verify_remote_workspace()
+
+    def test_source_zoom_is_persisted_per_provider_and_invalid_data_falls_back(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            values = {"outlook": 90, "teams": 120, "onenote": 100}
+            MODULE.save_source_zoom(root, values)
+            self.assertEqual(MODULE.load_source_zoom(root), values)
+            (root / MODULE.SOURCE_ZOOM_FILE).write_text('{"outlook":201}', encoding="utf-8")
+            self.assertEqual(MODULE.load_source_zoom(root), {
+                "outlook": 100,
+                "teams": 100,
+                "onenote": 100,
+            })
+
+    def test_source_zoom_command_updates_native_view_and_reports_status(self) -> None:
+        core = mock.Mock()
+        host = object.__new__(MODULE.WorkStackDesktopHost)
+        host.state_root = Path(tempfile.mkdtemp())
+        host.source_zoom = {"outlook": 100, "teams": 100, "onenote": 100}
+        host.source_webviews = {"teams": types.SimpleNamespace(ZoomFactor=1.0)}
+        host.workstack_webview = types.SimpleNamespace(CoreWebView2=core)
+
+        host._set_source_zoom("workstack-source-host|zoom|teams|130")
+
+        self.assertEqual(host.source_zoom["teams"], 130)
+        self.assertEqual(host.source_webviews["teams"].ZoomFactor, 1.3)
+        payload = json.loads(core.PostWebMessageAsJson.call_args.args[0])
+        self.assertEqual(payload["values"]["teams"], 130)
 
     def test_remote_process_is_terminated_and_log_is_closed_on_shutdown(self) -> None:
         process = mock.Mock()
@@ -178,6 +206,21 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         log.close.assert_called_once_with()
         self.assertIsNone(host.remote_ssh_process)
         self.assertIsNone(host.remote_ssh_log)
+
+    def test_source_resume_cannot_resurrect_a_view_after_inbox_deactivation(self) -> None:
+        viewport = types.SimpleNamespace(Visible=True, BringToFront=mock.Mock())
+        host = object.__new__(MODULE.WorkStackDesktopHost)
+        host.source_viewports = {"outlook": viewport}
+        host.source_suspended = False
+        host.source_host_active = True
+        host.active_provider = "outlook"
+
+        host._deactivate_source()
+        host._restore_source()
+
+        self.assertFalse(viewport.Visible)
+        self.assertFalse(host.source_host_active)
+        viewport.BringToFront.assert_not_called()
 
 
 if __name__ == "__main__":

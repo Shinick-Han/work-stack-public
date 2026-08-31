@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { embeddedSourceHostAvailable, hideEmbeddedSource, requestEmbeddedSourceDraft, resumeEmbeddedSource, showEmbeddedSource, suspendEmbeddedSource } from './sourceHostBridge'
+import { embeddedSourceHostAvailable, hideEmbeddedSource, requestEmbeddedSourceDraft, requestEmbeddedSourceZoom, resumeEmbeddedSource, setEmbeddedSourceZoom, showEmbeddedSource, subscribeEmbeddedSourceZoom, suspendEmbeddedSource } from './sourceHostBridge'
 
 const originalChrome = (window as Window & { chrome?: unknown }).chrome
 const originalDevicePixelRatio = window.devicePixelRatio
@@ -68,6 +68,30 @@ describe('desktop source host bridge', () => {
       text: 'Review the reliability findings\nPrepare an owner-by-owner action plan.',
     })
     expect(postMessage).toHaveBeenCalledWith(expect.stringMatching(/^workstack-source-host\|capture\|outlook\|source-capture-/))
+    expect(listeners.size).toBe(0)
+  })
+
+  test('controls and observes persistent provider zoom through the native host', () => {
+    const listeners = new Set<(event: MessageEvent) => void>()
+    const postMessage = vi.fn()
+    Object.defineProperty(window, 'chrome', { configurable: true, value: { webview: {
+      postMessage,
+      addEventListener: (_type: 'message', listener: (event: MessageEvent) => void) => listeners.add(listener),
+      removeEventListener: (_type: 'message', listener: (event: MessageEvent) => void) => listeners.delete(listener),
+    } } })
+    const receive = vi.fn()
+    const unsubscribe = subscribeEmbeddedSourceZoom(receive)
+
+    expect(requestEmbeddedSourceZoom()).toBe(true)
+    expect(setEmbeddedSourceZoom('teams', 120)).toBe(true)
+    expect(setEmbeddedSourceZoom('teams', 201)).toBe(false)
+    expect(postMessage).toHaveBeenNthCalledWith(1, 'workstack-source-host|zoom-status')
+    expect(postMessage).toHaveBeenNthCalledWith(2, 'workstack-source-host|zoom|teams|120')
+    listeners.forEach((listener) => listener(new MessageEvent('message', { data: {
+      type: 'workstack-source-zoom', values: { outlook: 90, teams: 120, onenote: 100 },
+    } })))
+    expect(receive).toHaveBeenCalledWith({ outlook: 90, teams: 120, onenote: 100 })
+    unsubscribe()
     expect(listeners.size).toBe(0)
   })
 })

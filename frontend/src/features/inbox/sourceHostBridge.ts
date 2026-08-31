@@ -20,6 +20,23 @@ export interface EmbeddedSourceDraft {
   text: string
 }
 
+export type EmbeddedSourceZoom = Record<SourceProviderKey, number>
+
+const defaultSourceZoom: EmbeddedSourceZoom = { outlook: 100, teams: 100, onenote: 100 }
+
+function parseSourceZoom(payload: unknown): EmbeddedSourceZoom | null {
+  const message = payload as { type?: unknown; values?: unknown } | null
+  if (!message || message.type !== 'workstack-source-zoom' || !message.values || typeof message.values !== 'object') return null
+  const values = message.values as Record<string, unknown>
+  const parsed = { ...defaultSourceZoom }
+  for (const provider of Object.keys(parsed) as SourceProviderKey[]) {
+    const value = values[provider]
+    if (!Number.isInteger(value) || (value as number) < 50 || (value as number) > 200) return null
+    parsed[provider] = value as number
+  }
+  return parsed
+}
+
 function hostWindow(): WebViewHostWindow {
   return window as WebViewHostWindow
 }
@@ -72,6 +89,29 @@ export function resumeEmbeddedSource() {
   if (!embeddedSourceHostAvailable()) return false
   hostWindow().chrome!.webview!.postMessage(`${SOURCE_HOST_PREFIX}|resume`)
   return true
+}
+
+export function requestEmbeddedSourceZoom() {
+  if (!embeddedSourceHostAvailable()) return false
+  hostWindow().chrome!.webview!.postMessage(`${SOURCE_HOST_PREFIX}|zoom-status`)
+  return true
+}
+
+export function setEmbeddedSourceZoom(provider: SourceProviderKey, value: number) {
+  if (!embeddedSourceHostAvailable() || !Number.isInteger(value) || value < 50 || value > 200) return false
+  hostWindow().chrome!.webview!.postMessage(`${SOURCE_HOST_PREFIX}|zoom|${provider}|${value}`)
+  return true
+}
+
+export function subscribeEmbeddedSourceZoom(listener: (values: EmbeddedSourceZoom) => void) {
+  const bridge = hostWindow().chrome?.webview
+  if (!bridge?.addEventListener || !bridge.removeEventListener) return () => undefined
+  const receive = (event: MessageEvent) => {
+    const values = parseSourceZoom(event.data)
+    if (values) listener(values)
+  }
+  bridge.addEventListener('message', receive)
+  return () => bridge.removeEventListener?.('message', receive)
 }
 
 export function requestEmbeddedSourceDraft(provider: SourceProviderKey, timeoutMs = 2000): Promise<EmbeddedSourceDraft | null> {

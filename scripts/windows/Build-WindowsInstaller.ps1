@@ -161,6 +161,8 @@ try {
     $checksumPath = "$output.sha256"
     $checksumLine = "$digest  $([IO.Path]::GetFileName($output))`n"
     [IO.File]::WriteAllText($checksumPath, $checksumLine, [Text.UTF8Encoding]::new($false))
+    $manifestBuilder = Join-Path $sourcePath 'scripts\windows\New-WorkStackUpdateManifest.ps1'
+    & $manifestBuilder -SetupPath $output -ChecksumPath $checksumPath
     Write-Host "Built $output"
     Write-Host "Checksum $checksumPath"
     Write-Host "SHA-256 $digest"

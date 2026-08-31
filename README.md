@@ -13,19 +13,19 @@ objectives → planning tasks → daily records → weekly roll-up
 
 ## Download the Windows installer
 
-Download the immutable release asset (recommended):
+Download the immutable v1.0.5 release assets:
 
-- [`WorkStack-Setup-1.0.4.ps1`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.4/WorkStack-Setup-1.0.4.ps1)
-- [`WorkStack-Setup-1.0.4.ps1.sha256`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.4/WorkStack-Setup-1.0.4.ps1.sha256)
+- [`WorkStack-Setup-1.0.5.ps1`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.5/WorkStack-Setup-1.0.5.ps1)
+- [`WorkStack-Setup-1.0.5.ps1.sha256`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.5/WorkStack-Setup-1.0.5.ps1.sha256)
+- [`workstack-update.json`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.5/workstack-update.json)
 
-The same self-contained installer is also committed with this public snapshot:
+The same installer, checksum, and stable-channel manifest are committed under
+[`installer/`](installer/). Verify the adjacent SHA-256 sidecar before running the
+installer. The target machine needs neither Python nor Node.js. This build is not
+code-signed, so the checksum proves transfer integrity rather than publisher identity.
 
-- [`installer/WorkStack-Setup-1.0.4.ps1`](installer/WorkStack-Setup-1.0.4.ps1)
-- [`installer/WorkStack-Setup-1.0.4.ps1.sha256`](installer/WorkStack-Setup-1.0.4.ps1.sha256)
-
-Verify the adjacent SHA-256 sidecar before running the installer. The target machine does not
-need a separate Python or Node.js installation. This build is not code-signed, so the checksum
-proves transfer integrity rather than publisher identity.
+v1.0.5 is the first auto-updating desktop release. Install it once manually; subsequent
+versions can be checked, downloaded, and applied from Work Stack after the app closes.
 
 This prototype is intentionally a thin local product shell. Activepieces and the
 Conduit runtime are not embedded. Work Stack owns `PlanningTask`; a future Conduit
@@ -90,19 +90,20 @@ npm --prefix frontend run build
 powershell -ExecutionPolicy Bypass -File scripts\windows\Build-WindowsInstaller.ps1
 ```
 
-Run the generated `.artifacts\WorkStack-Setup-1.0.4.ps1`. The target machine needs neither
+Run the generated `.artifacts\WorkStack-Setup-1.0.5.ps1`. The target machine needs neither
 Python nor Node.js, and installation does not contact the network. It installs the bundled
 runtime under `%LOCALAPPDATA%\Programs\WorkStack`, keeps planning data and versioned backups
 under `%LOCALAPPDATA%\WorkStack`, and adds a Start menu shortcut. Re-running a new setup
 artifact stops only the matching installed Work Stack process, writes a verified pre-upgrade
 backup, and replaces the application while preserving data.
 
-The builder also writes `WorkStack-Setup-1.0.4.ps1.sha256`. Keep it beside the setup artifact
+The builder also writes `WorkStack-Setup-1.0.5.ps1.sha256` and `workstack-update.json`. Keep the
+checksum beside the setup artifact
 and verify both the filename and digest before execution:
 
 ```powershell
 .\scripts\windows\Test-WorkStackSetup.ps1 `
-  -SetupPath .\.artifacts\WorkStack-Setup-1.0.4.ps1
+  -SetupPath .\.artifacts\WorkStack-Setup-1.0.5.ps1
 ```
 
 This is transfer-integrity evidence, not publisher authentication. The prototype remains unsigned
@@ -113,6 +114,14 @@ Pass `-RemoveData` only when the local data and backups should also be deleted.
 
 `Update-WorkStack.ps1` requires the adjacent checksum sidecar and runs the strict verifier before
 it reads the installed configuration or invokes the selected setup artifact.
+
+The Windows desktop checks the stable public GitHub release channel once at startup. By default it
+downloads only an exact allowlisted installer whose version, filename, size, SHA-256 digest, and
+sidecar agree with `workstack-update.json`; a verified update is applied after Work Stack closes so
+the local server or SSH tunnel can stop cleanly. The existing pre-upgrade backup and rollback path
+remains authoritative. Automatic checking, download, and install-on-exit can each be disabled from
+the **Work Stack updates** dialog. This prototype integrity chain still does not replace a trusted
+Windows publisher signature.
 
 ## Build and run
 
@@ -295,6 +304,11 @@ does not claim background sync or provider health. The exact envelopes and safet
 are frozen in [contracts/api-v1.md](contracts/api-v1.md). Synthetic examples are under
 `contracts/oob-request-v1.*.fixture.json`, `contracts/reply-command-v1.*.fixture.json`,
 and `contracts/reply-receipt-v1.*.fixture.json`.
+
+The Windows desktop build additionally keeps the official Outlook, Teams, and OneNote
+web apps inside Context Inbox using isolated persistent WebView profiles. Its compact
+zoom bar changes the active provider in 10% steps from 50% to 200%; each provider keeps
+its own zoom level across restarts. Capturing content remains an explicit user action.
 
 ## Other CLI examples
 

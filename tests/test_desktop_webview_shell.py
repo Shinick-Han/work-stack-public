@@ -77,6 +77,8 @@ class PythonDesktopShellContractTest(unittest.TestCase):
         self.assertIn("Rectangle.Intersect", source)
         self.assertIn("FormClosing +=", source)
         self.assertIn("OUTLOOK_VISIBLE_CAPTURE_SCRIPT", source)
+        self.assertIn("source_webview.ZoomFactor", source)
+        self.assertIn("SOURCE_ZOOM_FILE", source)
         self.assertNotIn("CookieManager", source)
 
     def test_provider_webviews_persist_across_tab_switches(self) -> None:
@@ -120,6 +122,9 @@ class PythonDesktopShellContractTest(unittest.TestCase):
         self.assertIn('f"{SOURCE_HOST_PREFIX}|suspend"', source)
         self.assertIn('f"{SOURCE_HOST_PREFIX}|resume"', source)
         self.assertIn("self.source_suspended", source)
+        self.assertIn("self.source_host_active", source)
+        self.assertIn("def _deactivate_source", source)
+        self.assertIn("not self.source_host_active", source)
         self.assertIn("def _restore_source", source)
 
     def test_native_bridge_reads_visible_outlook_content_only_on_explicit_capture(self) -> None:
@@ -221,6 +226,21 @@ class PythonDesktopShellContractTest(unittest.TestCase):
         self.assertIn("pywebview==6.2.1", requirements)
         self.assertIn("pythonnet==3.1.0", requirements)
         self.assertIn("--hash=sha256:", requirements)
+
+    def test_github_updates_are_verified_staged_and_applied_after_exit(self) -> None:
+        source = self.read("workstack_desktop.py")
+        updater = self.read("workstack_update.py")
+        apply_script = (ROOT / "scripts" / "windows" / "Apply-WorkStackUpdate.ps1").read_text(encoding="utf-8-sig")
+
+        self.assertIn('UPDATE_HOST_PREFIX = "workstack-update-host"', source)
+        self.assertIn("_start_update_check", source)
+        self.assertIn("_launch_pending_update", source)
+        self.assertIn("PostWebMessageAsJson", source)
+        self.assertIn("WorkStack-Setup-{version}.ps1", updater)
+        self.assertIn("checksum sidecar content", updater)
+        self.assertIn("Wait-Process", apply_script)
+        self.assertIn("Update-WorkStack.ps1", apply_script)
+        self.assertIn("last-update.json", apply_script)
 
 
 if __name__ == "__main__":

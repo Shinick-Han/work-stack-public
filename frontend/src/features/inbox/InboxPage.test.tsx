@@ -281,6 +281,9 @@ test('keeps Microsoft navigation inside Source Inbox when the desktop host is av
   expect(screen.queryByRole('link', { name: 'Open web app' })).not.toBeInTheDocument()
   expect(screen.getByRole('tabpanel', { name: 'Outlook web app' })).toBeInTheDocument()
   expect(postMessage).toHaveBeenCalledWith(expect.stringMatching(/^workstack-source-host\|show\|outlook\|/))
+  expect(screen.getByRole('group', { name: 'Outlook zoom' })).toHaveTextContent('100%')
+  await userEvent.click(screen.getByRole('button', { name: 'Zoom in Outlook' }))
+  expect(postMessage).toHaveBeenCalledWith('workstack-source-host|zoom|outlook|110')
 
   await userEvent.click(screen.getByRole('tab', { name: /Teams/ }))
   expect(screen.getByRole('tabpanel', { name: 'Teams web app' })).toBeInTheDocument()

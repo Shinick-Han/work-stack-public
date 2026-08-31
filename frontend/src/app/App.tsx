@@ -22,6 +22,7 @@ import { getErrorMessage, getObjectiveTitle, statusLabels } from '../utils/forma
 import { useUrlState } from './urlState'
 import { subscribePlanningChanges } from './crossTabSync'
 import { SyncStatusControl, SyncStatusDialog, isSyncUnavailable, isSyncWriteBlocked } from './SyncStatusControl'
+import { UpdateStatusControl } from './UpdateStatusControl'
 import { subscribeSyncStatusEvents } from './syncStatusEvents'
 import { applyTheme, readTheme, type WorkStackTheme } from './theme'
 
@@ -653,6 +654,7 @@ export function App({ providerGates = microsoftProviderGates }: AppProps) {
             <span>{workspace?.workspace.name ?? 'Work Stack'}</span><span>/</span><strong>{state.surface === 'workspace' ? 'Workspace' : state.surface === 'focus' ? 'Focus' : state.surface === 'review' ? 'Daily Review' : state.surface === 'objectives' ? 'Objective Hub' : 'Context Inbox'}</strong>
           </div>
           <div className="topbar-actions">
+            <UpdateStatusControl />
             <SyncStatusControl
               error={effectiveSyncError}
               isFetching={syncStatusQuery.isFetching}

@@ -24,7 +24,29 @@ from pathlib import Path
 import webview
 
 
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+APPLICATION_ROOT = SCRIPT_DIRECTORY.parents[1]
+for import_root in (SCRIPT_DIRECTORY, APPLICATION_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+
+from workstack import __version__ as WORKSTACK_VERSION
+from workstack_update import (
+    MAX_MANIFEST_BYTES,
+    UPDATE_MANIFEST_URL,
+    DownloadedUpdate,
+    UpdatePreferences,
+    download_update,
+    fetch_url_bytes,
+    load_update_preferences,
+    parse_update_manifest,
+    save_update_preferences,
+)
+
+
 SOURCE_HOST_PREFIX = "workstack-source-host"
+UPDATE_HOST_PREFIX = "workstack-update-host"
+REMOTE_PROTOCOL_VERSION = 1
 PROVIDER_URLS = {
     "outlook": "https://outlook.office.com/mail/",
     "teams": "https://teams.microsoft.com/v2/",
@@ -106,6 +128,10 @@ OUTLOOK_VISIBLE_CAPTURE_SCRIPT = r"""
 
 
 REMOTE_CONNECTION_FILE = "remote-connection.json"
+SOURCE_ZOOM_FILE = "source-zoom.json"
+SOURCE_ZOOM_DEFAULT = 100
+SOURCE_ZOOM_MIN = 50
+SOURCE_ZOOM_MAX = 200
 SSH_HOST_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9_.@-]{1,255}$")
 
 
@@ -117,6 +143,38 @@ class RemoteConnectionProfile:
     local_forward_port: int
     workspace_id: str
     remote_port: int = 8765
+
+
+def load_source_zoom(state_root: Path) -> dict[str, int]:
+    defaults = {provider: SOURCE_ZOOM_DEFAULT for provider in PROVIDER_URLS}
+    path = state_root / SOURCE_ZOOM_FILE
+    if not path.is_file():
+        return defaults
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return defaults
+    if not isinstance(raw, dict) or set(raw) - set(PROVIDER_URLS):
+        return defaults
+    for provider, value in raw.items():
+        if isinstance(value, bool) or not isinstance(value, int) or not SOURCE_ZOOM_MIN <= value <= SOURCE_ZOOM_MAX:
+            return defaults
+        defaults[provider] = value
+    return defaults
+
+
+def save_source_zoom(state_root: Path, values: dict[str, int]) -> None:
+    payload = {provider: values.get(provider, SOURCE_ZOOM_DEFAULT) for provider in PROVIDER_URLS}
+    if any(isinstance(value, bool) or not isinstance(value, int) or not SOURCE_ZOOM_MIN <= value <= SOURCE_ZOOM_MAX for value in payload.values()):
+        raise ValueError("Microsoft source zoom must be an integer from 50 to 200")
+    state_root.mkdir(parents=True, exist_ok=True)
+    path = state_root / SOURCE_ZOOM_FILE
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _validated_port(value: object, field: str) -> int:
@@ -302,6 +360,19 @@ class WorkStackDesktopHost:
         self.profile_root = self.state_root / "desktop-webview-profile"
         self.microsoft_profile_root = self.state_root / "desktop-microsoft-profile"
         self.microsoft_diagnostic_path = self.state_root / "logs" / "microsoft-webview.log"
+        self.update_preferences = load_update_preferences(self.state_root)
+        self.source_zoom = load_source_zoom(self.state_root)
+        self.update_check_thread: threading.Thread | None = None
+        self.downloaded_update: DownloadedUpdate | None = None
+        self.install_update_on_exit = False
+        self.update_status: dict[str, object] = {
+            "type": "workstack-update-status",
+            "state": "idle",
+            "current_version": WORKSTACK_VERSION,
+            "latest_version": WORKSTACK_VERSION,
+            "release_url": "",
+            "message": "",
+        }
         self.remote_profile = load_remote_connection_profile(self.state_root)
         if self.remote_profile is not None and options.url:
             raise RuntimeError("--url cannot be combined with storage_mode 'ssh-remote'")
@@ -330,6 +401,7 @@ class WorkStackDesktopHost:
         self.source_popups: dict[str, dict[str, object]] = {}
         self.pending_source_captures: dict[str, dict[str, str]] = {}
         self.source_suspended = False
+        self.source_host_active = False
         self.active_provider = ""
         self.native_icon = None
         self.probe_recorded = False
@@ -365,6 +437,7 @@ class WorkStackDesktopHost:
             else:
                 self._stop_owned_server()
             self._release_single_instance()
+            self._launch_pending_update()
 
     def _on_form_closing(self, _sender, _event_args) -> None:
         if (self.server_started_by_shell or self.remote_ssh_process is not None) and self.server_stop_thread is None:
@@ -419,6 +492,9 @@ class WorkStackDesktopHost:
                 self._write_probe(False, "initializing", "WorkStackInitializationFailed")
             return
         self._create_source_views(sender.CoreWebView2.Environment)
+        self._post_update_status()
+        if self.update_preferences.auto_check and not self.options.probe_result:
+            self._start_update_check()
 
     def _create_source_views(self, fallback_environment) -> None:
         if self.source_webviews or self.source_environment_task is not None:
@@ -483,6 +559,7 @@ class WorkStackDesktopHost:
 
             source_webview = WebView2()
             source_webview.DefaultBackgroundColor = Color.White
+            source_webview.ZoomFactor = self.source_zoom[provider] / 100.0
             navigation_starting = lambda sender, event_args, key=provider: self._on_source_navigation_starting(key, sender, event_args)
             navigation_completed = lambda sender, event_args, key=provider: self._on_source_navigation_completed(key, sender, event_args)
             source_ready = lambda sender, event_args, key=provider: self._on_source_ready(key, sender, event_args)
@@ -534,8 +611,11 @@ class WorkStackDesktopHost:
             message = str(event_args.TryGetWebMessageAsString())
         except Exception:
             return
+        if message.startswith(f"{UPDATE_HOST_PREFIX}|"):
+            self._handle_update_message(message)
+            return
         if message == f"{SOURCE_HOST_PREFIX}|hide":
-            self._hide_source()
+            self._deactivate_source()
             return
         if message == f"{SOURCE_HOST_PREFIX}|suspend":
             self.source_suspended = True
@@ -547,6 +627,12 @@ class WorkStackDesktopHost:
             return
         if message.startswith(f"{SOURCE_HOST_PREFIX}|capture|"):
             self._send_source_capture(message)
+            return
+        if message == f"{SOURCE_HOST_PREFIX}|zoom-status":
+            self._post_source_zoom()
+            return
+        if message.startswith(f"{SOURCE_HOST_PREFIX}|zoom|"):
+            self._set_source_zoom(message)
             return
         if message.startswith("workstack-window-theme|"):
             theme = message.partition("|")[2]
@@ -603,6 +689,7 @@ class WorkStackDesktopHost:
             requested_bounds.Height,
         )
         self.active_provider = provider
+        self.source_host_active = True
         if self.source_suspended:
             return
         viewport.Visible = True
@@ -620,14 +707,252 @@ class WorkStackDesktopHost:
         for viewport in self.source_viewports.values():
             viewport.Visible = False
 
+    def _deactivate_source(self) -> None:
+        self.source_host_active = False
+        self._hide_source()
+
     def _restore_source(self) -> None:
-        if self.source_suspended or not self.active_provider:
+        if self.source_suspended or not self.source_host_active or not self.active_provider:
             return
         viewport = self.source_viewports.get(self.active_provider)
         if viewport is None:
             return
         viewport.Visible = True
         viewport.BringToFront()
+
+    def _post_source_zoom(self) -> None:
+        core = self.workstack_webview.CoreWebView2 if self.workstack_webview is not None else None
+        if core is None:
+            return
+        core.PostWebMessageAsJson(json.dumps({
+            "type": "workstack-source-zoom",
+            "values": self.source_zoom,
+        }, ensure_ascii=True, separators=(",", ":")))
+
+    def _set_source_zoom(self, message: str) -> None:
+        parts = message.split("|")
+        if len(parts) != 4:
+            return
+        _prefix, command, provider, raw_value = parts
+        if command != "zoom" or provider not in PROVIDER_URLS:
+            return
+        try:
+            value = int(raw_value)
+        except ValueError:
+            return
+        if not SOURCE_ZOOM_MIN <= value <= SOURCE_ZOOM_MAX:
+            return
+        self.source_zoom[provider] = value
+        save_source_zoom(self.state_root, self.source_zoom)
+        source_webview = self.source_webviews.get(provider)
+        if source_webview is not None:
+            source_webview.ZoomFactor = value / 100.0
+        self._post_source_zoom()
+
+    def _update_payload(self) -> dict[str, object]:
+        return {
+            **self.update_status,
+            "preferences": {
+                "auto_check": self.update_preferences.auto_check,
+                "auto_download": self.update_preferences.auto_download,
+                "install_on_exit": self.update_preferences.install_on_exit,
+            },
+        }
+
+    def _post_update_status(self) -> None:
+        core = self.workstack_webview.CoreWebView2 if self.workstack_webview is not None else None
+        if core is None:
+            return
+        core.PostWebMessageAsJson(json.dumps(self._update_payload(), ensure_ascii=True, separators=(",", ":")))
+
+    def _dispatch_update_status(self) -> None:
+        if self.form is None:
+            return
+        try:
+            from System import Action
+
+            dispatch = Action(self._post_update_status)
+            self.source_event_handlers.append(dispatch)
+            self.form.BeginInvoke(dispatch)
+        except Exception as error:
+            self._trace(f"update status dispatch failed: {type(error).__name__}")
+
+    def _set_update_status(
+        self,
+        state: str,
+        *,
+        latest_version: str = "",
+        release_url: str = "",
+        message: str = "",
+    ) -> None:
+        self.update_status = {
+            "type": "workstack-update-status",
+            "state": state,
+            "current_version": WORKSTACK_VERSION,
+            "latest_version": latest_version or str(self.update_status.get("latest_version", WORKSTACK_VERSION)),
+            "release_url": release_url or str(self.update_status.get("release_url", "")),
+            "message": message[:500],
+        }
+        self._dispatch_update_status()
+
+    def _start_update_check(self, *, force_download: bool = False) -> None:
+        if self.update_check_thread is not None and self.update_check_thread.is_alive():
+            return
+        self._set_update_status("checking", message="Checking the stable GitHub release channel")
+        self.update_check_thread = threading.Thread(
+            target=self._check_update_worker,
+            kwargs={"force_download": force_download},
+            name="WorkStackUpdateCheck",
+            daemon=True,
+        )
+        self.update_check_thread.start()
+
+    def _check_update_worker(self, *, force_download: bool) -> None:
+        try:
+            body = fetch_url_bytes(UPDATE_MANIFEST_URL, MAX_MANIFEST_BYTES)
+            manifest = parse_update_manifest(body, current_version=WORKSTACK_VERSION)
+            if not manifest.is_newer:
+                self.downloaded_update = None
+                self.install_update_on_exit = False
+                self._set_update_status(
+                    "current",
+                    latest_version=manifest.version,
+                    release_url=manifest.release_url,
+                    message="Work Stack is up to date",
+                )
+                return
+            if self.remote_profile is not None and manifest.minimum_remote_protocol > REMOTE_PROTOCOL_VERSION:
+                self._set_update_status(
+                    "blocked",
+                    latest_version=manifest.version,
+                    release_url=manifest.release_url,
+                    message="Update requires a newer remote Work Stack protocol",
+                )
+                return
+            if not (force_download or self.update_preferences.auto_download):
+                self._set_update_status(
+                    "available",
+                    latest_version=manifest.version,
+                    release_url=manifest.release_url,
+                    message="A verified Work Stack update is available",
+                )
+                return
+            self._set_update_status(
+                "downloading",
+                latest_version=manifest.version,
+                release_url=manifest.release_url,
+                message="Downloading and verifying the update",
+            )
+            downloaded = download_update(manifest, self.state_root / "updates")
+            self.downloaded_update = downloaded
+            self.install_update_on_exit = self.update_preferences.install_on_exit
+            self._set_update_status(
+                "ready",
+                latest_version=manifest.version,
+                release_url=manifest.release_url,
+                message=(
+                    "Verified update will install when Work Stack closes"
+                    if self.install_update_on_exit
+                    else "Verified update is ready to install"
+                ),
+            )
+        except Exception as error:
+            self.downloaded_update = None
+            self.install_update_on_exit = False
+            self._set_update_status("error", message=f"Update check failed: {error}")
+
+    def _handle_update_message(self, message: str) -> None:
+        parts = message.split("|")
+        if parts == [UPDATE_HOST_PREFIX, "status"]:
+            self._post_update_status()
+            return
+        if parts == [UPDATE_HOST_PREFIX, "check"]:
+            self._start_update_check()
+            return
+        if parts == [UPDATE_HOST_PREFIX, "download"]:
+            self._start_update_check(force_download=True)
+            return
+        if parts == [UPDATE_HOST_PREFIX, "install"]:
+            if self.downloaded_update is None:
+                self._start_update_check(force_download=True)
+                return
+            self.install_update_on_exit = True
+            self._set_update_status(
+                "installing",
+                latest_version=self.downloaded_update.version,
+                release_url=self.downloaded_update.release_url,
+                message="Closing Work Stack to apply the verified update",
+            )
+            if self.window is not None:
+                self.window.destroy()
+            return
+        if len(parts) == 5 and parts[:2] == [UPDATE_HOST_PREFIX, "preferences"]:
+            values = parts[2:]
+            if any(value not in {"0", "1"} for value in values):
+                return
+            self.update_preferences = UpdatePreferences(*(value == "1" for value in values))
+            save_update_preferences(self.state_root, self.update_preferences)
+            if not self.update_preferences.install_on_exit:
+                self.install_update_on_exit = False
+            elif self.downloaded_update is not None:
+                self.install_update_on_exit = True
+            self._post_update_status()
+            if self.update_preferences.auto_check and self.update_status.get("state") == "idle":
+                self._start_update_check()
+            return
+        if parts == [UPDATE_HOST_PREFIX, "open-release"]:
+            release_url = str(self.update_status.get("release_url", ""))
+            if release_url.startswith("https://github.com/Shinick-Han/work-stack-public/releases/"):
+                webbrowser.open(release_url)
+
+    def _launch_pending_update(self) -> None:
+        downloaded = self.downloaded_update
+        if not self.install_update_on_exit or downloaded is None:
+            return
+        apply_script = self.install_root / "scripts" / "windows" / "Apply-WorkStackUpdate.ps1"
+        if not apply_script.is_file():
+            self._trace("verified update was not launched because the update applicator is missing")
+            return
+        command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(apply_script),
+            "-SetupPath",
+            str(downloaded.setup_path),
+            "-ChecksumPath",
+            str(downloaded.checksum_path),
+            "-InstallRoot",
+            str(self.install_root),
+            "-StateRoot",
+            str(self.state_root),
+            "-ParentProcessId",
+            str(os.getpid()),
+            "-TargetVersion",
+            downloaded.version,
+        ]
+        creation_flags = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+        try:
+            subprocess.Popen(
+                command,
+                cwd=self.install_root,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                creationflags=creation_flags,
+            )
+            self._trace(f"verified Work Stack {downloaded.version} update applicator started")
+        except OSError as error:
+            self._trace(f"verified update applicator failed to start: {type(error).__name__}: {error}")
 
     def _send_source_capture(self, message: str) -> None:
         parts = message.split("|", 3)
