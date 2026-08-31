@@ -15,13 +15,13 @@ objectives → planning tasks → daily records → weekly roll-up
 
 Download the immutable release asset (recommended):
 
-- [`WorkStack-Setup-1.0.3.ps1`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.3/WorkStack-Setup-1.0.3.ps1)
-- [`WorkStack-Setup-1.0.3.ps1.sha256`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.3/WorkStack-Setup-1.0.3.ps1.sha256)
+- [`WorkStack-Setup-1.0.4.ps1`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.4/WorkStack-Setup-1.0.4.ps1)
+- [`WorkStack-Setup-1.0.4.ps1.sha256`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.4/WorkStack-Setup-1.0.4.ps1.sha256)
 
 The same self-contained installer is also committed with this public snapshot:
 
-- [`installer/WorkStack-Setup-1.0.3.ps1`](installer/WorkStack-Setup-1.0.3.ps1)
-- [`installer/WorkStack-Setup-1.0.3.ps1.sha256`](installer/WorkStack-Setup-1.0.3.ps1.sha256)
+- [`installer/WorkStack-Setup-1.0.4.ps1`](installer/WorkStack-Setup-1.0.4.ps1)
+- [`installer/WorkStack-Setup-1.0.4.ps1.sha256`](installer/WorkStack-Setup-1.0.4.ps1.sha256)
 
 Verify the adjacent SHA-256 sidecar before running the installer. The target machine does not
 need a separate Python or Node.js installation. This build is not code-signed, so the checksum
@@ -90,19 +90,19 @@ npm --prefix frontend run build
 powershell -ExecutionPolicy Bypass -File scripts\windows\Build-WindowsInstaller.ps1
 ```
 
-Run the generated `.artifacts\WorkStack-Setup-1.0.3.ps1`. The target machine needs neither
+Run the generated `.artifacts\WorkStack-Setup-1.0.4.ps1`. The target machine needs neither
 Python nor Node.js, and installation does not contact the network. It installs the bundled
 runtime under `%LOCALAPPDATA%\Programs\WorkStack`, keeps planning data and versioned backups
 under `%LOCALAPPDATA%\WorkStack`, and adds a Start menu shortcut. Re-running a new setup
 artifact stops only the matching installed Work Stack process, writes a verified pre-upgrade
 backup, and replaces the application while preserving data.
 
-The builder also writes `WorkStack-Setup-1.0.3.ps1.sha256`. Keep it beside the setup artifact
+The builder also writes `WorkStack-Setup-1.0.4.ps1.sha256`. Keep it beside the setup artifact
 and verify both the filename and digest before execution:
 
 ```powershell
 .\scripts\windows\Test-WorkStackSetup.ps1 `
-  -SetupPath .\.artifacts\WorkStack-Setup-1.0.3.ps1
+  -SetupPath .\.artifacts\WorkStack-Setup-1.0.4.ps1
 ```
 
 This is transfer-integrity evidence, not publisher authentication. The prototype remains unsigned

@@ -10,6 +10,14 @@ places a second native WebView2 in that rectangle for Outlook, Teams, or
 OneNote. It does not read Microsoft page content, cookies, tokens, or planning
 state. Leaving Context Inbox hides the Microsoft surface.
 
+The three Microsoft surfaces share a dedicated persistent WebView2 environment
+under `%LOCALAPPDATA%\WorkStack\desktop-microsoft-profile`. Windows primary-account
+SSO is enabled for that environment. Authentication windows retain WebView2
+parent/child popup semantics instead of replacing the provider page, including
+enterprise identity-provider redirects. Host-only diagnostics are written to
+`%LOCALAPPDATA%\WorkStack\logs\microsoft-webview.log`; the log never records URL
+paths, queries, fragments, page titles, selected text, tokens, or cookies.
+
 For a source-tree probe after installing `requirements-windows-desktop.txt`:
 
 ```powershell

@@ -190,6 +190,31 @@ class PythonDesktopShellContractTest(unittest.TestCase):
         self.assertNotIn('".microsoft.com"', source)
         self.assertNotIn('".live.com"', source)
 
+    def test_microsoft_sign_in_preserves_popup_semantics_and_enables_os_sso(self) -> None:
+        source = self.read("workstack_desktop.py")
+
+        self.assertIn("CoreWebView2EnvironmentOptions", source)
+        self.assertIn("AllowSingleSignOnUsingOSPrimaryAccount = True", source)
+        self.assertIn("CoreWebView2Environment.CreateAsync", source)
+        self.assertIn("event_args.GetDeferral()", source)
+        self.assertIn("event_args.NewWindow = sender.CoreWebView2", source)
+        self.assertIn("EnsureCoreWebView2Async(parent_core.Environment)", source)
+        self.assertIn("WindowCloseRequested", source)
+        self.assertIn("self.source_auth_sessions", source)
+        self.assertIn('scheme == "https" and provider in self.source_auth_sessions', source)
+        self.assertNotIn("self.source_webviews[provider].CoreWebView2.Navigate(target)", source)
+
+    def test_microsoft_diagnostics_are_content_blind(self) -> None:
+        source = self.read("workstack_desktop.py")
+        diagnostic = source[source.index("    def _record_microsoft_diagnostic"):source.index("    @staticmethod\n    def _origin")]
+
+        self.assertIn('"microsoft-webview.log"', source)
+        self.assertIn("def _record_microsoft_diagnostic", source)
+        self.assertIn('"host": parts.hostname', diagnostic)
+        self.assertNotIn('"url": url', diagnostic)
+        self.assertNotIn('"path": parts.path', diagnostic)
+        self.assertNotIn('"query": parts.query', diagnostic)
+
     def test_desktop_dependencies_are_exactly_locked(self) -> None:
         requirements = (ROOT / "requirements-windows-desktop.txt").read_text(encoding="utf-8")
 

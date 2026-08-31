@@ -18,6 +18,7 @@ import urllib.request
 import uuid
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import webview
@@ -299,6 +300,8 @@ class WorkStackDesktopHost:
         self.install_root = options.install_root.resolve()
         self.state_root = options.state_root.resolve()
         self.profile_root = self.state_root / "desktop-webview-profile"
+        self.microsoft_profile_root = self.state_root / "desktop-microsoft-profile"
+        self.microsoft_diagnostic_path = self.state_root / "logs" / "microsoft-webview.log"
         self.remote_profile = load_remote_connection_profile(self.state_root)
         if self.remote_profile is not None and options.url:
             raise RuntimeError("--url cannot be combined with storage_mode 'ssh-remote'")
@@ -321,7 +324,10 @@ class WorkStackDesktopHost:
         self.source_webviews: dict[str, object] = {}
         self.source_ready: set[str] = set()
         self.source_initialized: set[str] = set()
+        self.source_auth_sessions: set[str] = set()
         self.source_event_handlers: list[object] = []
+        self.source_environment_task = None
+        self.source_popups: dict[str, dict[str, object]] = {}
         self.pending_source_captures: dict[str, dict[str, str]] = {}
         self.source_suspended = False
         self.active_provider = ""
@@ -414,7 +420,55 @@ class WorkStackDesktopHost:
             return
         self._create_source_views(sender.CoreWebView2.Environment)
 
-    def _create_source_views(self, environment) -> None:
+    def _create_source_views(self, fallback_environment) -> None:
+        if self.source_webviews or self.source_environment_task is not None:
+            return
+
+        from System import Action
+        from System.Threading.Tasks import Task
+        from Microsoft.Web.WebView2.Core import CoreWebView2Environment, CoreWebView2EnvironmentOptions
+
+        self.microsoft_profile_root.mkdir(parents=True, exist_ok=True)
+        options = CoreWebView2EnvironmentOptions()
+        options.AllowSingleSignOnUsingOSPrimaryAccount = True
+        self.source_environment_task = CoreWebView2Environment.CreateAsync(
+            None,
+            str(self.microsoft_profile_root),
+            options,
+        )
+        self._record_microsoft_diagnostic(
+            "environment-start",
+            stage=f"os-sso-enabled:{self.source_environment_task.Status}",
+        )
+
+        def environment_ready(task) -> None:
+            self.source_environment_task = None
+            if not task.IsFaulted and not task.IsCanceled:
+                self._record_microsoft_diagnostic("environment-ready", success=True)
+                self._create_source_views_with_environment(task.Result)
+                return
+            self._record_microsoft_diagnostic("environment-ready", success=False)
+            self._create_source_views_with_environment(fallback_environment)
+
+        def environment_finished(task) -> None:
+            self._record_microsoft_diagnostic("environment-finished", stage=str(task.Status))
+            try:
+                dispatch = Action(lambda: environment_ready(task))
+                self.source_event_handlers.append(dispatch)
+                self.form.Invoke(dispatch)
+            except Exception as error:
+                self._record_microsoft_diagnostic(
+                    "environment-dispatch",
+                    success=False,
+                    stage=type(error).__name__,
+                )
+                self._trace(f"Microsoft environment dispatch failed: {type(error).__name__}: {error}")
+
+        completion = Action[Task](environment_finished)
+        self.source_event_handlers.extend((environment_ready, environment_finished, completion))
+        self.source_environment_task.ContinueWith(completion)
+
+    def _create_source_views_with_environment(self, environment) -> None:
         if self.source_webviews:
             return
 
@@ -451,6 +505,7 @@ class WorkStackDesktopHost:
 
     def _on_source_ready(self, provider: str, sender, event_args) -> None:
         if not event_args.IsSuccess:
+            self._record_microsoft_diagnostic("source-ready", provider, success=False)
             if self.options.probe_result:
                 self._write_probe(False, "initializing", "InitializationFailed")
             return
@@ -468,6 +523,7 @@ class WorkStackDesktopHost:
         sender.CoreWebView2.WebMessageReceived += source_message
         sender.CoreWebView2.LaunchingExternalUriScheme += external_uri
         self.source_ready.add(provider)
+        self._record_microsoft_diagnostic("source-ready", provider, success=True)
         if self.active_provider == provider or self.options.probe_provider == provider:
             self._navigate_source_once(provider)
 
@@ -656,20 +712,173 @@ class WorkStackDesktopHost:
         if self._origin(str(event_args.Uri)) != self.workstack_origin:
             event_args.Cancel = True
 
-    def _on_source_navigation_starting(self, provider: str, _sender, event_args) -> None:
-        if not self._is_microsoft_url(str(event_args.Uri), provider):
+    def _on_source_navigation_starting(self, provider: str, sender, event_args) -> None:
+        target = str(event_args.Uri)
+        parts = urllib.parse.urlsplit(target)
+        scheme = parts.scheme.lower()
+        host = (parts.hostname or "").lower()
+        microsoft_target = self._is_microsoft_url(target, provider)
+        if microsoft_target and host in COMMON_AUTH_HOSTS:
+            self.source_auth_sessions.add(provider)
+        allowed = microsoft_target or (scheme == "https" and provider in self.source_auth_sessions)
+        if allowed and self._is_provider_host(host, provider):
+            self.source_auth_sessions.discard(provider)
+        self._record_microsoft_diagnostic("navigation-starting", provider, target, allowed=allowed)
+        if not allowed:
             event_args.Cancel = True
 
-    def _on_source_new_window(self, provider: str, _sender, event_args) -> None:
-        event_args.Handled = True
+    def _on_source_new_window(self, provider: str, parent_core, event_args) -> None:
         target = str(event_args.Uri)
-        if self._is_microsoft_url(target, provider):
-            self.source_webviews[provider].CoreWebView2.Navigate(target)
-        elif urllib.parse.urlsplit(target).scheme.lower() == "https":
+        parent_url = str(parent_core.Source)
+        target_scheme = urllib.parse.urlsplit(target).scheme.lower()
+        parent_host = (urllib.parse.urlsplit(parent_url).hostname or "").lower()
+        blank_target = target in {"", "about:blank"}
+        is_auth_popup = self._is_microsoft_url(target, provider) or (
+            blank_target and self._is_microsoft_url(parent_url, provider)
+        ) or (
+            target_scheme == "https"
+            and (parent_host in COMMON_AUTH_HOSTS or provider in self.source_auth_sessions)
+        )
+        self._record_microsoft_diagnostic(
+            "new-window",
+            provider,
+            target or parent_url,
+            allowed=is_auth_popup,
+            stage="embedded-popup" if is_auth_popup else "external-or-blocked",
+        )
+        if is_auth_popup:
+            self._open_source_popup(provider, parent_core, event_args)
+            return
+        event_args.Handled = True
+        if urllib.parse.urlsplit(target).scheme.lower() == "https":
             webbrowser.open(target)
+
+    def _open_source_popup(self, provider: str, parent_core, event_args) -> None:
+        import System.Windows.Forms as WinForms
+        from Microsoft.Web.WebView2.WinForms import WebView2
+        from System.Drawing import Color
+
+        viewport = self.source_viewports.get(provider)
+        if viewport is None:
+            event_args.Handled = True
+            return
+
+        popup_id = uuid.uuid4().hex
+        deferral = event_args.GetDeferral()
+        overlay = WinForms.Panel()
+        overlay.Dock = WinForms.DockStyle.Fill
+        overlay.BackColor = Color.FromArgb(13, 15, 20)
+        toolbar = WinForms.Panel()
+        toolbar.Dock = WinForms.DockStyle.Top
+        toolbar.Height = 38
+        toolbar.BackColor = Color.FromArgb(20, 23, 30)
+        label = WinForms.Label()
+        label.Text = "Microsoft sign-in"
+        label.ForeColor = Color.White
+        label.AutoSize = True
+        label.Left = 12
+        label.Top = 11
+        close_button = WinForms.Button()
+        close_button.Text = "Close"
+        close_button.Width = 72
+        close_button.Height = 28
+        close_button.Top = 5
+        close_button.Left = max(80, viewport.ClientSize.Width - 82)
+        close_button.Anchor = WinForms.AnchorStyles.Top | WinForms.AnchorStyles.Right
+        child = WebView2()
+        child.Dock = WinForms.DockStyle.Fill
+        child.DefaultBackgroundColor = Color.White
+        toolbar.Controls.Add(label)
+        toolbar.Controls.Add(close_button)
+        overlay.Controls.Add(child)
+        overlay.Controls.Add(toolbar)
+        viewport.Controls.Add(overlay)
+        overlay.BringToFront()
+
+        state = {"completed": False, "closed": False}
+
+        def close_popup(_sender=None, _args=None) -> None:
+            if state["closed"]:
+                return
+            state["closed"] = True
+            if not state["completed"]:
+                event_args.Handled = True
+                deferral.Complete()
+                state["completed"] = True
+            self._record_microsoft_diagnostic("popup-closed", provider)
+            self.source_popups.pop(popup_id, None)
+            overlay.Dispose()
+
+        def popup_navigation_starting(_sender, args) -> None:
+            target = str(args.Uri)
+            scheme = urllib.parse.urlsplit(target).scheme.lower()
+            allowed = target == "about:blank" or scheme == "https"
+            self._record_microsoft_diagnostic("popup-navigation-starting", provider, target, allowed=allowed)
+            if not allowed:
+                args.Cancel = True
+
+        def popup_navigation_completed(sender, args) -> None:
+            self._record_microsoft_diagnostic(
+                "popup-navigation-completed",
+                provider,
+                str(sender.Source),
+                success=bool(args.IsSuccess),
+                web_error=str(args.WebErrorStatus),
+            )
+
+        def popup_ready(sender, args) -> None:
+            if state["closed"] or state["completed"]:
+                return
+            if not args.IsSuccess:
+                self._record_microsoft_diagnostic("popup-ready", provider, success=False)
+                event_args.Handled = True
+                deferral.Complete()
+                state["completed"] = True
+                close_popup()
+                return
+            settings = sender.CoreWebView2.Settings
+            settings.AreDevToolsEnabled = False
+            settings.AreDefaultContextMenusEnabled = True
+            settings.IsPasswordAutosaveEnabled = False
+            settings.IsGeneralAutofillEnabled = False
+            window_close = lambda source, close_args: close_popup(source, close_args)
+            nested_window = lambda source, window_args: self._on_source_new_window(provider, source, window_args)
+            external_uri = lambda source, uri_args: self._on_source_external_uri(provider, source, uri_args)
+            sender.CoreWebView2.WindowCloseRequested += window_close
+            sender.CoreWebView2.NewWindowRequested += nested_window
+            sender.CoreWebView2.LaunchingExternalUriScheme += external_uri
+            self.source_event_handlers.extend((window_close, nested_window, external_uri))
+            event_args.NewWindow = sender.CoreWebView2
+            event_args.Handled = True
+            deferral.Complete()
+            state["completed"] = True
+            self._record_microsoft_diagnostic("popup-ready", provider, success=True)
+
+        close_button.Click += close_popup
+        child.NavigationStarting += popup_navigation_starting
+        child.NavigationCompleted += popup_navigation_completed
+        child.CoreWebView2InitializationCompleted += popup_ready
+        handlers = (close_popup, popup_navigation_starting, popup_navigation_completed, popup_ready)
+        self.source_event_handlers.extend(handlers)
+        self.source_popups[popup_id] = {
+            "overlay": overlay,
+            "webview": child,
+            "handlers": handlers,
+        }
+        try:
+            child.EnsureCoreWebView2Async(parent_core.Environment)
+        except Exception:
+            self._record_microsoft_diagnostic("popup-start", provider, success=False)
+            close_popup()
 
     def _on_source_external_uri(self, provider: str, sender, event_args) -> None:
         scheme = urllib.parse.urlsplit(str(event_args.Uri)).scheme.lower()
+        self._record_microsoft_diagnostic(
+            "external-uri",
+            provider,
+            str(event_args.Uri),
+            allowed=scheme != "msteams",
+        )
         if scheme == "msteams":
             event_args.Cancel = True
             self._trace(f"blocked Teams desktop protocol launch from {provider}")
@@ -677,6 +886,13 @@ class WorkStackDesktopHost:
                 sender.Navigate(PROVIDER_URLS["teams"])
 
     def _on_source_navigation_completed(self, provider: str, sender, event_args) -> None:
+        self._record_microsoft_diagnostic(
+            "navigation-completed",
+            provider,
+            str(sender.Source),
+            success=bool(event_args.IsSuccess),
+            web_error=str(event_args.WebErrorStatus),
+        )
         if self.probe_recorded or self.options.probe_result is None or provider != self.options.probe_provider:
             return
         host = urllib.parse.urlsplit(str(sender.Source)).hostname or "initializing"
@@ -1016,6 +1232,38 @@ class WorkStackDesktopHost:
         if os.environ.get("WORKSTACK_DESKTOP_DEBUG") == "1":
             print(f"[workstack-desktop] {message}", file=sys.stderr, flush=True)
 
+    def _record_microsoft_diagnostic(
+        self,
+        event: str,
+        provider: str = "host",
+        url: str = "",
+        **details: object,
+    ) -> None:
+        parts = urllib.parse.urlsplit(url)
+        record: dict[str, object] = {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "event": event[:80],
+            "provider": provider if provider in PROVIDER_URLS else "host",
+            "scheme": parts.scheme.lower()[:24],
+            "host": parts.hostname or "",
+        }
+        for key in ("allowed", "success", "stage", "web_error"):
+            value = details.get(key)
+            if isinstance(value, bool):
+                record[key] = value
+            elif isinstance(value, str):
+                record[key] = value[:120]
+        try:
+            self.microsoft_diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.microsoft_diagnostic_path.is_file() and self.microsoft_diagnostic_path.stat().st_size > 262_144:
+                previous = self.microsoft_diagnostic_path.with_suffix(".previous.log")
+                previous.unlink(missing_ok=True)
+                self.microsoft_diagnostic_path.replace(previous)
+            with self.microsoft_diagnostic_path.open("a", encoding="utf-8", newline="\n") as stream:
+                stream.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+        except OSError:
+            self._trace("Microsoft WebView diagnostic log is unavailable")
+
     @staticmethod
     def _origin(url: str) -> tuple[str, str, int | None]:
         parsed = urllib.parse.urlsplit(url)
@@ -1030,6 +1278,14 @@ class WorkStackDesktopHost:
             return False
         host = (parsed.hostname or "").lower()
         if host in COMMON_AUTH_HOSTS or host in PROVIDER_EXACT_HOSTS[provider]:
+            return True
+        return any(host.endswith(suffix) and host != suffix[1:] for suffix in PROVIDER_SUFFIXES[provider])
+
+    @staticmethod
+    def _is_provider_host(host: str, provider: str) -> bool:
+        if provider not in PROVIDER_URLS:
+            return False
+        if host in PROVIDER_EXACT_HOSTS[provider]:
             return True
         return any(host.endswith(suffix) and host != suffix[1:] for suffix in PROVIDER_SUFFIXES[provider])
 
