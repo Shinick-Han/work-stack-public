@@ -7,27 +7,27 @@ a hash-verified official 64-bit Python 3.12 runtime, the hash-locked Unicode 17 
 the locked Python/WebView desktop dependencies.
 The installer itself does not download dependencies.
 
-1. Download `WorkStack-Setup-1.0.2.ps1` and its adjacent
-   `WorkStack-Setup-1.0.2.ps1.sha256` file.
+1. Download `WorkStack-Setup-1.0.3.ps1` and its adjacent
+   `WorkStack-Setup-1.0.3.ps1.sha256` file.
 2. Open PowerShell in the download folder.
 3. Verify that the setup bytes match the sidecar before running them:
 
    ```powershell
-   $expected = (Get-Content .\WorkStack-Setup-1.0.2.ps1.sha256 -Raw).Split(' ', 2)[0]
-   $actual = (Get-FileHash .\WorkStack-Setup-1.0.2.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
+   $expected = (Get-Content .\WorkStack-Setup-1.0.3.ps1.sha256 -Raw).Split(' ', 2)[0]
+   $actual = (Get-FileHash .\WorkStack-Setup-1.0.3.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
    if ($actual -ne $expected) { throw "Work Stack setup checksum mismatch" }
    ```
 
    A source checkout can instead use the strict filename-and-digest verifier:
 
    ```powershell
-   .\scripts\windows\Test-WorkStackSetup.ps1 -SetupPath .\WorkStack-Setup-1.0.2.ps1
+   .\scripts\windows\Test-WorkStackSetup.ps1 -SetupPath .\WorkStack-Setup-1.0.3.ps1
    ```
 
 4. Run:
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.2.ps1
+   powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.3.ps1
    ```
 
 5. Open **Work Stack** from the Start menu.
@@ -71,7 +71,7 @@ From an existing installation, the same flow can be invoked while preserving the
 data directory and port:
 
 ```powershell
-.\scripts\windows\Update-WorkStack.ps1 -SetupPath "C:\path\to\WorkStack-Setup-1.0.2.ps1"
+.\scripts\windows\Update-WorkStack.ps1 -SetupPath "C:\path\to\WorkStack-Setup-1.0.3.ps1"
 ```
 
 Keep the matching `.sha256` sidecar beside the setup file. The updater verifies the exact filename

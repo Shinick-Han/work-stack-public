@@ -29,7 +29,16 @@ PROVIDER_URLS = {
     "teams": "https://teams.microsoft.com/v2/",
     "onenote": "https://www.office.com/launch/onenote",
 }
-COMMON_AUTH_HOSTS = frozenset({"login.microsoftonline.com", "login.live.com"})
+COMMON_AUTH_HOSTS = frozenset(
+    {
+        "login.microsoftonline.com",
+        "login.live.com",
+        "office.com",
+        "www.office.com",
+        "www.microsoft365.com",
+        "m365.cloud.microsoft",
+    }
+)
 PROVIDER_EXACT_HOSTS = {
     "outlook": frozenset(
         {
@@ -453,9 +462,11 @@ class WorkStackDesktopHost:
         settings.IsGeneralAutofillEnabled = False
         new_window = lambda source, args, key=provider: self._on_source_new_window(key, source, args)
         source_message = lambda source, args, key=provider: self._on_source_message(key, source, args)
-        self.source_event_handlers.extend((new_window, source_message))
+        external_uri = lambda source, args, key=provider: self._on_source_external_uri(key, source, args)
+        self.source_event_handlers.extend((new_window, source_message, external_uri))
         sender.CoreWebView2.NewWindowRequested += new_window
         sender.CoreWebView2.WebMessageReceived += source_message
+        sender.CoreWebView2.LaunchingExternalUriScheme += external_uri
         self.source_ready.add(provider)
         if self.active_provider == provider or self.options.probe_provider == provider:
             self._navigate_source_once(provider)
@@ -656,6 +667,14 @@ class WorkStackDesktopHost:
             self.source_webviews[provider].CoreWebView2.Navigate(target)
         elif urllib.parse.urlsplit(target).scheme.lower() == "https":
             webbrowser.open(target)
+
+    def _on_source_external_uri(self, provider: str, sender, event_args) -> None:
+        scheme = urllib.parse.urlsplit(str(event_args.Uri)).scheme.lower()
+        if scheme == "msteams":
+            event_args.Cancel = True
+            self._trace(f"blocked Teams desktop protocol launch from {provider}")
+            if provider == "teams":
+                sender.Navigate(PROVIDER_URLS["teams"])
 
     def _on_source_navigation_completed(self, provider: str, sender, event_args) -> None:
         if self.probe_recorded or self.options.probe_result is None or provider != self.options.probe_provider:
