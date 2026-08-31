@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+frontend/node_modules/
+frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+
+# Runtime-only state and secrets. Tracked data/*.json files are demo fixtures.
+.runtime/
+.artifacts/
+*.log
+

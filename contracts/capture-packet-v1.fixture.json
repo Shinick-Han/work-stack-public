@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "source_key": "sha256:933a7908d0ab5ee617e7a3ab8efaf299b07b5c91b88fad78136b2cf519722491",
+  "source": {
+    "provider": "microsoft-outlook",
+    "resource_type": "mail.message",
+    "connection_ref": "personal-outlook",
+    "container_ref": "mailbox:demo",
+    "object_ref": "message:demo-release-review",
+    "version_ref": "change-key:demo-v1",
+    "display_title": "Release quality review feedback",
+    "web_url": "https://outlook.office.com/mail/deeplink/read/demo-release-review",
+    "retrieved_at": "2026-08-29T08:00:00Z",
+    "fingerprint": "sha256:308154472f4d1bad2cb1661f4ea834b1405097219cb0b286af4a524fbca2cdf0"
+  },
+  "normalized": {
+    "summary": "Rollback verification needs an explicit owner before release.",
+    "context": "This continues the release-quality gate discussion and is safe demo content.",
+    "action_items": [
+      {
+        "title": "Add rollback verification to the checklist",
+        "detail": "Update the release quality gate and request review.",
+        "priority": "P1",
+        "due": null
+      }
+    ],
+    "tags": ["release", "quality"]
+  },
+  "task_hints": ["T-0001"],
+  "provenance": {
+    "capture_mode": "oob_verified",
+    "adapter": "user-oob-agent",
+    "adapter_version": "1.0.0",
+    "model": "demo-model-revision",
+    "prompt_version": "capture-v1",
+    "redaction_policy_version": "workstack-redaction-v1",
+    "tool_trace_digest": "sha256:5b0de8add3ac36b0524cf3805a8127b94bd0eae547f390cdecc615a53af15f37",
+    "allowed_tools": [
+      "m365.outlook.read",
+      "workstack.capture.write"
+    ],
+    "raw_retained": false,
+    "created_at": "2026-08-29T08:00:03Z"
+  }
+}

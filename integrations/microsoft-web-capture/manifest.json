@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "Work Stack Microsoft Web Capture",
+  "version": "0.1.0",
+  "description": "Send explicitly selected Outlook, Teams, and OneNote content to a reviewed Work Stack Task draft.",
+  "permissions": ["clipboardRead", "scripting", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://outlook.live.com/*",
+    "https://outlook.office.com/*",
+    "https://*.outlook.office.com/*",
+    "https://outlook.office365.com/*",
+    "https://*.outlook.office365.com/*",
+    "https://teams.live.com/*",
+    "https://teams.microsoft.com/*",
+    "https://*.teams.microsoft.com/*",
+    "https://www.onenote.com/*",
+    "https://*.onenote.com/*",
+    "https://www.office.com/*",
+    "https://*.sharepoint.com/*"
+  ],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://outlook.live.com/*",
+        "https://outlook.office.com/*",
+        "https://*.outlook.office.com/*",
+        "https://outlook.office365.com/*",
+        "https://*.outlook.office365.com/*",
+        "https://teams.live.com/*",
+        "https://teams.microsoft.com/*",
+        "https://*.teams.microsoft.com/*",
+        "https://www.onenote.com/*",
+        "https://*.onenote.com/*",
+        "https://www.office.com/*",
+        "https://*.sharepoint.com/*"
+      ],
+      "js": ["source.js"],
+      "css": ["source.css"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}

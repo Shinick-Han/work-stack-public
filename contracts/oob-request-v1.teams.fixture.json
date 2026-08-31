@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0",
+  "request_id": "0198f4f5-0e8d-7f3b-a1d3-4f50c8846002",
+  "provider": "microsoft-teams",
+  "operation": "search_and_capture",
+  "query": "rollout QA",
+  "result_limit": 5,
+  "requested_at": "2026-08-29T00:01:00Z"
+}

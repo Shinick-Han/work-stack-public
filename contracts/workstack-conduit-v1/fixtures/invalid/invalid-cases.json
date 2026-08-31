@@ -1,0 +1,293 @@
+{
+  "format": "workstack-conduit.snapshot-v1-invalid-cases/1",
+  "base_fixtures": {
+    "basic": "../valid/basic.snapshot.json",
+    "unicode": "../valid/unicode.snapshot.json"
+  },
+  "cases": [
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "hex": "efbbbf", "op": "prepend_hex" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "BOM_FORBIDDEN", "stage": "BYTE_ENVELOPE" },
+      "id": "byte-bom"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "needle_utf8": "Prepare the provider-neutral execution adapter", "op": "replace_utf8_once_with_hex", "replacement_hex": "c328" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "INVALID_UTF8", "stage": "BYTE_ENVELOPE" },
+      "id": "byte-invalid-utf8"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "hex": "0a", "op": "remove_suffix_hex" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "FINAL_LF_MISSING", "stage": "BYTE_ENVELOPE" },
+      "id": "byte-missing-final-lf"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "hex": "0a", "op": "append_hex" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "TRAILING_BYTES", "stage": "BYTE_ENVELOPE" },
+      "id": "byte-extra-final-lf"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "find_hex": "0a", "op": "replace_suffix_hex", "replacement_hex": "0d0a" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "NONCANONICAL_LINE_ENDING", "stage": "BYTE_ENVELOPE" },
+      "id": "byte-crlf"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "needle_utf8": "{", "op": "replace_utf8_once", "replacement_utf8": "{\n  " }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "NONCANONICAL_JSON", "stage": "CANONICAL_BYTES" },
+      "id": "byte-pretty-printed"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "needle_utf8": "}\n", "op": "replace_utf8_once", "replacement_utf8": ",\"title\":\"Duplicate\"}\n" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "DUPLICATE_KEY", "stage": "JSON_OBJECT" },
+      "id": "json-duplicate-key"
+    },
+    {
+      "base": "basic",
+      "construction": {
+        "key_order": ["title", "detail", "due_date", "format", "legacy_task_id", "origin_ref", "planning_priority", "planning_status", "planning_task_uid", "revision", "workspace_uid"],
+        "type": "reserialize_with_key_order"
+      },
+      "expected": { "decision": "REFUSE", "reason": "NONCANONICAL_KEY_ORDER", "stage": "CANONICAL_BYTES" },
+      "id": "byte-unsorted-keys"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "needle_utf8": "workstack://", "op": "replace_utf8_once", "replacement_utf8": "workstack:\\/\\/" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "NONCANONICAL_ESCAPE", "stage": "CANONICAL_BYTES" },
+      "id": "byte-escaped-slash"
+    },
+    {
+      "base": "unicode",
+      "construction": { "operations": [{ "needle_utf8": "Résumé", "op": "replace_utf8_once", "replacement_utf8": "R\\u00e9sum\\u00e9" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "NONCANONICAL_UNICODE_ESCAPE", "stage": "CANONICAL_BYTES" },
+      "id": "byte-escaped-nonascii"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "byte_hex": "20", "count": 65536, "op": "insert_after_prefix_utf8", "prefix_utf8": "{" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "SNAPSHOT_SIZE_LIMIT", "stage": "BYTE_LENGTH" },
+      "id": "byte-size-limit"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "needle_utf8": "\"revision\":3", "op": "replace_utf8_once", "replacement_utf8": "\"revision\":3e0" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "REVISION_NUMERIC_FORM", "stage": "JSON_OBJECT" },
+      "id": "revision-exponent-form"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "needle_utf8": "\"revision\":3", "op": "replace_utf8_once", "replacement_utf8": "\"revision\":3.0" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "REVISION_NUMERIC_FORM", "stage": "JSON_OBJECT" },
+      "id": "revision-fraction-form"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "needle_utf8": "\"revision\":3", "op": "replace_utf8_once", "replacement_utf8": "\"revision\":03" }], "type": "byte_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "REVISION_NUMERIC_FORM", "stage": "JSON_OBJECT" },
+      "id": "revision-leading-zero-form"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "extra", "op": "add", "value": "not allowed" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "UNKNOWN_FIELD", "stage": "KEY_SET" },
+      "id": "object-unknown-field"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "detail", "op": "delete" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "MISSING_FIELD", "stage": "KEY_SET" },
+      "id": "object-missing-field"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "title", "op": "set", "value": 7 }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "title", "reason": "WRONG_TYPE", "stage": "FIELD" },
+      "id": "field-wrong-type"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "format", "op": "set", "value": "workstack.planning-task-snapshot.v2" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "format", "reason": "FORMAT_INVALID", "stage": "FIELD" },
+      "id": "field-format-invalid"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "workspace_uid", "op": "set", "value": "0F50A123-3DA8-4C82-8F16-8EE1A57260C4" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "workspace_uid", "reason": "UUID_INVALID", "stage": "FIELD" },
+      "id": "field-uppercase-uuid"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "planning_task_uid", "op": "set", "value": "00000000-0000-0000-0000-000000000000" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "planning_task_uid", "reason": "UUID_INVALID", "stage": "FIELD" },
+      "id": "field-nil-uuid"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "legacy_task_id", "op": "set", "value": "t-31" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "legacy_task_id", "reason": "LEGACY_TASK_ID_INVALID", "stage": "FIELD" },
+      "id": "field-legacy-id-invalid"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "origin_ref", "op": "set", "value": "workstack://11111111-1111-4111-8111-111111111111/planning-tasks/2e82845c-bccb-5aa6-9b6d-8ec65170c00a" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "origin_ref", "reason": "ORIGIN_DERIVATION_MISMATCH", "stage": "ORIGIN" },
+      "id": "field-origin-mismatch"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "revision", "op": "set", "value": -1 }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "revision", "reason": "REVISION_RANGE", "stage": "FIELD" },
+      "id": "field-revision-negative"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "revision", "op": "set", "value": 9007199254740992 }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "revision", "reason": "REVISION_RANGE", "stage": "FIELD" },
+      "id": "field-revision-over-max"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "planning_status", "op": "set", "value": "closed" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "planning_status", "reason": "ENUM_INVALID", "stage": "FIELD" },
+      "id": "field-status-invalid"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "planning_priority", "op": "set", "value": "urgent" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "planning_priority", "reason": "ENUM_INVALID", "stage": "FIELD" },
+      "id": "field-priority-invalid"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "due_date", "op": "set", "value": "2026-02-30" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "due_date", "reason": "DATE_INVALID", "stage": "FIELD" },
+      "id": "field-date-invalid"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "title", "op": "set", "value": "" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "title", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "SCALAR_LIMIT", "stage": "FIELD" },
+      "id": "field-title-empty"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "construction": { "repeat": { "count": 257, "scalar": 97 } }, "field": "title", "op": "set_constructed" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "title", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "SCALAR_AND_UTF16_LIMIT", "stage": "FIELD" },
+      "id": "field-title-bmp-over-limit"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "construction": { "repeat": { "count": 129, "scalar": 128578 } }, "field": "title", "op": "set_constructed" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "title", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "UTF16_LIMIT", "stage": "FIELD" },
+      "id": "field-title-astral-over-limit"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "construction": { "repeat": { "count": 4097, "scalar": 97 } }, "field": "detail", "op": "set_constructed" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "detail", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "SCALAR_AND_UTF16_LIMIT", "stage": "FIELD" },
+      "id": "field-detail-bmp-over-limit"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "construction": { "repeat": { "count": 2049, "scalar": 128578 } }, "field": "detail", "op": "set_constructed" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "detail", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "UTF16_LIMIT", "stage": "FIELD" },
+      "id": "field-detail-astral-over-limit"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "title", "op": "set", "value": "line one\nline two" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "title", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "C0_FORBIDDEN", "stage": "FIELD" },
+      "id": "field-title-control"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "detail", "op": "set_constructed", "construction": { "utf16_code_units": [13] } }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "detail", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "C0_FORBIDDEN", "stage": "FIELD" },
+      "id": "field-detail-cr"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "title", "op": "set_constructed", "construction": { "utf16_code_units": [127] } }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "title", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "DEL_FORBIDDEN", "stage": "FIELD" },
+      "id": "field-title-del"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "detail", "op": "set_constructed", "construction": { "utf16_code_units": [159] } }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "detail", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "C1_FORBIDDEN", "stage": "FIELD" },
+      "id": "field-detail-c1"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "title", "op": "set_constructed", "construction": { "utf16_code_units": [101, 769] } }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "title", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "NOT_NFC", "stage": "FIELD" },
+      "id": "field-title-decomposed-nfc"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "title", "op": "set_constructed", "construction": { "utf16_code_units": [97, 2199, 803] } }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "title", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "NOT_NFC", "stage": "FIELD" },
+      "id": "field-title-unicode17-nfc"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "title", "op": "set_constructed", "construction": { "utf16_code_units": [55296] } }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "field": "title", "public_code": "SNAPSHOT_FIELD_INVALID", "reason": "UNPAIRED_SURROGATE", "stage": "FIELD" },
+      "id": "field-title-lone-surrogate"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "task_type", "op": "add", "value": "implementation" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "FORBIDDEN_AUTHORITY_FIELD", "stage": "KEY_SET" },
+      "id": "authority-task-type-forbidden"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "provider", "op": "add", "value": "opencode" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "FORBIDDEN_AUTHORITY_FIELD", "stage": "KEY_SET" },
+      "id": "authority-provider-forbidden"
+    },
+    {
+      "base": "basic",
+      "construction": { "operations": [{ "field": "harness", "op": "add", "value": "harness.opencode" }], "type": "object_mutation" },
+      "expected": { "decision": "REFUSE", "reason": "FORBIDDEN_AUTHORITY_FIELD", "stage": "KEY_SET" },
+      "id": "authority-harness-forbidden"
+    },
+    {
+      "base": "basic",
+      "construction": { "supplied_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "type": "digest_override" },
+      "expected": { "decision": "REFUSE", "reason": "DIGEST_MISMATCH", "stage": "DIGEST" },
+      "id": "digest-incorrect"
+    },
+    {
+      "base": "basic",
+      "construction": { "supplied_digest": "SHA256:not-a-digest", "type": "digest_override" },
+      "expected": { "decision": "REFUSE", "reason": "DIGEST_SYNTAX", "stage": "DIGEST" },
+      "id": "digest-syntax-invalid"
+    }
+  ],
+  "coverage_references": {
+    "credential_and_privacy": {
+      "path": "../../safety/snapshot-v1-safety-cases.json",
+      "required_rule_ids": ["S000", "S001", "S002", "S003", "S004", "S005", "S006"]
+    },
+    "unicode_and_text_boundaries": {
+      "path": "../../safety/snapshot-v1-text-boundary-cases.json",
+      "required_case_ids": [
+        "title-unicode17-nfc-version-refused",
+        "title-lone-surrogate-refused",
+        "title-astral-128-scalars-256-units-allowed",
+        "title-astral-129-scalars-258-units-refused",
+        "detail-astral-2048-scalars-4096-units-allowed",
+        "detail-astral-2049-scalars-4098-units-refused"
+      ]
+    }
+  }
+}

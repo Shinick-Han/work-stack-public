@@ -1,0 +1,36 @@
+#workstack-source-capture-button {
+  all: initial !important;
+  position: fixed !important;
+  z-index: 2147483647 !important;
+  left: 12px !important;
+  top: 12px !important;
+  box-sizing: border-box !important;
+  min-height: 42px !important;
+  padding: 0 15px !important;
+  border: 1px solid #91c72d !important;
+  border-radius: 9px !important;
+  background: #b8f34a !important;
+  color: #172006 !important;
+  box-shadow: 0 12px 32px rgba(0,0,0,.32) !important;
+  font: 650 13px/40px "Segoe UI", system-ui, sans-serif !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+}
+#workstack-source-capture-button:hover { background: #c7ff60 !important; }
+#workstack-source-capture-button:disabled { cursor: wait !important; opacity: .7 !important; }
+#workstack-source-capture-notice {
+  all: initial !important;
+  position: fixed !important;
+  z-index: 2147483647 !important;
+  left: 50% !important;
+  bottom: 24px !important;
+  transform: translateX(-50%) !important;
+  max-width: min(560px, calc(100vw - 32px)) !important;
+  padding: 12px 16px !important;
+  border: 1px solid #3e4b5d !important;
+  border-radius: 9px !important;
+  background: #111821 !important;
+  color: #edf2f7 !important;
+  box-shadow: 0 12px 32px rgba(0,0,0,.34) !important;
+  font: 500 13px/1.5 "Segoe UI", system-ui, sans-serif !important;
+}

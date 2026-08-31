@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "source_key": "sha256:933a7908d0ab5ee617e7a3ab8efaf299b07b5c91b88fad78136b2cf519722491",
+  "source": {
+    "provider": "microsoft-outlook",
+    "resource_type": "mail.message",
+    "connection_ref": "personal-outlook",
+    "container_ref": "mailbox:demo",
+    "object_ref": "message:demo-release-review",
+    "version_ref": "change-key:demo-stale",
+    "display_title": "Release quality review feedback",
+    "web_url": "https://outlook.office.com/mail/deeplink/read/demo-release-review",
+    "retrieved_at": "2026-08-28T08:00:00Z",
+    "fingerprint": "sha256:f30ef1af39e4ca2f9cdd6509c3cccb9a866ce4b57fe1be5f5fd2b6b69487408d"
+  },
+  "normalized": {
+    "summary": "This deliberately older sanitized fixture must not replace a newer capture.",
+    "context": "Used only to verify stale-revision rejection.",
+    "action_items": [],
+    "tags": ["release", "quality"]
+  },
+  "task_hints": ["T-0001"],
+  "provenance": {
+    "capture_mode": "oob_verified",
+    "adapter": "user-oob-agent",
+    "adapter_version": "1.0.0",
+    "model": "demo-model-revision",
+    "prompt_version": "capture-v1",
+    "redaction_policy_version": "workstack-redaction-v1",
+    "tool_trace_digest": "sha256:8bcfa2a6c43f299b6f4c1f0f7eb586a83f99a5db8f10ff1a7ed0832b884e430c",
+    "allowed_tools": ["m365.outlook.read", "workstack.capture.write"],
+    "raw_retained": false,
+    "created_at": "2026-08-28T08:00:03Z"
+  }
+}

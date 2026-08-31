@@ -1,0 +1,107 @@
+{
+  "cases": [
+    {
+      "construction": { "utf16_code_units": [127] },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "DEL_FORBIDDEN" },
+      "field": "title",
+      "id": "title-del-refused"
+    },
+    {
+      "construction": { "utf16_code_units": [127] },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "DEL_FORBIDDEN" },
+      "field": "detail",
+      "id": "detail-del-refused"
+    },
+    {
+      "construction": { "utf16_code_units": [128] },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "C1_FORBIDDEN" },
+      "field": "title",
+      "id": "title-c1-refused"
+    },
+    {
+      "construction": { "utf16_code_units": [159] },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "C1_FORBIDDEN" },
+      "field": "detail",
+      "id": "detail-c1-refused"
+    },
+    {
+      "construction": { "literal": "line one\n\tline two" },
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "detail-lf-tab-allowed"
+    },
+    {
+      "construction": { "literal": "line one\nline two" },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "C0_FORBIDDEN" },
+      "field": "title",
+      "id": "title-lf-refused"
+    },
+    {
+      "construction": { "utf16_code_units": [101, 769] },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "NOT_NFC" },
+      "field": "title",
+      "id": "title-decomposed-nfc-refused"
+    },
+    {
+      "construction": { "utf16_code_units": [55296] },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "UNPAIRED_SURROGATE" },
+      "field": "title",
+      "id": "title-lone-surrogate-refused"
+    },
+    {
+      "construction": { "repeat": { "count": 128, "scalar": 128578 } },
+      "expected": { "decision": "ALLOW" },
+      "field": "title",
+      "id": "title-astral-128-scalars-256-units-allowed"
+    },
+    {
+      "construction": { "repeat": { "count": 129, "scalar": 128578 } },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "UTF16_LIMIT" },
+      "field": "title",
+      "id": "title-astral-129-scalars-258-units-refused"
+    },
+    {
+      "construction": { "repeat": { "count": 256, "scalar": 97 } },
+      "expected": { "decision": "ALLOW" },
+      "field": "title",
+      "id": "title-bmp-256-boundary-allowed"
+    },
+    {
+      "construction": { "repeat": { "count": 257, "scalar": 97 } },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "SCALAR_AND_UTF16_LIMIT" },
+      "field": "title",
+      "id": "title-bmp-257-refused"
+    },
+    {
+      "construction": { "repeat": { "count": 2048, "scalar": 128578 } },
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "detail-astral-2048-scalars-4096-units-allowed"
+    },
+    {
+      "construction": { "repeat": { "count": 2049, "scalar": 128578 } },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "UTF16_LIMIT" },
+      "field": "detail",
+      "id": "detail-astral-2049-scalars-4098-units-refused"
+    },
+    {
+      "construction": { "repeat": { "count": 4096, "scalar": 97 } },
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "detail-bmp-4096-boundary-allowed"
+    },
+    {
+      "construction": { "repeat": { "count": 4097, "scalar": 97 } },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "SCALAR_AND_UTF16_LIMIT" },
+      "field": "detail",
+      "id": "detail-bmp-4097-refused"
+    },
+    {
+      "construction": { "utf16_code_units": [97, 2199, 803] },
+      "expected": { "code": "SNAPSHOT_FIELD_INVALID", "decision": "REFUSE", "reason": "NOT_NFC" },
+      "field": "title",
+      "id": "title-unicode17-nfc-version-refused"
+    }
+  ],
+  "format": "workstack-conduit.snapshot-v1-text-boundary-cases/1"
+}

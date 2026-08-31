@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "reply_id": "R-0001",
+  "provider": "microsoft-outlook",
+  "outcome": "sent",
+  "occurred_at": "2026-08-29T00:15:00Z",
+  "body_digest": "sha256:5c094e39ff6dbf7fedd95f5d39e5f2096c021627886c247e6b55decfcd33c786",
+  "target_digest": "sha256:3ce3d6e01af0d76f8ff0e766dcdb0ec04645e7ebef1995f223025a3fc841a13f",
+  "remote_message_ref": "message:opaque-reply-001",
+  "web_url": "https://outlook.office.com/mail/deeplink/read/opaque-reply-001"
+}

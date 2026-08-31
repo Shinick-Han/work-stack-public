@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Work Stack Capture Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <div class="eyebrow">WORK STACK · SOURCE ADAPTER</div>
+    <h1>Choose your Work Stack URL</h1>
+    <p>The extension opens this URL after an explicit capture. Permission is requested only for this host so the pending draft can be delivered locally.</p>
+    <form id="settings-form">
+      <label>Work Stack URL<input id="workstack-url" required type="url" value="http://127.0.0.1:8765/?surface=inbox"></label>
+      <button type="submit">Save and allow this host</button>
+      <output id="status" role="status"></output>
+    </form>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

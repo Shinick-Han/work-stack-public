@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "source_key": "sha256:bb8d080ce5206bc4af9e9abced4195f7db9dddcc90ed6b69bef16e1420ac92b8",
+  "source": {
+    "provider": "manual",
+    "resource_type": "manual.note",
+    "connection_ref": "local-user",
+    "container_ref": "manual-inbox",
+    "object_ref": "manual:prototype-example",
+    "version_ref": "manual:v1",
+    "display_title": "Manually sanitized planning note",
+    "web_url": null,
+    "retrieved_at": "2026-08-29T08:30:00Z",
+    "fingerprint": "sha256:2041e30c1d3ab3a110e584638f1707b507d2b5759691e856c53aaf9a97c50ad4"
+  },
+  "normalized": {
+    "summary": "A manually entered context item for the prototype fallback.",
+    "context": "No source body, address, attachment, or automated-tool claim is included.",
+    "action_items": [
+      {
+        "title": "Review the manual capture",
+        "detail": "Link it to an existing planning task after checking the summary.",
+        "priority": "P2",
+        "due": null
+      }
+    ],
+    "tags": ["manual"]
+  },
+  "task_hints": [],
+  "provenance": {
+    "capture_mode": "manual",
+    "adapter": "manual-import",
+    "adapter_version": "1.0.0",
+    "redaction_policy_version": "workstack-redaction-v1",
+    "raw_retained": false,
+    "created_at": "2026-08-29T08:30:03Z"
+  }
+}

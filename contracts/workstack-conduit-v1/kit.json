@@ -1,0 +1,33 @@
+{
+  "format": "workstack-conduit.conformance-kit/1",
+  "implementation_authority": false,
+  "bilateral_acceptance": {
+    "conduit_receipt_sha256": "f9dbf3a3175d64caef545c79086633dae6be091b68f77c4573c8b03930840e12",
+    "platform_semantics_receipt_sha256": "17c77977abfc0785d491b86dcd2caf7405fee67feb119cbfb2f4ad546337b4ff",
+    "platform_semantics_verdict": "PASS_WITH_REQUIRED_NEW_SEAM",
+    "workstack_receipt_sha256": "77c603cc6ed4c01c21d670dbccfc0efe9c5cee8139c018f213ea16aa42f555f5"
+  },
+  "contract": {
+    "path": "contract/CONDUIT_WORKSTACK_DOCKING_CONTRACT_V1_REVISION_4.md",
+    "sha256": "cb0a41f250ad1a4bff287a8268cb49e805770cf94682647fbac0e89375102f70"
+  },
+  "normalization": {
+    "form": "NFC",
+    "unicode_standard": "17.0.0"
+  },
+  "schema": {
+    "authority": "structural-aid-only",
+    "path": "schema/workstack.planning-task-snapshot.v1.schema.json"
+  },
+  "safety_policy": {
+    "bundle_root": "sha256:48dfd17ec86942e44692a26e7d43b88387c2c97f208c4d1081878a9318440148",
+    "path": "safety"
+  },
+  "valid_fixtures": {
+    "index": "fixtures/valid/expected-digests.json"
+  },
+  "invalid_fixtures": {
+    "index": "fixtures/invalid/invalid-cases.json"
+  },
+  "acceptance_notes": "acceptance-notes.md"
+}

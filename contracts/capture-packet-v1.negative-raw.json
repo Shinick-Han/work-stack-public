@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "source_key": "sha256:933a7908d0ab5ee617e7a3ab8efaf299b07b5c91b88fad78136b2cf519722491",
+  "source": {
+    "provider": "microsoft-outlook",
+    "resource_type": "mail.message",
+    "connection_ref": "personal-outlook",
+    "container_ref": "mailbox:demo",
+    "object_ref": "message:demo-release-review",
+    "version_ref": "change-key:negative",
+    "display_title": "Rejected raw-content fixture",
+    "web_url": "https://outlook.office.com/mail/deeplink/read/demo-release-review",
+    "retrieved_at": "2026-08-29T09:00:00Z",
+    "fingerprint": "sha256:308154472f4d1bad2cb1661f4ea834b1405097219cb0b286af4a524fbca2cdf0"
+  },
+  "normalized": {
+    "summary": "This packet must be rejected before projection.",
+    "context": "Synthetic canary only.",
+    "action_items": [],
+    "tags": []
+  },
+  "provenance": {
+    "capture_mode": "oob_verified",
+    "adapter": "negative-fixture",
+    "adapter_version": "1.0.0",
+    "model": "none",
+    "prompt_version": "capture-v1",
+    "redaction_policy_version": "workstack-redaction-v1",
+    "tool_trace_digest": "sha256:5b0de8add3ac36b0524cf3805a8127b94bd0eae547f390cdecc615a53af15f37",
+    "allowed_tools": ["m365.outlook.read", "workstack.capture.write"],
+    "raw_retained": false,
+    "created_at": "2026-08-29T09:00:03Z"
+  },
+  "body": "WORKSTACK_RAW_CANARY_DO_NOT_STORE"
+}

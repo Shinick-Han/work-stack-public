@@ -1,0 +1,11 @@
+{
+  "base_fixture": "capture-packet-v1.fixture.json",
+  "cases": [
+    {"name": "header-block", "path": "normalized.context", "value": "From: synthetic@example.invalid\nTo: user@example.invalid\nSubject: Raw copy", "error_code": "raw_content_suspected"},
+    {"name": "email-address", "path": "normalized.summary", "value": "Contact synthetic@example.invalid for details.", "error_code": "raw_content_suspected"},
+    {"name": "html", "path": "source.display_title", "value": "<strong>Copied title</strong>", "error_code": "raw_content_suspected"},
+    {"name": "quoted-reply", "path": "normalized.context", "value": "On Tue, someone wrote:\n> quoted message", "error_code": "raw_content_suspected"},
+    {"name": "long-quote", "path": "normalized.context", "value": "> synthetic quoted line 01\n> synthetic quoted line 02\n> synthetic quoted line 03\n> synthetic quoted line 04\n> synthetic quoted line 05\n> synthetic quoted line 06\n> synthetic quoted line 07\n> synthetic quoted line 08", "error_code": "raw_content_suspected"},
+    {"name": "attachment-canary", "path": "normalized.action_items.0.detail", "value": "ATTACHMENT_CANARY_DO_NOT_STORE", "error_code": "raw_content_suspected"}
+  ]
+}

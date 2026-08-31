@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "objectives": [
+    {
+      "id": "O-1",
+      "quarter": "2026-Q3",
+      "objective": "Release quality that customers can trust",
+      "status": "active",
+      "key_results": [
+        {
+          "id": "KR-1",
+          "text": "Reduce escaped defects",
+          "target": "< 3 per release",
+          "progress": 62,
+          "status": "active"
+        },
+        {
+          "id": "KR-2",
+          "text": "Automate critical-path checks",
+          "target": "90% coverage",
+          "progress": 74,
+          "status": "active"
+        }
+      ],
+      "created": "2026-07-01",
+      "updated_at": "2026-08-29"
+    },
+    {
+      "id": "O-2",
+      "quarter": "2026-Q3",
+      "objective": "Make onboarding feel effortless",
+      "status": "active",
+      "key_results": [
+        {
+          "id": "KR-1",
+          "text": "Shorten time to first value",
+          "target": "< 20 minutes",
+          "progress": 55,
+          "status": "active"
+        },
+        {
+          "id": "KR-2",
+          "text": "Lift activation rate",
+          "target": "78%",
+          "progress": 68,
+          "status": "active"
+        }
+      ],
+      "created": "2026-07-01",
+      "updated_at": "2026-08-28"
+    },
+    {
+      "id": "O-3",
+      "quarter": "2026-Q3",
+      "objective": "Build a calm operating rhythm",
+      "status": "active",
+      "key_results": [
+        {
+          "id": "KR-1",
+          "text": "Complete weekly reviews",
+          "target": "12 of 12",
+          "progress": 67,
+          "status": "active"
+        },
+        {
+          "id": "KR-2",
+          "text": "Reduce unplanned work",
+          "target": "< 15%",
+          "progress": 44,
+          "status": "active"
+        }
+      ],
+      "created": "2026-07-01",
+      "updated_at": "2026-08-27"
+    },
+    {
+      "id": "O-4",
+      "quarter": "2026-Q3",
+      "objective": "Turn product signals into decisions",
+      "status": "active",
+      "key_results": [
+        {
+          "id": "KR-1",
+          "text": "Ship decision dashboard",
+          "target": "5 core views",
+          "progress": 80,
+          "status": "active"
+        },
+        {
+          "id": "KR-2",
+          "text": "Instrument key journeys",
+          "target": "100%",
+          "progress": 58,
+          "status": "active"
+        }
+      ],
+      "created": "2026-07-01",
+      "updated_at": "2026-08-29"
+    },
+    {
+      "id": "O-5",
+      "quarter": "2026-Q3",
+      "objective": "Strengthen the platform foundation",
+      "status": "active",
+      "key_results": [
+        {
+          "id": "KR-1",
+          "text": "Improve service availability",
+          "target": "99.95%",
+          "progress": 71,
+          "status": "active"
+        },
+        {
+          "id": "KR-2",
+          "text": "Cut deployment lead time",
+          "target": "< 15 minutes",
+          "progress": 50,
+          "status": "active"
+        }
+      ],
+      "created": "2026-07-01",
+      "updated_at": "2026-08-29"
+    }
+  ]
+}

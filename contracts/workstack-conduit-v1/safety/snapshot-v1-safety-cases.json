@@ -1,0 +1,234 @@
+{
+  "cases": [
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S001" },
+      "field": "detail",
+      "id": "positive-private-key-envelope",
+      "input": { "fragments": ["-----BEGIN ", "TEST PRIVATE KEY-----"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S002" },
+      "field": "detail",
+      "id": "positive-bearer-header",
+      "input": { "fragments": ["Authorization", ": Bearer ", "CONDUIT_TEST_ONLY_0123456789"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S002" },
+      "field": "detail",
+      "id": "positive-basic-header",
+      "input": { "fragments": ["Proxy-Authorization", ": Basic ", "Q09ORFVJVF9URVNUX09OTFk="] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S003" },
+      "field": "title",
+      "id": "positive-api-key-assignment",
+      "input": { "fragments": ["api", "_key=", "CONDUIT_TEST_ONLY_0123456789"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S003" },
+      "field": "detail",
+      "id": "positive-password-assignment",
+      "input": { "fragments": ["password", ": ", "CONDUIT_TEST_ONLY_DO_NOT_USE"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S003" },
+      "field": "detail",
+      "id": "positive-access-token-assignment",
+      "input": { "fragments": ["access", "_token='", "CONDUIT_TEST_ONLY_0123456789", "'"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S004" },
+      "field": "detail",
+      "id": "positive-known-token-shape",
+      "input": { "fragments": ["gh", "p_", "CONDUITTESTONLY000000000000"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S005" },
+      "field": "detail",
+      "id": "positive-http-userinfo",
+      "input": { "fragments": ["https://demo:", "CONDUIT_TEST_ONLY_0123456789", "@example.invalid/path"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_SENSITIVE_PATH_SUSPECTED", "decision": "REFUSE", "rule": "S006" },
+      "field": "detail",
+      "id": "positive-ssh-private-key-path",
+      "input": { "fragments": ["C:\\Users\\demo\\", ".ssh\\", "id_ed25519"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_SENSITIVE_PATH_SUSPECTED", "decision": "REFUSE", "rule": "S006" },
+      "field": "detail",
+      "id": "positive-aws-credentials-path",
+      "input": { "fragments": ["/home/demo/", ".aws/", "credentials"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S003" },
+      "field": "detail",
+      "id": "positive-explicit-base64-wrapper",
+      "input": { "fragments": ["conduit-base64:", "YXBpX2tleT1DT05EVUlUX1RFU1RfT05MWV8wMTIzNDU2Nzg5"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S003" },
+      "field": "detail",
+      "id": "positive-explicit-percent-wrapper",
+      "input": { "fragments": ["conduit-percent:", "api_key%3DCONDUIT_TEST_ONLY_0123456789"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_SAFETY_ENCODING_INVALID", "decision": "REFUSE", "rule": "S000" },
+      "field": "detail",
+      "id": "positive-invalid-explicit-wrapper",
+      "input": { "fragments": ["conduit-base64:", "not canonical base64"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-ordinary-email",
+      "input": { "fragments": ["Ask alice@example.com to review the draft."] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-command-name",
+      "input": { "fragments": ["Run git status and npm test before review."] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "title",
+      "id": "negative-environment-variable-name",
+      "input": { "fragments": ["Document OPENAI_API_KEY configuration"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-redacted-assignment",
+      "input": { "fragments": ["api_key=<redacted>"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-environment-reference",
+      "input": { "fragments": ["API_KEY=$API_KEY"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-authorization-prose",
+      "input": { "fragments": ["Never paste an Authorization Bearer value into a task."] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-source-path",
+      "input": { "fragments": ["Review src/auth/credentials.ts and its unit tests."] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-technical-token-prose",
+      "input": { "fragments": ["The token parser must reject malformed input without logging it."] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-unrelated-assignment",
+      "input": { "fragments": ["retry_count=12"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-detail-newline-tab",
+      "input": { "fragments": ["First line\n\tIndented acceptance criterion"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-placeholder-secret",
+      "input": { "fragments": ["client_secret=placeholder"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-password-prose-after-colon",
+      "input": { "fragments": ["password: rotate it quarterly and never write it here"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_SAFETY_ENCODING_INVALID", "decision": "REFUSE", "rule": "S000" },
+      "field": "detail",
+      "id": "positive-invalid-base64-trailing-bits",
+      "input": { "fragments": ["conduit-base64:", "Yb=="] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S003" },
+      "field": "detail",
+      "id": "positive-password-nbsp-joined-value",
+      "input": { "fragments": ["password: CONDUIT\u00a0TEST_ONLY_12345"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S003" },
+      "field": "detail",
+      "id": "positive-placeholder-nbsp-not-trimmed",
+      "input": { "fragments": ["password: ", "\u00a0placeholder"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-bearer-nbsp-separated-tail",
+      "input": { "fragments": ["Authorization: Bearer ABCDEF", "\u00a0GHIJKLMNOPQR"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-explicit-percent-literal-plus",
+      "input": { "fragments": ["conduit-percent:", "ordinary+prose"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S005" },
+      "field": "detail",
+      "id": "positive-userinfo-first-colon-password",
+      "input": { "fragments": ["https://demo:", "CONDUIT_TEST_ONLY_12345", ":x@example.invalid/path"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-userinfo-four-utf8-scalars",
+      "input": { "fragments": ["https://demo:", "%C3%A9%C3%A9", "%C3%A9%C3%A9@example.invalid/path"] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-userinfo-raw-nonascii-password",
+      "input": { "fragments": ["https://demo:p", "\u0430rol-secret-123@example.invalid/"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_SENSITIVE_PATH_SUSPECTED", "decision": "REFUSE", "rule": "S006" },
+      "field": "detail",
+      "id": "positive-sensitive-path-listed-delimiter",
+      "input": { "fragments": ["Backup [/home/demo/", ".aws/", "credentials] before rotation."] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-sensitive-path-extension",
+      "input": { "fragments": ["Backup /home/demo/", ".aws/", "credentials.bak before rotation."] }
+    },
+    {
+      "expected": { "decision": "ALLOW" },
+      "field": "detail",
+      "id": "negative-sensitive-path-trailing-dot",
+      "input": { "fragments": ["Backup /home/demo/", ".aws/", "credentials. Then rotate."] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S001" },
+      "field": "detail",
+      "id": "positive-private-key-envelope-ascii-trim",
+      "input": { "fragments": ["\t-----BEGIN ", "TEST PRIVATE KEY----- \t"] }
+    },
+    {
+      "expected": { "code": "SNAPSHOT_CREDENTIAL_SUSPECTED", "decision": "REFUSE", "rule": "S003" },
+      "field": "detail",
+      "id": "positive-password-tab-predecessor",
+      "input": { "fragments": ["prefix\tpassword: ", "CONDUIT_TEST_ONLY_12345"] }
+    }
+  ],
+  "format": "workstack-conduit.snapshot-v1-safety-cases/1",
+  "policy": "workstack-conduit.snapshot-v1-safety-policy/1"
+}

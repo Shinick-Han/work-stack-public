@@ -1,0 +1,17 @@
+{
+  "format": "workstack-conduit.snapshot-v1-valid-fixtures/1",
+  "fixtures": [
+    {
+      "bytes": 522,
+      "id": "valid-basic",
+      "path": "basic.snapshot.json",
+      "sha256": "sha256:f0ab308fb6a66d36ba6dc4e2dfddc5c9e0fec1cf7fe76e110bf85cd0bc05b3e4"
+    },
+    {
+      "bytes": 540,
+      "id": "valid-unicode",
+      "path": "unicode.snapshot.json",
+      "sha256": "sha256:7ac5ea894d27abdd1fa48e60304db052dfc938dd0bc4fba8d00ff045bb8336e2"
+    }
+  ]
+}

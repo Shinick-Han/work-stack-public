@@ -1,0 +1,23 @@
+{
+  "id": "R-0002",
+  "task_id": "T-0002",
+  "capture_id": "C-0002",
+  "capture_revision": 0,
+  "provider": "microsoft-teams",
+  "capability": "teams.reply",
+  "target": {
+    "resource_type": "teams.channelMessage",
+    "connection_ref": "personal-teams",
+    "container_ref": "team:demo/channel:launch",
+    "object_ref": "message:demo-rollout",
+    "version_ref": "etag:demo-v1"
+  },
+  "body": "Confirmed. I will post the final QA status in this thread.",
+  "body_digest": "sha256:4eac44ccea1c11ceff95e81dcbf93946c89c34168237de3e931ce439c9428bae",
+  "target_digest": "sha256:9996ffce2dea22d58a001916f391f04bb7f6a46f76f0ae4100626b91f2573a74",
+  "state": "approved",
+  "approved_at": "2026-08-29T00:11:00Z",
+  "receipt": null,
+  "created_at": "2026-08-29T00:11:00Z",
+  "updated_at": "2026-08-29T00:11:00Z"
+}

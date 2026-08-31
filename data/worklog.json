@@ -1,0 +1,312 @@
+{
+  "version": 1,
+  "days": {
+    "2026-08-20": {
+      "start_time": "09:10",
+      "entries": [
+        {
+          "task_id": "T-0001",
+          "task": "Define release quality gate",
+          "done": [
+            "Drafted release gate sections"
+          ],
+          "next": [
+            "Validate with engineering"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0007",
+          "task": "Map first-session journey",
+          "done": [
+            "Mapped signup path"
+          ],
+          "next": [
+            "Interview new users"
+          ],
+          "blockers": []
+        }
+      ]
+    },
+    "2026-08-21": {
+      "start_time": "09:05",
+      "entries": [
+        {
+          "task_id": "T-0013",
+          "task": "Design weekly review ritual",
+          "done": [
+            "Ran first weekly review"
+          ],
+          "next": [
+            "Refine prompts"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0025",
+          "task": "Profile slow API routes",
+          "done": [
+            "Captured latency baseline"
+          ],
+          "next": [
+            "Profile database calls"
+          ],
+          "blockers": []
+        }
+      ]
+    },
+    "2026-08-22": {
+      "start_time": "09:12",
+      "entries": [
+        {
+          "task_id": "T-0007",
+          "task": "Map first-session journey",
+          "done": [
+            "Completed journey map"
+          ],
+          "next": [
+            "Rewrite welcome checklist"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0003",
+          "task": "Audit production error taxonomy",
+          "done": [
+            "Grouped top error signatures"
+          ],
+          "next": [
+            "Assign owners"
+          ],
+          "blockers": []
+        }
+      ]
+    },
+    "2026-08-23": {
+      "start_time": "08:55",
+      "entries": [
+        {
+          "task_id": "T-0014",
+          "task": "Create decision log template",
+          "done": [
+            "Published decision template"
+          ],
+          "next": [
+            "Use in next architecture review"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0011",
+          "task": "Interview five new customers",
+          "done": [
+            "Completed customer interviews"
+          ],
+          "next": [
+            "Synthesize findings"
+          ],
+          "blockers": []
+        }
+      ]
+    },
+    "2026-08-24": {
+      "start_time": "09:20",
+      "entries": [
+        {
+          "task_id": "T-0025",
+          "task": "Profile slow API routes",
+          "done": [
+            "Profiled slow API routes"
+          ],
+          "next": [
+            "Verify improvements"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0002",
+          "task": "Automate checkout smoke tests",
+          "done": [
+            "Added checkout test skeleton"
+          ],
+          "next": [
+            "Cover receipt path"
+          ],
+          "blockers": []
+        }
+      ]
+    },
+    "2026-08-25": {
+      "start_time": "09:00",
+      "entries": [
+        {
+          "task_id": "T-0003",
+          "task": "Audit production error taxonomy",
+          "done": [
+            "Completed error taxonomy audit"
+          ],
+          "next": [
+            "Connect errors to dashboard"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0019",
+          "task": "Build executive signal dashboard",
+          "done": [
+            "Built dashboard data model"
+          ],
+          "next": [
+            "Add release layer"
+          ],
+          "blockers": []
+        }
+      ]
+    },
+    "2026-08-26": {
+      "start_time": "09:15",
+      "entries": [
+        {
+          "task_id": "T-0021",
+          "task": "Define metric ownership",
+          "done": [
+            "Assigned metric owners"
+          ],
+          "next": [
+            "Schedule reviews"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0012",
+          "task": "Measure activation funnel",
+          "done": [
+            "Published activation baseline"
+          ],
+          "next": [
+            "Add cohort split"
+          ],
+          "blockers": []
+        }
+      ]
+    },
+    "2026-08-27": {
+      "start_time": "09:08",
+      "entries": [
+        {
+          "task_id": "T-0011",
+          "task": "Interview five new customers",
+          "done": [
+            "Synthesized five interviews"
+          ],
+          "next": [
+            "Update onboarding copy"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0005",
+          "task": "Stabilize notification retries",
+          "done": [
+            "Reproduced retry storm"
+          ],
+          "next": [
+            "Confirm queue limits"
+          ],
+          "blockers": [
+            "Waiting on staging access"
+          ]
+        }
+      ]
+    },
+    "2026-08-28": {
+      "start_time": "09:03",
+      "entries": [
+        {
+          "task_id": "T-0028",
+          "task": "Rotate staging fixtures",
+          "done": [
+            "Rotated deterministic fixtures"
+          ],
+          "next": [
+            "Document refresh cadence"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0026",
+          "task": "Add deployment health check",
+          "done": [
+            "Added dependency checks"
+          ],
+          "next": [
+            "Wire into promotion"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0024",
+          "task": "Publish insight review",
+          "done": [
+            "Drafted weekly insight"
+          ],
+          "next": [
+            "Add decision summary"
+          ],
+          "blockers": []
+        }
+      ]
+    },
+    "2026-08-29": {
+      "start_time": "09:18",
+      "entries": [
+        {
+          "task_id": "T-0001",
+          "task": "Define release quality gate",
+          "done": [
+            "Reviewed gate with team"
+          ],
+          "next": [
+            "Finalize ownership"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0005",
+          "task": "Stabilize notification retries",
+          "done": [
+            "Implemented bounded retries"
+          ],
+          "next": [
+            "Observe error rate"
+          ],
+          "blockers": [
+            "Dead-letter alert incomplete"
+          ]
+        },
+        {
+          "task_id": "T-0009",
+          "task": "Prototype guided setup",
+          "done": [
+            "Tested setup prototype"
+          ],
+          "next": [
+            "Run usability session"
+          ],
+          "blockers": []
+        },
+        {
+          "task_id": "T-0019",
+          "task": "Build executive signal dashboard",
+          "done": [
+            "Connected reliability signals"
+          ],
+          "next": [
+            "Polish executive view"
+          ],
+          "blockers": []
+        }
+      ]
+    }
+  }
+}

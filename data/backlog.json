@@ -1,0 +1,767 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "T-0001",
+      "title": "Define release quality gate",
+      "detail": "Turn release criteria into a shared, measurable checklist.",
+      "status": "started",
+      "priority": "P0",
+      "due": "2026-09-01",
+      "tags": [
+        "quality",
+        "release"
+      ],
+      "objective_ids": [
+        "O-1"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [
+        {
+          "id": "S-1",
+          "title": "Prepare first draft",
+          "priority": "P0",
+          "status": "done"
+        },
+        {
+          "id": "S-2",
+          "title": "Review with stakeholder",
+          "priority": "P2",
+          "status": "open"
+        }
+      ],
+      "notes": [
+        {
+          "date": "2026-08-28",
+          "text": "Scope reviewed in weekly planning."
+        }
+      ],
+      "created": "2026-08-01",
+      "updated_at": "2026-08-20"
+    },
+    {
+      "id": "T-0002",
+      "title": "Automate checkout smoke tests",
+      "detail": "Cover payment and receipt paths in the pre-release suite.",
+      "status": "started",
+      "priority": "P1",
+      "due": "2026-09-03",
+      "tags": [
+        "automation",
+        "quality"
+      ],
+      "objective_ids": [
+        "O-1"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0001"
+      ],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-02",
+      "updated_at": "2026-08-21"
+    },
+    {
+      "id": "T-0003",
+      "title": "Audit production error taxonomy",
+      "detail": "Consolidate noisy categories and define ownership.",
+      "status": "done",
+      "priority": "P1",
+      "due": "2026-08-25",
+      "tags": [
+        "observability"
+      ],
+      "objective_ids": [
+        "O-1",
+        "O-4"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-03",
+      "updated_at": "2026-08-22"
+    },
+    {
+      "id": "T-0004",
+      "title": "Create rollback runbook",
+      "detail": "Document decision points, owners, and verification steps.",
+      "status": "open",
+      "priority": "P1",
+      "due": "2026-09-05",
+      "tags": [
+        "release",
+        "runbook"
+      ],
+      "objective_ids": [
+        "O-1"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0001"
+      ],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-04",
+      "updated_at": "2026-08-23"
+    },
+    {
+      "id": "T-0005",
+      "title": "Stabilize notification retries",
+      "detail": "Add bounded retry and dead-letter visibility.",
+      "status": "started",
+      "priority": "P0",
+      "due": "2026-08-31",
+      "tags": [
+        "platform",
+        "blocked"
+      ],
+      "objective_ids": [
+        "O-1",
+        "O-5"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0003"
+      ],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-05",
+      "updated_at": "2026-08-24"
+    },
+    {
+      "id": "T-0006",
+      "title": "Review accessibility regressions",
+      "detail": "Check the five highest-traffic customer flows.",
+      "status": "open",
+      "priority": "P2",
+      "due": "2026-09-08",
+      "tags": [
+        "quality",
+        "a11y"
+      ],
+      "objective_ids": [
+        "O-1"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [
+        {
+          "id": "S-1",
+          "title": "Prepare first draft",
+          "priority": "P2",
+          "status": "done"
+        },
+        {
+          "id": "S-2",
+          "title": "Review with stakeholder",
+          "priority": "P2",
+          "status": "open"
+        }
+      ],
+      "notes": [],
+      "created": "2026-08-06",
+      "updated_at": "2026-08-25"
+    },
+    {
+      "id": "T-0007",
+      "title": "Map first-session journey",
+      "detail": "Identify friction from signup through first successful action.",
+      "status": "done",
+      "priority": "P1",
+      "due": "2026-08-22",
+      "tags": [
+        "onboarding",
+        "research"
+      ],
+      "objective_ids": [
+        "O-2",
+        "O-4"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-07",
+      "updated_at": "2026-08-26"
+    },
+    {
+      "id": "T-0008",
+      "title": "Rewrite welcome checklist",
+      "detail": "Use progressive disclosure and clear completion cues.",
+      "status": "started",
+      "priority": "P2",
+      "due": "2026-09-02",
+      "tags": [
+        "onboarding",
+        "content"
+      ],
+      "objective_ids": [
+        "O-2"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0007"
+      ],
+      "subtasks": [],
+      "notes": [
+        {
+          "date": "2026-08-28",
+          "text": "Scope reviewed in weekly planning."
+        }
+      ],
+      "created": "2026-08-08",
+      "updated_at": "2026-08-27"
+    },
+    {
+      "id": "T-0009",
+      "title": "Prototype guided setup",
+      "detail": "Test a three-step setup assistant with new users.",
+      "status": "started",
+      "priority": "P1",
+      "due": "2026-09-06",
+      "tags": [
+        "onboarding",
+        "prototype"
+      ],
+      "objective_ids": [
+        "O-2"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0007"
+      ],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-09",
+      "updated_at": "2026-08-28"
+    },
+    {
+      "id": "T-0010",
+      "title": "Add sample workspace",
+      "detail": "Seed a useful project so the empty state teaches by example.",
+      "status": "open",
+      "priority": "P2",
+      "due": "2026-09-09",
+      "tags": [
+        "onboarding",
+        "demo"
+      ],
+      "objective_ids": [
+        "O-2"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0008"
+      ],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-10",
+      "updated_at": "2026-08-29"
+    },
+    {
+      "id": "T-0011",
+      "title": "Interview five new customers",
+      "detail": "Validate the language used in onboarding prompts.",
+      "status": "done",
+      "priority": "P2",
+      "due": "2026-08-27",
+      "tags": [
+        "research",
+        "customer"
+      ],
+      "objective_ids": [
+        "O-2"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [
+        {
+          "id": "S-1",
+          "title": "Prepare first draft",
+          "priority": "P2",
+          "status": "done"
+        },
+        {
+          "id": "S-2",
+          "title": "Review with stakeholder",
+          "priority": "P2",
+          "status": "done"
+        }
+      ],
+      "notes": [],
+      "created": "2026-08-11",
+      "updated_at": "2026-08-20"
+    },
+    {
+      "id": "T-0012",
+      "title": "Measure activation funnel",
+      "detail": "Publish conversion and time-to-value baselines.",
+      "status": "started",
+      "priority": "P1",
+      "due": "2026-09-01",
+      "tags": [
+        "analytics",
+        "onboarding"
+      ],
+      "objective_ids": [
+        "O-2",
+        "O-4"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0007"
+      ],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-12",
+      "updated_at": "2026-08-21"
+    },
+    {
+      "id": "T-0013",
+      "title": "Design weekly review ritual",
+      "detail": "Create a repeatable 30-minute reflection and planning flow.",
+      "status": "done",
+      "priority": "P1",
+      "due": "2026-08-21",
+      "tags": [
+        "process",
+        "weekly"
+      ],
+      "objective_ids": [
+        "O-3"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-13",
+      "updated_at": "2026-08-22"
+    },
+    {
+      "id": "T-0014",
+      "title": "Create decision log template",
+      "detail": "Capture context, options, decision, and follow-up date.",
+      "status": "done",
+      "priority": "P2",
+      "due": "2026-08-23",
+      "tags": [
+        "process",
+        "decision"
+      ],
+      "objective_ids": [
+        "O-3"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-14",
+      "updated_at": "2026-08-23"
+    },
+    {
+      "id": "T-0015",
+      "title": "Set work-in-progress limits",
+      "detail": "Define visible limits for each board stage.",
+      "status": "started",
+      "priority": "P1",
+      "due": "2026-09-03",
+      "tags": [
+        "process",
+        "flow"
+      ],
+      "objective_ids": [
+        "O-3"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0013"
+      ],
+      "subtasks": [],
+      "notes": [
+        {
+          "date": "2026-08-28",
+          "text": "Scope reviewed in weekly planning."
+        }
+      ],
+      "created": "2026-08-15",
+      "updated_at": "2026-08-24"
+    },
+    {
+      "id": "T-0016",
+      "title": "Triage aging backlog",
+      "detail": "Review tasks untouched for more than 30 days.",
+      "status": "open",
+      "priority": "P2",
+      "due": "2026-09-04",
+      "tags": [
+        "backlog",
+        "maintenance"
+      ],
+      "objective_ids": [
+        "O-3"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [
+        {
+          "id": "S-1",
+          "title": "Prepare first draft",
+          "priority": "P2",
+          "status": "open"
+        },
+        {
+          "id": "S-2",
+          "title": "Review with stakeholder",
+          "priority": "P2",
+          "status": "open"
+        }
+      ],
+      "notes": [],
+      "created": "2026-08-16",
+      "updated_at": "2026-08-25"
+    },
+    {
+      "id": "T-0017",
+      "title": "Define interruption policy",
+      "detail": "Agree how urgent work enters the active queue.",
+      "status": "open",
+      "priority": "P2",
+      "due": "2026-09-10",
+      "tags": [
+        "process",
+        "focus"
+      ],
+      "objective_ids": [
+        "O-3"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0015"
+      ],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-17",
+      "updated_at": "2026-08-26"
+    },
+    {
+      "id": "T-0018",
+      "title": "Archive obsolete playbooks",
+      "detail": "Keep historical context while removing active clutter.",
+      "status": "dropped",
+      "priority": "P3",
+      "due": null,
+      "tags": [
+        "maintenance"
+      ],
+      "objective_ids": [
+        "O-3"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-18",
+      "updated_at": "2026-08-27"
+    },
+    {
+      "id": "T-0019",
+      "title": "Build executive signal dashboard",
+      "detail": "Combine delivery, activation, and reliability signals.",
+      "status": "started",
+      "priority": "P1",
+      "due": "2026-09-07",
+      "tags": [
+        "analytics",
+        "dashboard"
+      ],
+      "objective_ids": [
+        "O-4"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0003",
+        "T-0012"
+      ],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-19",
+      "updated_at": "2026-08-28"
+    },
+    {
+      "id": "T-0020",
+      "title": "Instrument search journey",
+      "detail": "Capture query, result quality, and successful outcomes.",
+      "status": "open",
+      "priority": "P2",
+      "due": "2026-09-08",
+      "tags": [
+        "analytics",
+        "search"
+      ],
+      "objective_ids": [
+        "O-4"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-20",
+      "updated_at": "2026-08-29"
+    },
+    {
+      "id": "T-0021",
+      "title": "Define metric ownership",
+      "detail": "Assign one accountable owner and review cadence per metric.",
+      "status": "done",
+      "priority": "P2",
+      "due": "2026-08-26",
+      "tags": [
+        "analytics",
+        "governance"
+      ],
+      "objective_ids": [
+        "O-4",
+        "O-3"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [
+        {
+          "id": "S-1",
+          "title": "Prepare first draft",
+          "priority": "P2",
+          "status": "open"
+        },
+        {
+          "id": "S-2",
+          "title": "Review with stakeholder",
+          "priority": "P2",
+          "status": "done"
+        }
+      ],
+      "notes": [],
+      "created": "2026-08-21",
+      "updated_at": "2026-08-20"
+    },
+    {
+      "id": "T-0022",
+      "title": "Validate retention cohorts",
+      "detail": "Compare activated cohorts across four release windows.",
+      "status": "open",
+      "priority": "P2",
+      "due": "2026-09-11",
+      "tags": [
+        "analytics",
+        "retention"
+      ],
+      "objective_ids": [
+        "O-4"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0012"
+      ],
+      "subtasks": [],
+      "notes": [
+        {
+          "date": "2026-08-28",
+          "text": "Scope reviewed in weekly planning."
+        }
+      ],
+      "created": "2026-08-22",
+      "updated_at": "2026-08-21"
+    },
+    {
+      "id": "T-0023",
+      "title": "Add anomaly annotations",
+      "detail": "Let releases and incidents explain changes in trend charts.",
+      "status": "open",
+      "priority": "P3",
+      "due": "2026-09-12",
+      "tags": [
+        "analytics",
+        "dashboard"
+      ],
+      "objective_ids": [
+        "O-4"
+      ],
+      "parent_id": "T-0019",
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-23",
+      "updated_at": "2026-08-22"
+    },
+    {
+      "id": "T-0024",
+      "title": "Publish insight review",
+      "detail": "Summarize signals, decisions, and open questions each Friday.",
+      "status": "started",
+      "priority": "P2",
+      "due": "2026-09-04",
+      "tags": [
+        "analytics",
+        "weekly"
+      ],
+      "objective_ids": [
+        "O-4",
+        "O-3"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0019"
+      ],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-24",
+      "updated_at": "2026-08-23"
+    },
+    {
+      "id": "T-0025",
+      "title": "Profile slow API routes",
+      "detail": "Rank latency contributors using representative workloads.",
+      "status": "done",
+      "priority": "P1",
+      "due": "2026-08-24",
+      "tags": [
+        "platform",
+        "performance"
+      ],
+      "objective_ids": [
+        "O-5"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-01",
+      "updated_at": "2026-08-24"
+    },
+    {
+      "id": "T-0026",
+      "title": "Add deployment health check",
+      "detail": "Verify dependencies before promoting a release.",
+      "status": "started",
+      "priority": "P1",
+      "due": "2026-09-02",
+      "tags": [
+        "platform",
+        "release"
+      ],
+      "objective_ids": [
+        "O-5",
+        "O-1"
+      ],
+      "parent_id": null,
+      "dependencies": [
+        "T-0025"
+      ],
+      "subtasks": [
+        {
+          "id": "S-1",
+          "title": "Prepare first draft",
+          "priority": "P1",
+          "status": "open"
+        },
+        {
+          "id": "S-2",
+          "title": "Review with stakeholder",
+          "priority": "P2",
+          "status": "open"
+        }
+      ],
+      "notes": [],
+      "created": "2026-08-02",
+      "updated_at": "2026-08-25"
+    },
+    {
+      "id": "T-0027",
+      "title": "Document local recovery flow",
+      "detail": "Make data backup and restore steps testable.",
+      "status": "open",
+      "priority": "P2",
+      "due": "2026-09-06",
+      "tags": [
+        "platform",
+        "recovery"
+      ],
+      "objective_ids": [
+        "O-5"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-03",
+      "updated_at": "2026-08-26"
+    },
+    {
+      "id": "T-0028",
+      "title": "Rotate staging fixtures",
+      "detail": "Replace stale demo records with deterministic fixtures.",
+      "status": "done",
+      "priority": "P3",
+      "due": "2026-08-28",
+      "tags": [
+        "platform",
+        "test-data"
+      ],
+      "objective_ids": [
+        "O-5"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-04",
+      "updated_at": "2026-08-27"
+    },
+    {
+      "id": "T-0029",
+      "title": "Plan dependency upgrades",
+      "detail": "Sequence runtime and library upgrades by risk.",
+      "status": "open",
+      "priority": "P2",
+      "due": "2026-09-15",
+      "tags": [
+        "platform",
+        "maintenance"
+      ],
+      "objective_ids": [
+        "O-5"
+      ],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [
+        {
+          "date": "2026-08-28",
+          "text": "Scope reviewed in weekly planning."
+        }
+      ],
+      "created": "2026-08-05",
+      "updated_at": "2026-08-28"
+    },
+    {
+      "id": "T-0030",
+      "title": "Clean up team handbook links",
+      "detail": "Repair outdated references and navigation labels.",
+      "status": "dropped",
+      "priority": "P3",
+      "due": null,
+      "tags": [
+        "maintenance"
+      ],
+      "objective_ids": [],
+      "parent_id": null,
+      "dependencies": [],
+      "subtasks": [],
+      "notes": [],
+      "created": "2026-08-06",
+      "updated_at": "2026-08-29"
+    }
+  ]
+}
