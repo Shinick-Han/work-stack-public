@@ -692,33 +692,42 @@ class WorkStackDesktopHost:
         launch_root = self.state_root / "desktop-launch"
         launch_root.mkdir(parents=True, exist_ok=True)
         status_path = launch_root / f"launch-{uuid.uuid4().hex}.json"
+        stdout_path = launch_root / "desktop-launch.out.log"
+        stderr_path = launch_root / "desktop-launch.err.log"
         try:
-            completed = subprocess.run(
-                [
-                "powershell.exe",
-                "-NoProfile",
-                "-WindowStyle",
-                "Hidden",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(launcher),
-                "-InstallRoot",
-                str(self.install_root),
-                "-StateRoot",
-                str(self.state_root),
-                "-NoBrowser",
-                "-StatusPath",
-                str(status_path),
-                ],
-                check=False,
-                creationflags=creation_flags,
-                capture_output=True,
-                text=True,
-                errors="replace",
-            )
+            # Do not use subprocess.PIPE here. The background Work Stack server
+            # can inherit the PowerShell pipe handles, preventing communicate()
+            # from ever observing EOF even after the launcher itself exits.
+            with stdout_path.open("wb") as launcher_stdout, stderr_path.open("wb") as launcher_stderr:
+                completed = subprocess.run(
+                    [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(launcher),
+                    "-InstallRoot",
+                    str(self.install_root),
+                    "-StateRoot",
+                    str(self.state_root),
+                    "-NoBrowser",
+                    "-StatusPath",
+                    str(status_path),
+                    ],
+                    check=False,
+                    creationflags=creation_flags,
+                    stdout=launcher_stdout,
+                    stderr=launcher_stderr,
+                )
             if completed.returncode != 0:
-                combined = "\n".join(part for part in (completed.stderr, completed.stdout) if part)
+                combined = "\n".join(
+                    path.read_bytes().decode("utf-8", errors="replace")
+                    for path in (stderr_path, stdout_path)
+                    if path.is_file() and path.stat().st_size
+                )
                 lines = [line.strip() for line in combined.splitlines() if line.strip()]
                 detail = lines[0] if lines else f"PowerShell exited with code {completed.returncode}"
                 self._trace(f"launcher failed with exit {completed.returncode}: {combined.strip()}")

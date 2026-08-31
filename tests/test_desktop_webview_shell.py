@@ -155,10 +155,15 @@ class PythonDesktopShellContractTest(unittest.TestCase):
 
     def test_launcher_failure_preserves_the_actionable_powershell_error(self) -> None:
         source = self.read("workstack_desktop.py")
+        launcher = source[source.index("    def _ensure_server"):source.index("    def _ensure_remote_server")]
 
-        self.assertIn("capture_output=True", source)
-        self.assertIn("Work Stack launcher failed:", source)
-        self.assertIn("completed.returncode", source)
+        self.assertNotIn("capture_output=True", launcher)
+        self.assertIn('"desktop-launch.out.log"', launcher)
+        self.assertIn('"desktop-launch.err.log"', launcher)
+        self.assertIn("stdout=launcher_stdout", launcher)
+        self.assertIn("stderr=launcher_stderr", launcher)
+        self.assertIn("Work Stack launcher failed:", launcher)
+        self.assertIn("completed.returncode", launcher)
 
     def test_native_bridge_requires_the_exact_workstack_origin_and_health_shape(self) -> None:
         source = self.read("workstack_desktop.py")
