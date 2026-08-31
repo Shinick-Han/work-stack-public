@@ -13,7 +13,12 @@ objectives → planning tasks → daily records → weekly roll-up
 
 ## Download the Windows installer
 
-The self-contained Windows installer is committed with this public snapshot:
+Download the immutable release asset (recommended):
+
+- [`WorkStack-Setup-1.0.0.ps1`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.0/WorkStack-Setup-1.0.0.ps1)
+- [`WorkStack-Setup-1.0.0.ps1.sha256`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.0/WorkStack-Setup-1.0.0.ps1.sha256)
+
+The same self-contained installer is also committed with this public snapshot:
 
 - [`installer/WorkStack-Setup-1.0.0.ps1`](installer/WorkStack-Setup-1.0.0.ps1)
 - [`installer/WorkStack-Setup-1.0.0.ps1.sha256`](installer/WorkStack-Setup-1.0.0.ps1.sha256)
