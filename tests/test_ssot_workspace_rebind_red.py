@@ -393,8 +393,9 @@ class WorkspaceRebindRecoveryRedTest(unittest.TestCase):
                         idempotency_key=f"workspace.rebind.{authority_kind}.0001",
                     )
 
-                self.assertTrue(Path(result["recovery"]["receipt_path"]).is_relative_to(runtime))
-                self.assertFalse(Path(result["recovery"]["receipt_path"]).is_relative_to(root))
+                receipt_path = Path(result["recovery"]["receipt_path"]).resolve(strict=False)
+                self.assertTrue(receipt_path.is_relative_to(runtime.resolve(strict=False)))
+                self.assertFalse(receipt_path.is_relative_to(root.resolve(strict=False)))
 
 
 class WorkspaceRebindApiRedTest(unittest.TestCase):

@@ -501,7 +501,10 @@ class ConnectionRegistryMigrationTest(unittest.TestCase):
             with mock.patch.object(
                 MODULE,
                 "_is_link_like",
-                side_effect=lambda path: path == data_dir.parent or original(path),
+                side_effect=lambda path: (
+                    path.resolve(strict=False) == data_dir.parent.resolve(strict=False)
+                    or original(path)
+                ),
             ):
                 with self.assertRaisesRegex(RuntimeError, "link or junction"):
                     MODULE.read_local_workspace_identity(profile)

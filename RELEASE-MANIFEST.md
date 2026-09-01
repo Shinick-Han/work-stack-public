@@ -2,8 +2,8 @@
 
 - Source repository: `Shinick-Han/work-stack`
 - Source branch: `codex/workstack-python-desktop-20260831`
-- Source commit: `4de1eef9f8613f66b506fdf1198814d28428c0c4`
-- Source tree: `9c9a256024504a895a1b8ce88fea34e0eb50f882`
+- Source commit: `f129097ce48f46145ff19aa10ea15482454fb4c0`
+- Source tree: `3fc7ef2b223e342fcbfe0ce3ac6d461f8bc46c1f`
 - Export shape: tracked files from the source commit, committed onto the public
   snapshot history while preserving the last signed-off installer assets
 - Included installer: `installer/WorkStack-Setup-1.0.5.ps1`
