@@ -40,9 +40,11 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         )
 
     def test_downstream_jobs_consume_numeric_artifact_id_and_never_rebuild(self) -> None:
-        self.assertGreaterEqual(
-            self.workflow.count("artifact-ids: ${{ needs.release-build.outputs.artifact_id }}"), 2
+        download_count = self.workflow.count(
+            "artifact-ids: ${{ needs.release-build.outputs.artifact_id }}"
         )
+        self.assertGreaterEqual(download_count, 2)
+        self.assertEqual(self.workflow.count("merge-multiple: true"), download_count)
         self.assertNotRegex(self.workflow, r"(?m)^\s+name:\s+work-stack-release-")
         for job in ("windows-first-launch", "publish"):
             body = self._job_body(job)
