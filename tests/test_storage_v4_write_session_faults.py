@@ -322,11 +322,13 @@ class V4WriteSessionFaultTests(unittest.TestCase):
     def test_locked_target_replace_retains_exact_journal_and_recovers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             scenario = _Scenario(Path(directory))
-            target_path = scenario.authority / scenario.targets[0].artifact
+            target_path = (
+                scenario.authority / scenario.targets[0].artifact
+            ).resolve(strict=False)
             original = writer.os.replace
 
             def locked(source, destination):
-                if Path(destination) == target_path:
+                if Path(destination).resolve(strict=False) == target_path:
                     raise PermissionError(errno.EACCES, "locked")
                 return original(source, destination)
 
