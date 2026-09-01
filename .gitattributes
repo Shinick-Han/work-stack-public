@@ -6,3 +6,8 @@ contracts/workstack-conduit-v1/** -text
 # those bytes so `theme:check` is identical locally and in GitHub Actions.
 frontend/src/generated/theme-tokens.css text eol=lf
 desktop/python-webview-shell/generated/theme_tokens.py text eol=lf
+
+# Published setup scripts are immutable release artifacts. Treat the large
+# self-extracting PowerShell payload as opaque bytes so its SHA-256 sidecar
+# remains valid after cloning on Windows.
+installer/WorkStack-Setup-*.ps1 -text

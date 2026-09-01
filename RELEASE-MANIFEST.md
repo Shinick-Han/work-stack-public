@@ -2,8 +2,8 @@
 
 - Source repository: `Shinick-Han/work-stack`
 - Source branch: `codex/workstack-python-desktop-20260831`
-- Source commit: `bfd9bd0844cef2df03be4b3688a0ed064731ec8d`
-- Source tree: `0883f08700166559de3323bca9f984bde64da809`
+- Source commit: `d2562197c2c5df91fa8b177e8f3385208203fd9b`
+- Source tree: `c54dba53ad9e0c85b974c35ade85d3c27387a3cf`
 - Export shape: tracked files from the source commit, committed onto the public
   snapshot history with the verified Windows installer built from public commit
   `f15e5b09c533101ec2e5cc616e17072839841064`
