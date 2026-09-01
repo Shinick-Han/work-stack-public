@@ -18,14 +18,14 @@ test('Board selection and deselection share the authoritative Task drawer', asyn
   await expect(page).not.toHaveURL(/task=/)
 })
 
-test('Graph keyboard navigation opens the canonical Objective Hub', async ({ page }) => {
+test('Graph keyboard navigation focuses the selected objective', async ({ page }) => {
   await page.goto('/?view=graph')
-  const objective = page.getByRole('button', { name: 'Open objective O-1' })
+  const objective = page.getByRole('button', { name: 'Focus objective O-1' })
   await expect(objective).toBeVisible()
   await objective.focus()
   await expect(objective).toBeFocused()
   await objective.press('Enter')
 
-  await expect(page.getByRole('heading', { name: 'Make the goal–work chain explicit.' })).toBeVisible()
-  await expect(page).toHaveURL(/surface=objectives.*objective=O-1/)
+  await expect(page.getByRole('button', { name: 'Clear objective filter O-1' })).toBeVisible()
+  await expect(page).toHaveURL(/objective=O-1/)
 })
