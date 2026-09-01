@@ -1,3 +1,8 @@
 # These files are a frozen, hash-pinned conformance kit. Preserve repository bytes
 # exactly on every platform; newline conversion invalidates the bundle root.
 contracts/workstack-conduit-v1/** -text
+
+# Theme generators emit canonical LF bytes. Windows checkouts must preserve
+# those bytes so `theme:check` is identical locally and in GitHub Actions.
+frontend/src/generated/theme-tokens.css text eol=lf
+desktop/python-webview-shell/generated/theme_tokens.py text eol=lf

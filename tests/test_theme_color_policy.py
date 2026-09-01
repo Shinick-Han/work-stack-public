@@ -11,6 +11,17 @@ from scripts.check_theme_colors import check, scan, write_baseline
 
 
 class ThemeColorPolicyTest(unittest.TestCase):
+    def test_generated_theme_tokens_are_checked_out_with_canonical_lf(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        attributes = (root / ".gitattributes").read_text(encoding="utf-8")
+        self.assertIn(
+            "frontend/src/generated/theme-tokens.css text eol=lf", attributes
+        )
+        self.assertIn(
+            "desktop/python-webview-shell/generated/theme_tokens.py text eol=lf",
+            attributes,
+        )
+
     def test_baseline_allows_reduction_and_rejects_new_literals(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
