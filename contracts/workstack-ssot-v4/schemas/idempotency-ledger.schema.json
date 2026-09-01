@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/idempotency-ledger.schema.json",
+  "title": "Work Stack bounded runtime idempotency ledger",
+  "$comment": "Operational replay state outside canonical domain streams. Request bodies, credentials, headers, source content, and arbitrary top-level metadata are forbidden.",
+  "$defs": {
+    "runtimeScalar": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        { "$ref": "common.schema.json#/$defs/boundedString" }
+      ]
+    },
+    "runtimeValue": {
+      "oneOf": [
+        { "$ref": "#/$defs/runtimeScalar" },
+        {
+          "type": "array",
+          "maxItems": 512,
+          "items": { "$ref": "#/$defs/runtimeValue" }
+        },
+        {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+          },
+          "additionalProperties": { "$ref": "#/$defs/runtimeValue" }
+        }
+      ]
+    },
+    "responseMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "replayed": { "type": "boolean" },
+        "duplicate": { "type": "boolean" },
+        "intent_replayed": { "type": "boolean" }
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "method",
+        "path",
+        "request_digest",
+        "response_status",
+        "created_at",
+        "expires_at"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{8,128}$"
+        },
+        "method": { "enum": ["POST", "PUT", "PATCH", "DELETE"] },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^/api/v[0-9]+/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$"
+        },
+        "request_digest": { "$ref": "common.schema.json#/$defs/sha256" },
+        "response_status": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "response_body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["data"],
+          "properties": {
+            "data": { "$ref": "#/$defs/runtimeValue" },
+            "meta": { "$ref": "#/$defs/responseMeta" }
+          }
+        },
+        "response_ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "record_uid"],
+          "properties": {
+            "kind": { "const": "reply" },
+            "record_uid": { "$ref": "common.schema.json#/$defs/uuid" }
+          }
+        },
+        "response_meta": { "$ref": "#/$defs/responseMeta" }
+      },
+      "oneOf": [
+        {
+          "required": ["response_body"],
+          "not": { "anyOf": [{ "required": ["response_ref"] }, { "required": ["response_meta"] }] }
+        },
+        {
+          "required": ["response_ref"],
+          "not": { "required": ["response_body"] }
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "schema_version",
+    "workspace_uid",
+    "updated_at",
+    "compaction_policy",
+    "records"
+  ],
+  "properties": {
+    "format": { "const": "workstack.idempotency-ledger" },
+    "schema_version": { "const": 1 },
+    "workspace_uid": { "$ref": "common.schema.json#/$defs/uuid" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "compaction_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retention_days", "max_records"],
+      "properties": {
+        "retention_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650
+        },
+        "max_records": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        }
+      }
+    },
+    "records": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/record" }
+    }
+  }
+}

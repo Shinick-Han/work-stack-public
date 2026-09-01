@@ -90,6 +90,124 @@ function ReplyTargetDetails({ target }: { target: ReplyTarget }) {
   )
 }
 
+function approvedReplyForSources(replies: ReplyCommand[], sources: ReplySource[]): ReplyCommand | null {
+  const sourceIds = new Set(sources.map((source) => source.capture_id))
+  return [...replies].reverse().find((reply) => reply.state === 'approved' && sourceIds.has(reply.capture_id)) ?? null
+}
+
+function ReplyHistory({ command, replies }: { command: ReplyCommand | null; replies: ReplyCommand[] }) {
+  return <>
+    {replies.length ? (
+      <div className="reply-history" aria-label="Recorded replies">
+        <strong>Recorded replies</strong>
+        {replies.map((reply) => (
+          <div key={reply.id}><Pill tone={reply.state}>{reply.state}</Pill><span>{reply.id} · {sourceLabel(reply.provider)}</span><time>{formatDateTime(reply.updated_at)}</time></div>
+        ))}
+      </div>
+    ) : null}
+    {replies.some((reply) => reply.state === 'unknown') && command?.state !== 'unknown' ? (
+      <p className="unknown-warning"><strong>An earlier reply has unknown delivery.</strong> Work Stack will not retry it automatically. Check the original Microsoft thread before approving another reply.</p>
+    ) : null}
+  </>
+}
+
+function ReplyDraftForm({ approved, body, onApprove, pending, setApproved, setBody, setCaptureId, source, sources }: {
+  approved: boolean
+  body: string
+  onApprove: (event: FormEvent) => Promise<void>
+  pending: 'approve' | 'receipt' | null
+  setApproved: (approved: boolean) => void
+  setBody: (body: string) => void
+  setCaptureId: (captureId: string) => void
+  source: ReplySource
+  sources: ReplySource[]
+}) {
+  return <form className="form-stack" onSubmit={(event) => void onApprove(event)}>
+    <label className="field">
+      <span>Linked Microsoft source</span>
+      <select onChange={(event) => { setCaptureId(event.target.value); setApproved(false) }} value={source.capture_id}>
+        {sources.map((item) => <option key={item.capture_id} value={item.capture_id}>{sourceLabel(item.provider)} · {item.display_title}</option>)}
+      </select>
+    </label>
+    <label className="field">
+      <span>Plain-text reply</span>
+      <textarea maxLength={12_000} onChange={(event) => { setBody(event.target.value); setApproved(false) }} placeholder="Write the reply that should be posted to the original thread." rows={6} value={body} />
+    </label>
+    <section aria-label="Reply preview" className="reply-preview">
+      <header><Pill tone="accent">Original thread</Pill><span>{sourceLabel(source.provider)} · {source.resource_type}</span></header>
+      <strong>{source.display_title}</strong>
+      <small>Bound capture: {source.capture_id} · version {source.version_ref}</small>
+      <ReplyTargetDetails target={{
+        resource_type: source.resource_type,
+        connection_ref: source.connection_ref,
+        container_ref: source.container_ref,
+        object_ref: source.object_ref,
+        version_ref: source.version_ref,
+      }} />
+      <p>{body.trim() || 'Your plain-text reply will appear here before approval.'}</p>
+    </section>
+    <label className="approval-check">
+      <input checked={approved} disabled={!body.trim()} onChange={(event) => setApproved(event.target.checked)} type="checkbox" />
+      <span><strong>I approve this exact target and reply body.</strong><small>Approval creates a durable command. It does not send anything until you copy it to the connected agent.</small></span>
+    </label>
+    <Button disabled={!approved || !body.trim() || pending !== null} type="submit" variant="primary">{pending === 'approve' ? 'Approving…' : 'Approve reply command'}</Button>
+  </form>
+}
+
+function ReplyReceiptForm({ loadReceipt, onImport, pending, receipt, receiptText, setError, setReceiptText }: {
+  loadReceipt: (event: ChangeEvent<HTMLInputElement>) => Promise<void>
+  onImport: (event: FormEvent) => Promise<void>
+  pending: 'approve' | 'receipt' | null
+  receipt: ReplyReceipt | null
+  receiptText: string
+  setError: (error: string | null) => void
+  setReceiptText: (text: string) => void
+}) {
+  return <form className="receipt-import" onSubmit={(event) => void onImport(event)}>
+    <label className="file-drop file-drop--compact"><input accept="application/json,.json" onChange={(event) => void loadReceipt(event)} type="file" /><span><strong>Choose ReplyReceipt JSON</strong><small>or paste the returned receipt</small></span></label>
+    <label className="field"><span>Agent receipt</span><textarea className="code-input" onChange={(event) => { setReceiptText(event.target.value); setError(null) }} placeholder="Paste the ReplyReceipt v1 returned by the agent" rows={7} spellCheck={false} value={receiptText} /></label>
+    {receipt ? <div className="receipt-preview"><Pill tone={receipt.outcome}>{receipt.outcome}</Pill><span>{receipt.reply_id}</span><time>{formatDateTime(receipt.occurred_at)}</time></div> : null}
+    <Button disabled={!receiptText.trim() || pending !== null} type="submit">{pending === 'receipt' ? 'Importing…' : 'Import matching receipt'}</Button>
+  </form>
+}
+
+function ApprovedReplyPanel({ command, copyCommand, copyState, importReceipt, loadReceipt, pending, receipt, receiptText, setError, setReceiptText, source }: {
+  command: ReplyCommand
+  copyCommand: () => Promise<void>
+  copyState: 'idle' | 'copied' | 'error'
+  importReceipt: (event: FormEvent) => Promise<void>
+  loadReceipt: (event: ChangeEvent<HTMLInputElement>) => Promise<void>
+  pending: 'approve' | 'receipt' | null
+  receipt: ReplyReceipt | null
+  receiptText: string
+  setError: (error: string | null) => void
+  setReceiptText: (text: string) => void
+  source?: ReplySource
+}) {
+  return <div className="approved-reply">
+    <div className={`reply-state reply-state--${command.state}`} role="status">
+      <Pill tone={command.state}>{command.state}</Pill>
+      <div><strong>{command.id}</strong><p>{stateCopy(command.state)}</p></div>
+    </div>
+    <section aria-label="Approved reply" className="reply-preview">
+      <header><Pill tone="accent">Approved target</Pill><span>{sourceLabel(command.provider)} · {command.target.resource_type}</span></header>
+      <strong>{source?.display_title ?? command.capture_id}</strong>
+      <small>Capture {command.capture_id} · revision {command.capture_revision}</small>
+      <ReplyTargetDetails target={command.target} />
+      <p>{command.body}</p>
+    </section>
+    {command.state === 'approved' ? (
+      <>
+        <Button icon="command" onClick={() => void copyCommand()} variant="primary">{copyState === 'copied' ? 'Command copied' : 'Copy approved command'}</Button>
+        {copyState === 'copied' ? <p className="copy-help" role="status">Paste the command into your connected agent, then paste its strict receipt below.</p> : null}
+        <ReplyReceiptForm loadReceipt={loadReceipt} onImport={importReceipt} pending={pending} receipt={receipt} receiptText={receiptText} setError={setError} setReceiptText={setReceiptText} />
+      </>
+    ) : command.state === 'unknown' ? (
+      <p className="unknown-warning"><strong>Do not resend automatically.</strong> Check the original Microsoft thread before deciding on any new manual reply.</p>
+    ) : null}
+  </div>
+}
+
 export function ReplyComposer({
   onCreate,
   onImportReceipt,
@@ -98,9 +216,7 @@ export function ReplyComposer({
   sources,
   taskId,
 }: ReplyComposerProps) {
-  const initiallyApproved = [...replies].reverse().find((reply) => (
-    reply.state === 'approved' && sources.some((source) => source.capture_id === reply.capture_id)
-  )) ?? null
+  const initiallyApproved = approvedReplyForSources(replies, sources)
   const [captureId, setCaptureId] = useState(initiallyApproved?.capture_id ?? sources[0]?.capture_id ?? '')
   const [body, setBody] = useState('')
   const [approved, setApproved] = useState(false)
@@ -118,8 +234,7 @@ export function ReplyComposer({
 
   useEffect(() => {
     if (command) return
-    const sourceIds = new Set(sources.map((source) => source.capture_id))
-    const resumable = [...replies].reverse().find((reply) => reply.state === 'approved' && sourceIds.has(reply.capture_id))
+    const resumable = approvedReplyForSources(replies, sources)
     if (resumable) {
       setCommand(resumable)
       setCaptureId(resumable.capture_id)
@@ -209,77 +324,11 @@ export function ReplyComposer({
 
   return (
     <div className="reply-composer">
-      {replies.length ? (
-        <div className="reply-history" aria-label="Recorded replies">
-          <strong>Recorded replies</strong>
-          {replies.map((reply) => (
-            <div key={reply.id}><Pill tone={reply.state}>{reply.state}</Pill><span>{reply.id} · {sourceLabel(reply.provider)}</span><time>{formatDateTime(reply.updated_at)}</time></div>
-          ))}
-        </div>
-      ) : null}
-      {replies.some((reply) => reply.state === 'unknown') && command?.state !== 'unknown' ? (
-        <p className="unknown-warning"><strong>An earlier reply has unknown delivery.</strong> Work Stack will not retry it automatically. Check the original Microsoft thread before approving another reply.</p>
-      ) : null}
-
+      <ReplyHistory command={command} replies={replies} />
       {!command ? (
-        <form className="form-stack" onSubmit={(event) => void approveReply(event)}>
-          <label className="field">
-            <span>Linked Microsoft source</span>
-            <select onChange={(event) => { setCaptureId(event.target.value); setApproved(false) }} value={source?.capture_id}>
-              {sources.map((item) => <option key={item.capture_id} value={item.capture_id}>{sourceLabel(item.provider)} · {item.display_title}</option>)}
-            </select>
-          </label>
-          <label className="field">
-            <span>Plain-text reply</span>
-            <textarea maxLength={12_000} onChange={(event) => { setBody(event.target.value); setApproved(false) }} placeholder="Write the reply that should be posted to the original thread." rows={6} value={body} />
-          </label>
-          <section aria-label="Reply preview" className="reply-preview">
-            <header><Pill tone="accent">Original thread</Pill><span>{sourceLabel(source.provider)} · {source.resource_type}</span></header>
-            <strong>{source.display_title}</strong>
-            <small>Bound capture: {source.capture_id} · version {source.version_ref}</small>
-            <ReplyTargetDetails target={{
-              resource_type: source.resource_type,
-              connection_ref: source.connection_ref,
-              container_ref: source.container_ref,
-              object_ref: source.object_ref,
-              version_ref: source.version_ref,
-            }} />
-            <p>{body.trim() || 'Your plain-text reply will appear here before approval.'}</p>
-          </section>
-          <label className="approval-check">
-            <input checked={approved} disabled={!body.trim()} onChange={(event) => setApproved(event.target.checked)} type="checkbox" />
-            <span><strong>I approve this exact target and reply body.</strong><small>Approval creates a durable command. It does not send anything until you copy it to the connected agent.</small></span>
-          </label>
-          <Button disabled={!approved || !body.trim() || pending !== null} type="submit" variant="primary">{pending === 'approve' ? 'Approving…' : 'Approve reply command'}</Button>
-        </form>
+        <ReplyDraftForm approved={approved} body={body} onApprove={approveReply} pending={pending} setApproved={setApproved} setBody={setBody} setCaptureId={setCaptureId} source={source} sources={sources} />
       ) : (
-        <div className="approved-reply">
-          <div className={`reply-state reply-state--${command.state}`} role="status">
-            <Pill tone={command.state}>{command.state}</Pill>
-            <div><strong>{command.id}</strong><p>{stateCopy(command.state)}</p></div>
-          </div>
-          <section aria-label="Approved reply" className="reply-preview">
-            <header><Pill tone="accent">Approved target</Pill><span>{sourceLabel(command.provider)} · {command.target.resource_type}</span></header>
-            <strong>{source?.display_title ?? command.capture_id}</strong>
-            <small>Capture {command.capture_id} · revision {command.capture_revision}</small>
-            <ReplyTargetDetails target={command.target} />
-            <p>{command.body}</p>
-          </section>
-          {command.state === 'approved' ? (
-            <>
-              <Button icon="command" onClick={() => void copyCommand()} variant="primary">{copyState === 'copied' ? 'Command copied' : 'Copy approved command'}</Button>
-              {copyState === 'copied' ? <p className="copy-help" role="status">Paste the command into your connected agent, then paste its strict receipt below.</p> : null}
-              <form className="receipt-import" onSubmit={(event) => void importReceipt(event)}>
-                <label className="file-drop file-drop--compact"><input accept="application/json,.json" onChange={(event) => void loadReceipt(event)} type="file" /><span><strong>Choose ReplyReceipt JSON</strong><small>or paste the returned receipt</small></span></label>
-                <label className="field"><span>Agent receipt</span><textarea className="code-input" onChange={(event) => { setReceiptText(event.target.value); setError(null) }} placeholder="Paste the ReplyReceipt v1 returned by the agent" rows={7} spellCheck={false} value={receiptText} /></label>
-                {receipt ? <div className="receipt-preview"><Pill tone={receipt.outcome}>{receipt.outcome}</Pill><span>{receipt.reply_id}</span><time>{formatDateTime(receipt.occurred_at)}</time></div> : null}
-                <Button disabled={!receiptText.trim() || pending !== null} type="submit">{pending === 'receipt' ? 'Importing…' : 'Import matching receipt'}</Button>
-              </form>
-            </>
-          ) : command.state === 'unknown' ? (
-            <p className="unknown-warning"><strong>Do not resend automatically.</strong> Check the original Microsoft thread before deciding on any new manual reply.</p>
-          ) : null}
-        </div>
+        <ApprovedReplyPanel command={command} copyCommand={copyCommand} copyState={copyState} importReceipt={importReceipt} loadReceipt={loadReceipt} pending={pending} receipt={receipt} receiptText={receiptText} setError={setError} setReceiptText={setReceiptText} source={source} />
       )}
       {error ? <p className="inline-error reply-composer__error" role="alert">{error}</p> : null}
     </div>

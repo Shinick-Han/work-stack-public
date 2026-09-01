@@ -36,6 +36,100 @@ class WorkStackTest(unittest.TestCase):
         self.assertIn(note["id"], {node["id"] for node in snapshot["nodes"]})
         self.assertEqual(snapshot["edges"], [])
 
+    def test_weekly_report_merges_entries_in_date_order_without_duplicates(self):
+        objective = self.stack.add_objective("Ship the quality gate", "2030-Q2")
+        task = self.stack.add_task(
+            "Harden release checks", objective_ids=[objective["id"]]
+        )
+        worklog = self.stack.store.load("worklog.json")
+        worklog["days"] = {
+            "2030-04-03": {
+                "entries": [{
+                    "task_id": task["id"],
+                    "task": task["title"],
+                    "done": ["Validated", "Documented"],
+                    "next": ["Release"],
+                    "blockers": [],
+                    "duration_seconds": 120,
+                }]
+            },
+            "2030-04-02": {
+                "entries": [{
+                    "task_id": task["id"],
+                    "task": task["title"],
+                    "done": ["Validated"],
+                    "next": ["Document"],
+                    "blockers": ["Approval"],
+                    "duration_seconds": 60,
+                }]
+            },
+        }
+        self.stack.store.save("worklog.json", worklog)
+
+        report = self.stack.weekly_report(end="2030-04-03", days=2)
+
+        self.assertEqual(
+            report,
+            {
+                "range": {"start": "2030-04-02", "end": "2030-04-03", "days": 2},
+                "objectives": [
+                    {"id": objective["id"], "objective": "Ship the quality gate"}
+                ],
+                "projects": [{
+                    "task_id": task["id"],
+                    "task": task["title"],
+                    "objective_ids": [objective["id"]],
+                    "done": ["Validated", "Documented"],
+                    "next": ["Document", "Release"],
+                    "blockers": ["Approval"],
+                    "dates": ["2030-04-02", "2030-04-03"],
+                    "duration_seconds": 180,
+                }],
+            },
+        )
+
+    def test_snapshot_projects_all_node_and_edge_kinds_in_stable_order(self):
+        objective = self.stack.add_objective("Map execution", "2030-Q2")
+        parent = self.stack.add_task(
+            "Parent task", objective_ids=[objective["id"]]
+        )
+        child = self.stack.add_task(
+            "Child task", parent_id=parent["id"], dependencies=[parent["id"]]
+        )
+        subtask = self.stack.add_subtask(child["id"], "Child checklist")
+        self.stack.add_worklog(
+            child["id"], done=["Mapped"], date="2030-04-02"
+        )
+        note = self.stack.add_note(
+            "Execution note", links=[child["id"], "T-9999"]
+        )
+
+        snapshot = self.stack.snapshot()
+
+        self.assertEqual(
+            [node["kind"] for node in snapshot["nodes"]],
+            ["objective", "task", "task", "subtask", "day", "note"],
+        )
+        self.assertEqual(
+            snapshot["edges"],
+            [
+                {"source": parent["id"], "target": objective["id"], "kind": "objective"},
+                {"source": child["id"], "target": parent["id"], "kind": "parent"},
+                {"source": child["id"], "target": parent["id"], "kind": "dependency"},
+                {
+                    "source": "{}-{}".format(child["id"], subtask["id"]),
+                    "target": child["id"],
+                    "kind": "parent",
+                },
+                {"source": "D-2030-04-02", "target": child["id"], "kind": "worklog"},
+                {"source": note["id"], "target": child["id"], "kind": "note"},
+            ],
+        )
+        self.assertEqual(
+            snapshot["summary"],
+            {"objectives": 1, "tasks": 2, "days": 1, "notes": 1},
+        )
+
     def test_identity_store_loss_fails_closed(self):
         path = Path(self.temporary.name) / "backlog.json"
         path.unlink()

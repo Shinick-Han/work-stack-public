@@ -65,8 +65,11 @@ class DesktopUpdateContractTests(unittest.TestCase):
         )
 
         payload["version"] = "1.0.3"
-        with self.assertRaisesRegex(MODULE.UpdateValidationError, "older"):
+        with self.assertRaisesRegex(MODULE.UpdateValidationError, "older") as raised:
             MODULE.parse_update_manifest(json.dumps(payload).encode(), current_version="1.0.4")
+        self.assertIsInstance(raised.exception, MODULE.OlderUpdateManifest)
+        self.assertEqual(raised.exception.version, "1.0.3")
+        self.assertEqual(raised.exception.installed_version, "1.0.4")
 
         payload["version"] = "01.0.5"
         with self.assertRaisesRegex(MODULE.UpdateValidationError, "version"):
@@ -82,6 +85,31 @@ class DesktopUpdateContractTests(unittest.TestCase):
         payload["installer"]["name"] = "other.ps1"  # type: ignore[index]
         with self.assertRaisesRegex(MODULE.UpdateValidationError, "filename"):
             MODULE.parse_update_manifest(json.dumps(payload).encode(), current_version="1.0.4")
+
+    def test_manifest_validation_precedence_remains_fail_closed(self) -> None:
+        protocol_first = manifest_payload()
+        protocol_first["minimum_remote_protocol"] = 0
+        protocol_first["version"] = "invalid"
+        with self.assertRaisesRegex(MODULE.UpdateValidationError, "minimum_remote_protocol"):
+            MODULE.parse_update_manifest(
+                json.dumps(protocol_first).encode(), current_version="1.0.4"
+            )
+
+        release_first = manifest_payload()
+        release_first["release_url"] = "https://example.invalid/release"
+        release_first["published_at"] = "invalid"
+        with self.assertRaisesRegex(MODULE.UpdateValidationError, "release_url"):
+            MODULE.parse_update_manifest(
+                json.dumps(release_first).encode(), current_version="1.0.4"
+            )
+
+        installer_first = manifest_payload()
+        installer_first["installer"]["name"] = "invalid.ps1"  # type: ignore[index]
+        installer_first["checksum"]["name"] = "invalid.sha256"  # type: ignore[index]
+        with self.assertRaisesRegex(MODULE.UpdateValidationError, "installer filename"):
+            MODULE.parse_update_manifest(
+                json.dumps(installer_first).encode(), current_version="1.0.4"
+            )
 
     def test_downloads_only_exact_size_digest_and_sidecar_content(self) -> None:
         installer = b"verified setup body"

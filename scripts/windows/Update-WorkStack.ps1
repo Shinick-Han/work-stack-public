@@ -25,5 +25,7 @@ if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
 }
 $config = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
 $dataPath = [IO.Path]::GetFullPath([string]$config.data_dir)
+$backupPath = [IO.Path]::GetFullPath([string]$config.backup_dir)
 $port = [int]$config.port
-& $setup -InstallRoot ([IO.Path]::GetFullPath($InstallRoot)) -StateRoot $statePath -DataDir $dataPath -Port $port -NoShortcut:$NoShortcut
+$backupRetention = [Math]::Max(1, [int]$config.backup_retention)
+& $setup -InstallRoot ([IO.Path]::GetFullPath($InstallRoot)) -StateRoot $statePath -DataDir $dataPath -BackupDir $backupPath -Port $port -BackupRetention $backupRetention -NoShortcut:$NoShortcut

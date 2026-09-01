@@ -1,0 +1,13 @@
+[run]
+branch = True
+source =
+    workstack
+    desktop/python-webview-shell
+
+[report]
+exclude_also =
+    if __name__ == .__main__.:
+show_missing = True
+
+[json]
+output = .artifacts/quality/python-coverage.json

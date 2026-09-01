@@ -227,40 +227,36 @@ def _decode_userinfo(value: str) -> str | None:
         return None
 
 
-def _authority_valid(authority: str) -> bool:
-    if any(ord(character) > 0x7F for character in authority) or "@" not in authority:
-        return False
-    userinfo, host_port = authority.rsplit("@", 1)
-    if not userinfo or _userinfo_octets(userinfo) is None:
-        return False
-    if host_port.startswith("["):
-        close = host_port.find("]")
-        if close < 0:
-            return False
-        literal = host_port[1:close]
-        remainder = host_port[close + 1:]
-        ipv_future = re.fullmatch(
-            r"[vV][0-9A-Fa-f]+\.[A-Za-z0-9._~!$&'()*+,;=:-]+", literal
-        ) is not None
-        try:
-            ipv6 = ipaddress.ip_address(literal).version == 6
-        except ValueError:
-            ipv6 = False
-        if not ipv6 and not ipv_future:
-            return False
-        if remainder and (
-            not remainder.startswith(":")
-            or (remainder[1:] and not remainder[1:].isdecimal())
-        ):
-            return False
+def _ip_literal_valid(literal: str) -> bool:
+    if re.fullmatch(
+        r"[vV][0-9A-Fa-f]+\.[A-Za-z0-9._~!$&'()*+,;=:-]+", literal
+    ) is not None:
         return True
-    if host_port.count(":") > 1:
+    try:
+        return ipaddress.ip_address(literal).version == 6
+    except ValueError:
         return False
-    host, separator, port = host_port.rpartition(":")
-    if not separator:
-        host = host_port
-    elif not host or (port and not port.isdecimal()):
+
+
+def _port_suffix_valid(value: str) -> bool:
+    if not value:
+        return True
+    if not value.startswith(":"):
         return False
+    port = value[1:]
+    return not port or port.isdecimal()
+
+
+def _ip_literal_host_port_valid(host_port: str) -> bool:
+    close = host_port.find("]")
+    if close < 0:
+        return False
+    literal = host_port[1:close]
+    remainder = host_port[close + 1:]
+    return _ip_literal_valid(literal) and _port_suffix_valid(remainder)
+
+
+def _reg_name_valid(host: str) -> bool:
     index = 0
     while index < len(host):
         character = host[index]
@@ -275,6 +271,28 @@ def _authority_valid(authority: str) -> bool:
             return False
         index += 3
     return True
+
+
+def _reg_name_host_port_valid(host_port: str) -> bool:
+    if host_port.count(":") > 1:
+        return False
+    host, separator, port = host_port.rpartition(":")
+    if not separator:
+        host = host_port
+    elif not host or (port and not port.isdecimal()):
+        return False
+    return _reg_name_valid(host)
+
+
+def _authority_valid(authority: str) -> bool:
+    if any(ord(character) > 0x7F for character in authority) or "@" not in authority:
+        return False
+    userinfo, host_port = authority.rsplit("@", 1)
+    if not userinfo or _userinfo_octets(userinfo) is None:
+        return False
+    if host_port.startswith("["):
+        return _ip_literal_host_port_valid(host_port)
+    return _reg_name_host_port_valid(host_port)
 
 
 def _s005(value: str) -> bool:

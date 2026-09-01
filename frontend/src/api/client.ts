@@ -12,6 +12,8 @@ import {
   snapshotPreviewSchema,
   storageStatusSchema,
   syncStatusSchema,
+  workspaceRebindPreviewSchema,
+  workspaceRebindResultSchema,
   taskDetailSchema,
   taskSchema,
   worklogEntrySchema,
@@ -21,7 +23,6 @@ import {
 } from '../domain/schemas'
 import type {
   ApprovedReplyInput,
-  BackupDownload,
   Capture,
   CapturePacket,
   CaptureTaskInput,
@@ -34,10 +35,11 @@ import type {
   ReviewEntryInput,
   ReviewProjection,
   SearchProjection,
-  SnapshotDownload,
   SnapshotPreview,
   StorageStatus,
   SyncStatus,
+  WorkspaceRebindPreview,
+  WorkspaceRebindResult,
   Task,
   TaskDetail,
   TaskPatch,
@@ -47,10 +49,18 @@ import type {
   WorkSessionEntryInput,
   WorkSessionProjection,
 } from '../domain/types'
-import { publishPlanningChange } from '../app/crossTabSync'
+import {
+  ApiError,
+  CommitUnknownError,
+  createIdempotencyKey,
+  getData,
+  mutateData,
+  mutateIdempotent,
+} from './transport'
+import { downloadBackup, downloadTaskSnapshot } from './downloads'
 
-const sessionSchema = z.object({ csrf_token: z.string().min(8) })
-const envelopeSchema = z.object({ data: z.unknown(), meta: z.record(z.string(), z.unknown()).optional() })
+export { ApiError, CommitUnknownError, createIdempotencyKey } from './transport'
+
 const captureListSchema = z.union([
   z.array(captureSchema),
   z.object({ captures: z.array(captureSchema) }).transform(({ captures }) => captures),
@@ -71,163 +81,9 @@ const replyMutationSchema = z.union([
 const reviewCheckinSchema = z.object({ date: z.string(), start_time: z.string() }).strict()
 const reviewEntryResponseSchema = worklogEntrySchema.extend({ date: z.string() })
 
-interface ErrorEnvelope {
-  error?: { code?: string; message?: string; details?: unknown }
-}
-
-export class ApiError extends Error {
-  readonly status: number
-  readonly code: string
-  readonly details: unknown
-
-  constructor(status: number, code: string, message: string, details?: unknown) {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
-    this.code = code
-    this.details = details
-  }
-}
-
-export class CommitUnknownError extends Error {
-  readonly cause: unknown
-
-  constructor(message: string, cause: unknown) {
-    super(message)
-    this.name = 'CommitUnknownError'
-    this.cause = cause
-  }
-}
-
-let csrfTokenPromise: Promise<string> | null = null
-
-async function fetchWithNetworkRetry(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
-  try {
-    return await fetch(input, init)
-  } catch (firstError) {
-    if (init.signal?.aborted) throw firstError
-    // The exact same init object is retried. For idempotent mutations this preserves the
-    // Idempotency-Key generated for the logical operation.
-    return fetch(input, init)
-  }
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  const text = await response.text()
-  if (!text) return null
-  try {
-    return JSON.parse(text)
-  } catch {
-    throw new ApiError(response.status, 'invalid_json', 'The server returned an unreadable response.')
-  }
-}
-
-async function assertOk(response: Response): Promise<unknown> {
-  const payload = await readJson(response)
-  if (response.ok) return payload
-  const candidate = payload as ErrorEnvelope | null
-  throw new ApiError(
-    response.status,
-    candidate?.error?.code ?? 'request_failed',
-    candidate?.error?.message ?? `Request failed with status ${response.status}.`,
-    candidate?.error?.details,
-  )
-}
-
-async function getCsrfToken(force = false): Promise<string> {
-  if (force) csrfTokenPromise = null
-  csrfTokenPromise ??= (async () => {
-    const response = await fetchWithNetworkRetry('/api/v1/session', {
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: { Accept: 'application/json' },
-    })
-    const payload = envelopeSchema.parse(await assertOk(response))
-    return sessionSchema.parse(payload.data).csrf_token
-  })()
-  return csrfTokenPromise
-}
-
-async function getData<T>(path: string, schema: z.ZodType<T>): Promise<T> {
-  const response = await fetchWithNetworkRetry(path, {
-    credentials: 'same-origin',
-    cache: 'no-store',
-    headers: { Accept: 'application/json' },
-  })
-  const envelope = envelopeSchema.parse(await assertOk(response))
-  return schema.parse(envelope.data)
-}
-
-async function mutateData<T>(
-  path: string,
-  method: 'POST' | 'PATCH',
-  body: unknown,
-  schema: z.ZodType<T>,
-  idempotencyKey?: string,
-): Promise<T> {
-  const encodedBody = JSON.stringify(body)
-  const makeHeaders = async (refreshSession = false) => {
-    const headers: Record<string, string> = {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'X-WorkStack-CSRF': await getCsrfToken(refreshSession),
-    }
-    if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
-    return headers
-  }
-
-  const request = idempotencyKey ? fetchWithNetworkRetry : fetch
-  let response = await request(path, {
-    method,
-    credentials: 'same-origin',
-    cache: 'no-store',
-    headers: await makeHeaders(),
-    body: encodedBody,
-  })
-
-  // A restarted local server rotates the CSRF nonce. Retry once with the same body and,
-  // critically, the same idempotency key.
-  if (response.status === 403) {
-    response = await request(path, {
-      method,
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: await makeHeaders(true),
-      body: encodedBody,
-    })
-  }
-
-  const envelope = envelopeSchema.parse(await assertOk(response))
-  const parsed = schema.parse(envelope.data)
-  publishPlanningChange()
-  return parsed
-}
-
-export function createIdempotencyKey(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return `workstack:${crypto.randomUUID()}`
-  }
-  return `workstack:${Date.now()}:${Math.random().toString(36).slice(2, 14)}`
-}
-
 async function capturePost<T>(path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
   const idempotencyKey = createIdempotencyKey()
   return mutateData(path, 'POST', body, schema, idempotencyKey)
-}
-
-async function mutateIdempotent<T>(
-  path: string,
-  body: unknown,
-  schema: z.ZodType<T>,
-  idempotencyKey: string,
-  commitUnknownMessage: string,
-): Promise<T> {
-  try {
-    return await mutateData(path, 'POST', body, schema, idempotencyKey)
-  } catch (error) {
-    if (error instanceof ApiError) throw error
-    throw new CommitUnknownError(commitUnknownMessage, error)
-  }
 }
 
 const unknownResultSchema = z.unknown()
@@ -237,7 +93,28 @@ export const api = {
     return getData('/api/v1/sync/status', syncStatusSchema)
   },
 
-  adoptSyncChanges(expectedGeneration: number, expectedManifestDigest: string): Promise<SyncStatus> {
+  getWorkspaceRebindPreview(): Promise<WorkspaceRebindPreview> {
+    return getData('/api/v1/sync/rebind-preview', workspaceRebindPreviewSchema)
+  },
+
+  rebindWorkspace(preview: WorkspaceRebindPreview, idempotencyKey: string): Promise<WorkspaceRebindResult> {
+    return mutateData(
+      '/api/v1/sync/rebind-workspace',
+      'POST',
+      {
+        confirmed: true,
+        expected_manifest_workspace_id: preview.manifest_workspace_id,
+        expected_candidate_workspace_id: preview.candidate_workspace_id,
+        expected_manifest_digest: preview.manifest_digest,
+        expected_candidate_digest: preview.candidate_digest,
+      },
+      workspaceRebindResultSchema,
+      idempotencyKey,
+      false,
+    )
+  },
+
+  adoptSyncChanges(expectedGeneration: number, expectedManifestDigest: string, idempotencyKey: string): Promise<SyncStatus> {
     return mutateData(
       '/api/v1/sync/adopt',
       'POST',
@@ -246,6 +123,7 @@ export const api = {
         expected_manifest_digest: expectedManifestDigest,
       },
       syncStatusSchema,
+      idempotencyKey,
     )
   },
 
@@ -257,47 +135,7 @@ export const api = {
     return getData('/api/v1/storage', storageStatusSchema)
   },
 
-  async downloadBackup(expectedWorkspaceId: string): Promise<BackupDownload> {
-    const encodedBody = JSON.stringify({ confirmed: true })
-    const makeHeaders = async (refreshSession = false) => ({
-      Accept: 'application/zip',
-      'Content-Type': 'application/json',
-      'X-WorkStack-CSRF': await getCsrfToken(refreshSession),
-    })
-    let response = await fetchWithNetworkRetry('/api/v1/maintenance/backup', {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: await makeHeaders(),
-      body: encodedBody,
-    })
-    if (response.status === 403) {
-      response = await fetchWithNetworkRetry('/api/v1/maintenance/backup', {
-        method: 'POST',
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: await makeHeaders(true),
-        body: encodedBody,
-      })
-    }
-    if (!response.ok) {
-      await assertOk(response)
-      throw new ApiError(response.status, 'backup_download_failed', 'Backup download failed.')
-    }
-    const digest = response.headers.get('X-WorkStack-Backup-Digest')
-    const workspaceId = response.headers.get('X-WorkStack-Workspace-Id')
-    const contentType = response.headers.get('Content-Type')
-    const disposition = response.headers.get('Content-Disposition') ?? ''
-    const filename = /^attachment; filename="(workstack-backup-[0-9TZ]+-[0-9a-f]{8}\.zip)"$/.exec(disposition)?.[1]
-    if (contentType !== 'application/zip' || !digest?.match(/^sha256:[0-9a-f]{64}$/) || workspaceId !== expectedWorkspaceId || !filename) {
-      throw new ApiError(
-        response.status,
-        'backup_response_invalid',
-        'The backup response could not be verified.',
-      )
-    }
-    return { blob: await response.blob(), digest, filename }
-  },
+  downloadBackup,
 
   search(query: string, limit = 30): Promise<SearchProjection> {
     const parameters = new URLSearchParams({ q: query, limit: String(limit) })
@@ -392,54 +230,7 @@ export const api = {
     )
   },
 
-  async downloadTaskSnapshot(
-    taskId: string,
-    expectedRevision: number,
-    expectedDigest: string,
-  ): Promise<SnapshotDownload> {
-    const path = `/api/v1/tasks/${encodeURIComponent(taskId)}/snapshot/export`
-    const encodedBody = JSON.stringify({
-      disclosure_confirmed: true,
-      expected_digest: expectedDigest,
-      expected_revision: expectedRevision,
-    })
-    const makeHeaders = async (refreshSession = false) => ({
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'X-WorkStack-CSRF': await getCsrfToken(refreshSession),
-    })
-    let response = await fetchWithNetworkRetry(path, {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: await makeHeaders(),
-      body: encodedBody,
-    })
-    if (response.status === 403) {
-      response = await fetchWithNetworkRetry(path, {
-        method: 'POST',
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: await makeHeaders(true),
-        body: encodedBody,
-      })
-    }
-    if (!response.ok) {
-      await assertOk(response)
-      throw new ApiError(response.status, 'snapshot_export_failed', 'Snapshot export failed.')
-    }
-    const digest = response.headers.get('X-WorkStack-Snapshot-Digest')
-    const disposition = response.headers.get('Content-Disposition') ?? ''
-    const filename = /^attachment; filename="([0-9a-f-]{36}\.workstack-task\.json)"$/.exec(disposition)?.[1]
-    if (digest !== expectedDigest || !filename) {
-      throw new ApiError(
-        response.status,
-        'snapshot_response_invalid',
-        'The snapshot download response could not be verified.',
-      )
-    }
-    return { blob: await response.blob(), digest, filename }
-  },
+  downloadTaskSnapshot,
 
   patchTask(taskId: string, patch: TaskPatch): Promise<Task> {
     return mutateData(
@@ -621,11 +412,17 @@ export const api = {
     )
   },
 
-  createTaskFromCapture(captureId: string, input: CaptureTaskInput): Promise<Task> {
-    return capturePost(
+  createTaskFromCapture(
+    captureId: string,
+    input: CaptureTaskInput,
+    idempotencyKey = createIdempotencyKey(),
+  ): Promise<Task> {
+    return mutateIdempotent(
       `/api/v1/captures/${encodeURIComponent(captureId)}/task`,
       input,
       taskMutationSchema,
+      idempotencyKey,
+      'The source Task may have committed. Retry the unchanged draft to verify it without duplication.',
     )
   },
 

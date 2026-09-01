@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { Task } from '../../domain/types'
-import { blockingDependencies, cyclicRelationshipCandidates, relationshipWouldCycle } from './taskRelationships'
+import { blockingDependencies, cyclicRelationshipCandidates, relationshipWouldCycle } from '../../domain/taskRelationships'
 
 function task(id: string, parentId: string | null = null, dependencies: string[] = []): Task {
   return {

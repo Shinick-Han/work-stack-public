@@ -1,5 +1,5 @@
 import { beforeEach, expect, test, vi } from 'vitest'
-import { CROSS_TAB_STORAGE_KEY, publishPlanningChange, subscribePlanningChanges } from './crossTabSync'
+import { CROSS_TAB_STORAGE_KEY, publishPlanningChange, subscribePlanningChanges } from './planningChangeBus'
 
 beforeEach(() => {
   window.localStorage.clear()

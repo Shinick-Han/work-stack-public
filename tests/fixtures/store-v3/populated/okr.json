@@ -1,0 +1,23 @@
+{
+  "objectives": [
+    {
+      "created": "2026-09-01",
+      "id": "O-1",
+      "key_results": [
+        {
+          "id": "KR-1",
+          "progress": 25,
+          "status": "active",
+          "target": "All nine documents inventoried",
+          "text": "Freeze the v3 contract"
+        }
+      ],
+      "objective": "Make storage migration reversible",
+      "quarter": "2026-Q3",
+      "revision": 1,
+      "status": "active",
+      "updated_at": "2026-09-01"
+    }
+  ],
+  "version": 1
+}

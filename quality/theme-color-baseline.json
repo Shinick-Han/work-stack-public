@@ -1,0 +1,5 @@
+{
+  "files": {},
+  "policy": "Existing literals may decrease but new literal values or increased use fail the gate.",
+  "schema_version": 1
+}

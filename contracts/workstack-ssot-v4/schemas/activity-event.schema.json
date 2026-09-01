@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/activity-event.schema.json",
+  "title": "Work Stack SSOT v4 activity stream event",
+  "allOf": [
+    { "$ref": "common.schema.json#/$defs/eventEnvelope" },
+    {
+      "type": "object",
+      "required": ["legacy_event_id", "event_type", "details", "capture_uid", "task_uid", "reply_uid"],
+      "properties": {
+        "format": { "const": "workstack.activity-event" },
+        "schema_version": { "const": 1 },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "legacy_event_id": { "type": "string", "pattern": "^E-[0-9]{6,}$" },
+        "event_type": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "details": { "$ref": "common.schema.json#/$defs/canonicalJsonObject" },
+        "capture_uid": { "$ref": "common.schema.json#/$defs/uuidOrNull" },
+        "task_uid": { "$ref": "common.schema.json#/$defs/uuidOrNull" },
+        "reply_uid": { "$ref": "common.schema.json#/$defs/uuidOrNull" }
+      }
+    }
+  ],
+  "unevaluatedProperties": false
+}

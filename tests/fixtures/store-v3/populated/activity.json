@@ -1,0 +1,112 @@
+{
+  "activity": [
+    {
+      "created_at": "2026-09-01T02:00:00Z",
+      "details": {},
+      "id": "E-000001",
+      "type": "capture.ingested",
+      "capture_id": "C-0001"
+    },
+    {
+      "created_at": "2026-09-01T02:05:00Z",
+      "details": {
+        "fields": [
+          "title"
+        ]
+      },
+      "id": "E-000002",
+      "task_id": "T-0001",
+      "type": "task.updated"
+    },
+    {
+      "capture_id": "C-0001",
+      "created_at": "2026-09-01T02:11:00Z",
+      "details": {
+        "provider": "microsoft-outlook",
+        "state": "sent"
+      },
+      "id": "E-000003",
+      "reply_id": "R-0001",
+      "task_id": "T-0001",
+      "type": "reply.sent"
+    }
+  ],
+  "idempotency": [
+    {
+      "created_at": "2026-09-01T02:00:00Z",
+      "key": "fixture.capture.0001",
+      "method": "POST",
+      "path": "/api/v1/captures",
+      "request_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "response_body": {
+        "data": {
+          "id": "C-0001"
+        },
+        "meta": {
+          "replayed": false
+        }
+      },
+      "response_status": 201
+    },
+    {
+      "created_at": "2026-09-01T02:10:00Z",
+      "key": "fixture.reply.0001",
+      "method": "POST",
+      "path": "/api/v1/replies",
+      "request_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "response_meta": {
+        "duplicate": true
+      },
+      "response_ref": {
+        "id": "R-0001",
+        "kind": "reply"
+      },
+      "response_status": 201
+    }
+  ],
+  "planning_status": [
+    {
+      "actor": "local.user",
+      "created_at": "2026-09-01T01:00:00Z",
+      "id": "PS-000001",
+      "new_revision": 0,
+      "previous_fact_id": null,
+      "prior_revision": null,
+      "prior_status": null,
+      "provenance": "api.v1",
+      "status": "open",
+      "task_id": "T-0001",
+      "task_uid": "9aaaf471-bf4f-59c7-9087-2be28e899cac",
+      "type": "task.planning_status"
+    },
+    {
+      "actor": "local.user",
+      "created_at": "2026-09-01T01:01:00Z",
+      "id": "PS-000002",
+      "new_revision": 0,
+      "previous_fact_id": null,
+      "prior_revision": null,
+      "prior_status": null,
+      "provenance": "api.v1",
+      "status": "open",
+      "task_id": "T-0002",
+      "task_uid": "a9f5b858-7c21-5a9e-8370-b508f97b6095",
+      "type": "task.planning_status"
+    },
+    {
+      "actor": "local.user",
+      "created_at": "2026-09-01T02:05:00Z",
+      "id": "PS-000003",
+      "new_revision": 2,
+      "previous_fact_id": "PS-000001",
+      "prior_revision": 1,
+      "prior_status": "open",
+      "provenance": "api.v1",
+      "status": "started",
+      "task_id": "T-0001",
+      "task_uid": "9aaaf471-bf4f-59c7-9087-2be28e899cac",
+      "type": "task.planning_status"
+    }
+  ],
+  "version": 2
+}

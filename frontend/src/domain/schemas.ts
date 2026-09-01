@@ -16,10 +16,29 @@ import {
 export const syncStatusSchema = z.object({
   state: z.enum(SYNC_STATES),
   workspace_id: z.string().min(1).max(200),
+  candidate_workspace_id: z.string().min(1).max(200),
   generation: z.number().int().nonnegative(),
   manifest_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/).nullable(),
   changed_files: z.array(z.string().min(1).max(500)).max(500),
   reason: z.string().max(1_000).nullable(),
+  rebind_available: z.boolean(),
+}).strict()
+
+export const workspaceRebindPreviewSchema = z.object({
+  state: z.literal('workspace-identity-mismatch'),
+  manifest_workspace_id: z.string().uuid(),
+  candidate_workspace_id: z.string().uuid(),
+  manifest_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  candidate_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  changed_files: z.array(z.string().min(1).max(500)).max(500),
+}).strict()
+
+export const workspaceRebindResultSchema = z.object({
+  state: z.literal('in-sync'),
+  workspace_id: z.string().uuid(),
+  generation: z.number().int().nonnegative(),
+  recovery_receipt_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  planning_mutated: z.literal(false),
 }).strict()
 
 const sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/, 'Expected sha256: followed by 64 lowercase hex characters')
@@ -254,6 +273,7 @@ export const storageStatusSchema = z.object({
   workspace_id: z.string().uuid(),
   store_schema_version: z.number().int().positive(),
   product_version: z.string().min(1),
+  remote_protocol_version: z.number().int().nonnegative(),
   file_count: z.number().int().positive(),
   total_bytes: z.number().int().nonnegative(),
   backup_format: z.literal('workstack-backup-v1'),

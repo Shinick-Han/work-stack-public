@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/note.schema.json",
+  "title": "Work Stack SSOT v4 note record",
+  "allOf": [
+    { "$ref": "common.schema.json#/$defs/recordEnvelope" },
+    {
+      "type": "object",
+      "required": ["display_id", "note_kind", "task_uid", "text", "links", "created_by"],
+      "properties": {
+        "format": { "const": "workstack.note" },
+        "schema_version": { "const": 1 },
+        "created_at": { "$ref": "common.schema.json#/$defs/dateOrTimestamp" },
+        "updated_at": { "$ref": "common.schema.json#/$defs/dateOrTimestamp" },
+        "display_id": { "type": "string", "pattern": "^N-[0-9]{4,}$" },
+        "note_kind": { "enum": ["standalone", "task_annotation"] },
+        "task_uid": { "$ref": "common.schema.json#/$defs/uuidOrNull" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "links": {
+          "type": "array", "maxItems": 128, "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        },
+        "created_by": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    }
+  ],
+  "unevaluatedProperties": false
+}

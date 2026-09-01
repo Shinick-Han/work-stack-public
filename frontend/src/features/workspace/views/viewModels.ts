@@ -14,7 +14,7 @@ import {
 import {
   blockingDependenciesFromIndex,
   indexDependencyTasks,
-} from "../../tasks/taskRelationships";
+} from "../../../domain/taskRelationships";
 import { dueReasonForDate } from "../../focus/focusModel";
 
 export const STATUS_LABELS: Record<TaskStatus, string> = {

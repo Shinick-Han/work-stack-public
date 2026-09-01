@@ -52,6 +52,109 @@ function sourceLabel(provider: string, resourceType = '') {
   return provider
 }
 
+function CaptureActionControl({ action, onCreate, pending }: { action: Capture['normalized']['action_items'][number]; onCreate: (actionId: string) => void; pending: string | null }) {
+  if (action.task_id) return <span>Linked to {action.task_id}</span>
+  return <Button
+    disabled={!action.id || pending !== null}
+    onClick={(event) => {
+      event.stopPropagation()
+      if (action.id) onCreate(action.id)
+    }}
+    variant="ghost"
+  >{pending === `action-${action.id}` ? 'Creating…' : 'Create task'}</Button>
+}
+
+function CaptureCardHeader({ capture, onSelect }: { capture: Capture; onSelect: () => void }) {
+  return <header className="capture-card__header">
+    <span className="source-avatar"><Icon name={capture.source.provider === 'manual' ? 'context' : 'inbox'} size={17} /></span>
+    <div>
+      <div className="capture-card__source">
+        <strong>{sourceLabel(capture.source.provider, capture.source.resource_type)}</strong>
+        <span>·</span>
+        <span>{capture.source.resource_type}</span>
+      </div>
+      <time>{formatDateTime(capture.source.retrieved_at)}</time>
+    </div>
+    <div className="capture-card__header-actions">
+      <Pill tone={capture.status}>{capture.status}</Pill>
+      <button aria-label={`Inspect ${capture.id}`} className="capture-inspect" onClick={onSelect} type="button"><Icon name="more" size={16} /></button>
+    </div>
+  </header>
+}
+
+function CaptureCardBody({ capture, providerGates, onSelect }: {
+  capture: Capture
+  providerGates: MicrosoftProviderGates
+  onSelect: () => void
+}) {
+  const trust = captureTrust(capture, providerGates)
+  return <div className="capture-card__body">
+    <h2><button onClick={onSelect} type="button">{capture.source.display_title}</button></h2>
+    <p>{capture.normalized.summary}</p>
+    <div className="capture-card__meta">
+      <Pill tone={trust.tone}>{trust.label}</Pill>
+      <span>{capture.normalized.action_items.length} action item{capture.normalized.action_items.length === 1 ? '' : 's'}</span>
+      {capture.task_hints.length ? <span>Suggested: {capture.task_hints.join(', ')}</span> : null}
+    </div>
+  </div>
+}
+
+function CaptureActionList({ capture, onCreate, pending }: {
+  capture: Capture
+  onCreate: (actionId: string) => void
+  pending: string | null
+}) {
+  if (!capture.normalized.action_items.length) return null
+  return <div className="capture-actions">
+    {capture.normalized.action_items.map((action, index) => (
+      <div className="capture-action" key={action.id ?? `${capture.id}-${index}`}>
+        <span className="capture-action__check"><Icon name="check" size={13} /></span>
+        <div><strong>{action.title}</strong><small>{action.priority}{action.due ? ` · due ${action.due}` : ''}</small></div>
+        <CaptureActionControl action={action} onCreate={onCreate} pending={pending} />
+      </div>
+    ))}
+  </div>
+}
+
+function CaptureCardFooter({ capture, onDismiss, onLink, pending, run, setTaskId, sourceUrl, taskId, tasks }: {
+  capture: Capture
+  onDismiss: () => Promise<unknown>
+  onLink: (taskId: string) => Promise<unknown>
+  pending: string | null
+  run: (key: string, operation: () => Promise<unknown>) => Promise<void>
+  setTaskId: (taskId: string) => void
+  sourceUrl: string | null
+  taskId: string
+  tasks: Task[]
+}) {
+  return <footer className="capture-card__footer" onClick={(event) => event.stopPropagation()}>
+    {sourceUrl ? (
+      <a className="button button--ghost" href={sourceUrl} rel="noopener noreferrer" target="_blank">
+        <Icon name="arrowUpRight" size={15} /> Open source
+      </a>
+    ) : <span className="source-unavailable">No source link</span>}
+    <div className="capture-card__link">
+      <label>
+        <span className="sr-only">Task to link</span>
+        <select onChange={(event) => setTaskId(event.target.value)} value={taskId}>
+          {tasks.map((task) => <option key={task.id} value={task.id}>{task.id} · {task.title}</option>)}
+        </select>
+      </label>
+      <Button
+        disabled={!taskId || pending !== null}
+        onClick={() => void run('link', () => onLink(taskId))}
+      >{pending === 'link' ? 'Linking…' : 'Link to task'}</Button>
+      {capture.status !== 'dismissed' ? (
+        <Button
+          disabled={pending !== null}
+          onClick={() => void run('dismiss', onDismiss)}
+          variant="ghost"
+        >{pending === 'dismiss' ? 'Dismissing…' : 'Dismiss'}</Button>
+      ) : null}
+    </div>
+  </footer>
+}
+
 function CaptureCard({
   capture,
   isSelected,
@@ -76,7 +179,6 @@ function CaptureCard({
   const [pending, setPending] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const sourceUrl = safeExternalUrl(capture.source.web_url)
-  const trust = captureTrust(capture, providerGates)
 
   const run = async (key: string, operation: () => Promise<unknown>) => {
     setPending(key)
@@ -90,81 +192,28 @@ function CaptureCard({
     }
   }
 
+  const createAction = (actionId: string) => {
+    void run(`action-${actionId}`, () => onConvert(actionId))
+  }
+
   return (
     <article aria-current={isSelected ? 'true' : undefined} className={`capture-card ${isSelected ? 'is-selected' : ''}`}>
-      <header className="capture-card__header">
-        <span className="source-avatar"><Icon name={capture.source.provider === 'manual' ? 'context' : 'inbox'} size={17} /></span>
-        <div>
-          <div className="capture-card__source">
-            <strong>{sourceLabel(capture.source.provider, capture.source.resource_type)}</strong>
-            <span>·</span>
-            <span>{capture.source.resource_type}</span>
-          </div>
-          <time>{formatDateTime(capture.source.retrieved_at)}</time>
-        </div>
-        <div className="capture-card__header-actions">
-          <Pill tone={capture.status}>{capture.status}</Pill>
-          <button aria-label={`Inspect ${capture.id}`} className="capture-inspect" onClick={onSelect} type="button"><Icon name="more" size={16} /></button>
-        </div>
-      </header>
-
-      <div className="capture-card__body">
-        <h2><button onClick={onSelect} type="button">{capture.source.display_title}</button></h2>
-        <p>{capture.normalized.summary}</p>
-        <div className="capture-card__meta">
-          <Pill tone={trust.tone}>{trust.label}</Pill>
-          <span>{capture.normalized.action_items.length} action item{capture.normalized.action_items.length === 1 ? '' : 's'}</span>
-          {capture.task_hints.length ? <span>Suggested: {capture.task_hints.join(', ')}</span> : null}
-        </div>
-      </div>
-
-      {capture.normalized.action_items.length ? (
-        <div className="capture-actions">
-          {capture.normalized.action_items.map((action, index) => (
-            <div className="capture-action" key={action.id ?? `${capture.id}-${index}`}>
-              <span className="capture-action__check"><Icon name="check" size={13} /></span>
-              <div><strong>{action.title}</strong><small>{action.priority}{action.due ? ` · due ${action.due}` : ''}</small></div>
-              <Button
-                disabled={!action.id || pending !== null}
-                onClick={(event) => {
-                  event.stopPropagation()
-                  if (action.id) void run(`action-${action.id}`, () => onConvert(action.id!))
-                }}
-                variant="ghost"
-              >{pending === `action-${action.id}` ? 'Creating…' : 'Create task'}</Button>
-            </div>
-          ))}
-        </div>
-      ) : null}
+      <CaptureCardHeader capture={capture} onSelect={onSelect} />
+      <CaptureCardBody capture={capture} onSelect={onSelect} providerGates={providerGates} />
+      <CaptureActionList capture={capture} onCreate={createAction} pending={pending} />
 
       {error ? <p className="inline-error" role="alert">{error}</p> : null}
-
-      <footer className="capture-card__footer" onClick={(event) => event.stopPropagation()}>
-        {sourceUrl ? (
-          <a className="button button--ghost" href={sourceUrl} rel="noopener noreferrer" target="_blank">
-            <Icon name="arrowUpRight" size={15} /> Open source
-          </a>
-        ) : <span className="source-unavailable">No source link</span>}
-        <div className="capture-card__link">
-          <label>
-            <span className="sr-only">Task to link</span>
-            <select onChange={(event) => setTaskId(event.target.value)} value={taskId}>
-              {tasks.map((task) => <option key={task.id} value={task.id}>{task.id} · {task.title}</option>)}
-            </select>
-          </label>
-          <Button
-            disabled={!taskId || pending !== null}
-            onClick={() => void run('link', () => onLink(taskId))}
-          >{pending === 'link' ? 'Linking…' : 'Link to task'}</Button>
-          {capture.status !== 'dismissed' ? (
-            <Button
-              disabled={pending !== null}
-              onClick={() => void run('dismiss', onDismiss)}
-              variant="ghost"
-            >{pending === 'dismiss' ? 'Dismissing…' : 'Dismiss'}</Button>
-          ) : null}
-        </div>
-      </footer>
+      <CaptureCardFooter
+        capture={capture}
+        onDismiss={onDismiss}
+        onLink={onLink}
+        pending={pending}
+        run={run}
+        setTaskId={setTaskId}
+        sourceUrl={sourceUrl}
+        taskId={taskId}
+        tasks={tasks}
+      />
     </article>
   )
 }

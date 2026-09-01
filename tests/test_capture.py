@@ -134,6 +134,46 @@ class CaptureValidationTest(unittest.TestCase):
         with self.assertRaises(CaptureValidationError):
             validate_capture_packet(packet)
 
+    def test_projection_preserves_stable_deduplication_and_action_occurrences(self):
+        packet = fixture("capture-packet-v1.fixture.json")
+        packet["normalized"]["action_items"].append(
+            copy.deepcopy(packet["normalized"]["action_items"][0])
+        )
+        packet["normalized"]["tags"] = ["release", "quality", "release"]
+        packet["task_hints"] = ["t-0001", "T-0001", "t-0002"]
+
+        projected = validate_capture_packet(packet)
+
+        actions = projected["normalized"]["action_items"]
+        self.assertEqual(len(actions), 2)
+        self.assertNotEqual(actions[0]["id"], actions[1]["id"])
+        self.assertEqual(projected["normalized"]["tags"], ["release", "quality"])
+        self.assertEqual(projected["task_hints"], ["T-0001", "T-0002"])
+
+    def test_provenance_mode_and_provider_errors_keep_their_precedence(self):
+        manual = fixture("capture-packet-v1.manual.fixture.json")
+        manual["source"]["provider"] = "microsoft-outlook"
+        manual["source"]["web_url"] = "https://outlook.office.com/mail/"
+        manual["provenance"]["model"] = "fabricated"
+        manual["source_key"] = source_key_for(manual["source"])
+        manual["source"]["fingerprint"] = fingerprint_for(manual["source"])
+        with self.assertRaisesRegex(
+            CaptureValidationError,
+            "manual provenance requires the manual provider",
+        ):
+            validate_capture_packet(manual)
+
+        verified = fixture("capture-packet-v1.fixture.json")
+        verified["source"]["provider"] = "manual"
+        verified["provenance"]["tool_trace_digest"] = "invalid"
+        verified["source_key"] = source_key_for(verified["source"])
+        verified["source"]["fingerprint"] = fingerprint_for(verified["source"])
+        with self.assertRaisesRegex(
+            CaptureValidationError,
+            "oob_verified provenance requires a supported Microsoft provider",
+        ):
+            validate_capture_packet(verified)
+
     def test_every_retained_metadata_section_rejects_raw_canary(self):
         canary = "RAW_CANARY_DO_NOT_STORE"
         cases = (
@@ -257,6 +297,19 @@ class CaptureValidationTest(unittest.TestCase):
         packet["source"]["web_url"] = "https://outlook.live.com.example.invalid/mail/"
         with self.assertRaises(CaptureValidationError):
             validate_capture_packet(packet)
+
+    def test_exact_onenote_web_host_is_allowed_without_widening_the_domain(self):
+        packet = fixture("capture-packet-v1.manual.fixture.json")
+        packet["source"]["web_url"] = "https://www.onenote.com/notebooks/opaque"
+        projected = validate_capture_packet(packet)
+        self.assertEqual(projected["source"]["web_url"], packet["source"]["web_url"])
+
+        for hostname in ("onenote.com", "evil.onenote.com", "www.onenote.com.example.invalid"):
+            with self.subTest(hostname=hostname):
+                rejected = fixture("capture-packet-v1.manual.fixture.json")
+                rejected["source"]["web_url"] = "https://{}/notebooks/opaque".format(hostname)
+                with self.assertRaises(CaptureValidationError):
+                    validate_capture_packet(rejected)
 
     def test_microsoft_web_url_rejects_recipient_assignments(self):
         urls = (
@@ -435,6 +488,23 @@ class CaptureServiceTest(unittest.TestCase):
         with self.assertRaises(IdempotencyConflictError):
             self.stack.ingest_capture(altered, "ingest.key.0001")
 
+    def test_same_source_fingerprint_with_changed_reviewed_content_conflicts(self):
+        packet = fixture("capture-packet-v1.fixture.json")
+        created = self.stack.ingest_capture(packet, "ingest.content.0001")["body"]["data"]
+        altered = copy.deepcopy(packet)
+        altered["normalized"]["summary"] += " A different reviewed interpretation."
+
+        with self.assertRaises(SourceRevisionConflictError):
+            self.stack.ingest_capture(altered, "ingest.content.0002")
+
+        stored = self.stack.list_captures("all")
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["normalized"], created["normalized"])
+        self.assertFalse(any(
+            item.get("key") == "ingest.content.0002"
+            for item in self.store.load("activity.json")["idempotency"]
+        ))
+
     def test_update_keeps_action_id_and_rejects_stale_and_equal_time(self):
         packet = fixture("capture-packet-v1.fixture.json")
         first = self.stack.ingest_capture(packet, "ingest.key.1001")["body"]["data"]
@@ -501,6 +571,76 @@ class CaptureServiceTest(unittest.TestCase):
         self.assertEqual(dismissed["body"]["data"]["status"], "dismissed")
         dismissed_again = self.stack.dismiss_capture(capture["id"], "flow.key.0007")
         self.assertTrue(dismissed_again["body"]["meta"]["duplicate"])
+
+    def test_capture_task_intent_survives_response_loss_with_a_fresh_http_key(self):
+        capture = self.stack.ingest_capture(
+            fixture("capture-packet-v1.fixture.json"), "intent.ingest.0001"
+        )["body"]["data"]
+        fields = {
+            "intent_id": "11111111-1111-4111-8111-111111111111",
+            "title": "Preserve one logical source task",
+            "detail": "Created after review of the sanitized capture.",
+            "priority": "P1",
+        }
+
+        created = self.stack.create_task_from_capture(
+            capture["id"], fields, "intent.create.http.0001"
+        )
+        retried = self.stack.create_task_from_capture(
+            capture["id"], fields, "intent.create.http.0002"
+        )
+
+        self.assertEqual(created["status"], 201)
+        self.assertEqual(retried["status"], 200)
+        self.assertEqual(retried["body"]["data"]["uid"], created["body"]["data"]["uid"])
+        self.assertTrue(retried["body"]["meta"]["intent_replayed"])
+        self.assertEqual(len(self.stack.list_tasks(status="all")), 1)
+
+        detail = self.stack.task_detail(created["body"]["data"]["id"])
+        self.assertEqual(detail["context"][0]["id"], capture["id"])
+        self.assertEqual(detail["context"][0]["source"], capture["source"])
+        self.assertEqual(detail["context"][0]["provenance"], capture["provenance"])
+
+        changed = {**fields, "title": "A conflicting logical operation"}
+        with self.assertRaises(IdempotencyConflictError):
+            self.stack.create_task_from_capture(
+                capture["id"], changed, "intent.create.http.0003"
+            )
+
+        distinct = self.stack.create_task_from_capture(
+            capture["id"],
+            {**fields, "intent_id": "22222222-2222-4222-8222-222222222222"},
+            "intent.create.http.0004",
+        )
+        self.assertEqual(distinct["status"], 201)
+        self.assertEqual(len(self.stack.list_tasks(status="all")), 2)
+
+    def test_p1_source_dialog_task_then_action_button_does_not_create_second_task(self):
+        packet = fixture("capture-packet-v1.fixture.json")
+        capture = self.stack.ingest_capture(
+            packet, "dialog.ingest.0001"
+        )["body"]["data"]
+        action = capture["normalized"]["action_items"][0]
+        fields = {
+            field: action[field]
+            for field in ("title", "detail", "priority", "due")
+        }
+
+        created = self.stack.create_task_from_capture(
+            capture["id"], fields, "dialog.create.0001"
+        )
+        converted = self.stack.convert_capture_action(
+            capture["id"], action["id"], [], "dialog.action.0001"
+        )
+
+        self.assertEqual(converted["status"], 200)
+        self.assertTrue(converted["body"]["meta"]["duplicate"])
+        self.assertEqual(converted["body"]["data"]["uid"], created["body"]["data"]["uid"])
+        self.assertEqual(len(self.stack.list_tasks(status="all")), 1)
+
+        exact_reingest = self.stack.ingest_capture(packet, "dialog.ingest.0002")
+        self.assertEqual(exact_reingest["status"], 200)
+        self.assertTrue(exact_reingest["body"]["meta"]["duplicate"])
 
     def test_rejected_packet_is_not_persisted(self):
         with self.assertRaises(CaptureValidationError):

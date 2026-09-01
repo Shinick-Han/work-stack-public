@@ -1,0 +1,102 @@
+{
+  "cases": [
+    {
+      "name": "store-future-version",
+      "schema": "store.schema.json",
+      "base": "store-metadata",
+      "replace": {"path": "/schema_version", "value": 5},
+      "expected_keyword": "const"
+    },
+    {
+      "name": "workspace-empty-name",
+      "schema": "workspace.schema.json",
+      "base": "workspace",
+      "replace": {"path": "/name", "value": ""},
+      "expected_keyword": "minLength"
+    },
+    {
+      "name": "task-invalid-display-id",
+      "schema": "task.schema.json",
+      "base": "task",
+      "replace": {"path": "/display_id", "value": "task-31"},
+      "expected_keyword": "pattern"
+    },
+    {
+      "name": "objective-invalid-status",
+      "schema": "objective.schema.json",
+      "base": "objective",
+      "replace": {"path": "/status", "value": "paused"},
+      "expected_keyword": "enum"
+    },
+    {
+      "name": "capture-invalid-status",
+      "schema": "capture.schema.json",
+      "base": "capture",
+      "replace": {"path": "/status", "value": "pending"},
+      "expected_keyword": "enum"
+    },
+    {
+      "name": "reply-invalid-provider",
+      "schema": "reply.schema.json",
+      "base": "reply",
+      "replace": {"path": "/provider", "value": "email"},
+      "expected_keyword": "enum"
+    },
+    {
+      "name": "note-empty-text",
+      "schema": "note.schema.json",
+      "base": "note",
+      "replace": {"path": "/text", "value": ""},
+      "expected_keyword": "minLength"
+    },
+    {
+      "name": "planning-status-unknown-state",
+      "schema": "planning-status-event.schema.json",
+      "base": "planning-status-event",
+      "replace": {"path": "/status", "value": "blocked"},
+      "expected_keyword": "enum"
+    },
+    {
+      "name": "activity-empty-event-type",
+      "schema": "activity-event.schema.json",
+      "base": "activity-event",
+      "replace": {"path": "/event_type", "value": ""},
+      "expected_keyword": "minLength"
+    },
+    {
+      "name": "activity-details-float-is-not-canonical",
+      "schema": "activity-event.schema.json",
+      "base": "activity-event",
+      "replace": {"path": "/details", "value": {"ratio": 0.5}},
+      "expected_keyword": "type"
+    },
+    {
+      "name": "activity-details-unsafe-integer-is-not-canonical",
+      "schema": "activity-event.schema.json",
+      "base": "activity-event",
+      "replace": {"path": "/details", "value": {"revision": 9007199254740992}},
+      "expected_keyword": "maximum"
+    },
+    {
+      "name": "worklog-invalid-session-state",
+      "schema": "worklog-event.schema.json",
+      "base": "worklog-session-event",
+      "replace": {"path": "/state", "value": "abandoned"},
+      "expected_keyword": "enum"
+    },
+    {
+      "name": "migration-receipt-unverified-parity",
+      "schema": "migration-receipt.schema.json",
+      "base": "migration-receipt",
+      "replace": {"path": "/checks/semantic_parity", "value": false},
+      "expected_keyword": "const"
+    },
+    {
+      "name": "idempotency-ledger-short-key",
+      "schema": "idempotency-ledger.schema.json",
+      "base": "idempotency-ledger",
+      "replace": {"path": "/records/0/key", "value": "short"},
+      "expected_keyword": "pattern"
+    }
+  ]
+}

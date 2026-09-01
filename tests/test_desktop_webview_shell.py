@@ -96,7 +96,12 @@ class PythonDesktopShellContractTest(unittest.TestCase):
 
         self.assertIn("workstack-window-theme|", source)
         self.assertIn("DwmSetWindowAttribute", source)
+        self.assertIn("_apply_native_theme", source)
         self.assertIn("_apply_native_title_theme", source)
+        self.assertIn("theme_rgb(self.current_theme", source)
+        self.assertIn("load_persisted_theme(self.state_root)", source)
+        self.assertIn("persist_theme(self.state_root, theme)", source)
+        self.assertNotIn("overlay.BackColor = Color.FromArgb(13, 15, 20)", source)
 
     def test_native_title_bar_uses_the_product_mark_without_duplicate_copy(self) -> None:
         source = self.read("workstack_desktop.py")
@@ -113,7 +118,7 @@ class PythonDesktopShellContractTest(unittest.TestCase):
         self.assertIn('APP_USER_MODEL_ID = "WorkStack.Desktop"', source)
         self.assertIn("SetCurrentProcessExplicitAppUserModelID", source)
         self.assertIn('self.install_root / "WorkStack.ico"', source)
-        self.assertIn("Color.FromArgb(184, 242, 75)", source)
+        self.assertIn('theme_rgb("dark", "brand.accent")', source)
         self.assertNotIn("Color.FromArgb(174, 235, 61)", source)
 
     def test_dialog_suspension_restores_the_existing_provider_view(self) -> None:
@@ -148,27 +153,59 @@ class PythonDesktopShellContractTest(unittest.TestCase):
 
         self.assertIn('"/api/v1/health"', source)
         self.assertIn('"config.json"', source)
+        self.assertIn('RUNTIME_CONFIG_FILE = "runtime-config.json"', source)
+        self.assertIn("_local_runtime_config", source)
         self.assertIn('config["port"]', source)
-        self.assertIn("Start-WorkStack.ps1", source)
         self.assertIn("Stop-WorkStack.ps1", source)
-        self.assertIn("server_started_by_shell", source)
+        self.assertIn("server_started_by_host", source)
+        self.assertIn("server_process", source)
         self.assertIn("server_pid", source)
-        self.assertIn('"-StatusPath"', source)
         self.assertIn('"-ProcessId"', source)
         self.assertIn("_acquire_single_instance", source)
         self.assertIn("--auto-close-seconds", source)
 
-    def test_launcher_failure_preserves_the_actionable_powershell_error(self) -> None:
+    def test_desktop_hot_path_starts_the_server_without_powershell(self) -> None:
         source = self.read("workstack_desktop.py")
         launcher = source[source.index("    def _ensure_server"):source.index("    def _ensure_remote_server")]
 
-        self.assertNotIn("capture_output=True", launcher)
-        self.assertIn('"desktop-launch.out.log"', launcher)
-        self.assertIn('"desktop-launch.err.log"', launcher)
-        self.assertIn("stdout=launcher_stdout", launcher)
-        self.assertIn("stderr=launcher_stderr", launcher)
-        self.assertIn("Work Stack launcher failed:", launcher)
-        self.assertIn("completed.returncode", launcher)
+        self.assertNotIn('"powershell.exe"', launcher)
+        self.assertIn("subprocess.Popen", launcher)
+        self.assertIn('"maintenance"', launcher)
+        self.assertIn('"backup"', launcher)
+        self.assertIn("_loopback_port_listening", launcher)
+        self.assertIn("_prune_backups", launcher)
+        self.assertIn("server started directly by desktop host", launcher)
+
+    def test_backup_pruning_does_not_follow_virtualized_file_resolutions(self) -> None:
+        source = self.read("workstack_desktop.py")
+        prune = source[source.index("    def _prune_backups"):source.index("    def _ensure_remote_server")]
+
+        self.assertIn("os.path.abspath", prune)
+        self.assertIn("candidate.parent != backup_root", prune)
+        self.assertNotIn("expired.resolve()", prune)
+
+    def test_server_startup_overlaps_webview_initialization(self) -> None:
+        source = self.read("workstack_desktop.py")
+        run = source[source.index("    def run(self)"):source.index("    def _on_form_closing")]
+
+        self.assertIn("STARTUP_HTML", source)
+        self.assertIn("class NativeStartupSplash", source)
+        self.assertIn("PostMessageW", source)
+        self.assertIn("SystemParametersInfoW", source)
+        self.assertNotIn("width, height = 440, 142", source)
+        self.assertLess(run.index("self.startup_splash.start()"), run.index("import webview"))
+        self.assertLess(run.index("self.startup_thread.start()"), run.index("import webview"))
+        self.assertIn("html=build_startup_html(self.current_theme)", run)
+        self.assertIn('background_color=theme_color(self.current_theme, "native.overlay")', run)
+        self.assertIn("threading.Thread(target=self._navigate_when_ready", source)
+        self.assertIn("self.window.load_url(self.workstack_url)", source)
+
+    def test_startup_failure_is_written_to_a_durable_diagnostic_log(self) -> None:
+        source = self.read("workstack_desktop.py")
+
+        self.assertIn('"desktop-startup.log"', source)
+        self.assertIn("traceback.format_exception", source)
+        self.assertIn("Diagnostic log:", source)
 
     def test_native_bridge_requires_the_exact_workstack_origin_and_health_shape(self) -> None:
         source = self.read("workstack_desktop.py")

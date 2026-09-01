@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/task.schema.json",
+  "title": "Work Stack SSOT v4 Task record",
+  "$comment": "Planning status is intentionally absent; planning-status events are authoritative.",
+  "$defs": {
+    "subtask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uid", "display_id", "title", "priority", "status"],
+      "properties": {
+        "uid": { "$ref": "common.schema.json#/$defs/uuid" },
+        "display_id": { "type": "string", "pattern": "^(?:S|ST)-[0-9]{1,}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+        "status": { "enum": ["open", "started", "done", "dropped"] }
+      }
+    }
+  },
+  "allOf": [
+    { "$ref": "common.schema.json#/$defs/recordEnvelope" },
+    {
+      "type": "object",
+      "required": [
+        "display_id", "title", "detail", "priority", "due",
+        "tags", "objective_uids", "parent_uid",
+        "dependency_uids", "reference_uids", "subtasks"
+      ],
+      "properties": {
+        "format": { "const": "workstack.task" },
+        "schema_version": { "const": 1 },
+        "created_at": { "$ref": "common.schema.json#/$defs/dateOrTimestamp" },
+        "updated_at": { "$ref": "common.schema.json#/$defs/dateOrTimestamp" },
+        "display_id": { "type": "string", "pattern": "^T-[0-9]{4,}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "detail": { "$ref": "common.schema.json#/$defs/boundedString" },
+        "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+        "due": { "$ref": "common.schema.json#/$defs/dateOrNull" },
+        "scheduled": { "$ref": "common.schema.json#/$defs/dateOrNull" },
+        "estimate_minutes": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1, "maximum": 1440 },
+            { "type": "null" }
+          ]
+        },
+        "tags": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+        },
+        "objective_uids": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/uuid" }
+        },
+        "parent_uid": { "$ref": "common.schema.json#/$defs/uuidOrNull" },
+        "dependency_uids": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/uuid" }
+        },
+        "reference_uids": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/uuid" }
+        },
+        "subtasks": {
+          "type": "array", "maxItems": 256,
+          "items": { "$ref": "#/$defs/subtask" }
+        }
+      }
+    }
+  ],
+  "unevaluatedProperties": false
+}

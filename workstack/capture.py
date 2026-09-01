@@ -41,6 +41,7 @@ ALLOWED_MICROSOFT_EXACT_HOSTS = frozenset({
     "onedrive.live.com",
     "outlook.live.com",
     "teams.live.com",
+    "www.onenote.com",
 })
 VALIDATION_PERCENT_DECODE_ROUNDS = 5
 URL_CREDENTIAL_NAMES = {
@@ -358,8 +359,7 @@ def _action_id(source_key: str, action: dict[str, Any], occurrence: int) -> str:
     return "A-" + digest[:16]
 
 
-def _project_provenance(value: Any, provider: str) -> dict[str, Any]:
-    source = _object(value, "provenance")
+def _provenance_common(source: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     mode = _string(source.get("capture_mode"), "provenance.capture_mode", maximum=32)
     common = {
         "capture_mode": mode,
@@ -382,31 +382,54 @@ def _project_provenance(value: Any, provider: str) -> dict[str, Any]:
     if common["raw_retained"] is not False:
         raise CaptureValidationError("provenance.raw_retained must be false")
     parse_rfc3339(common["created_at"], "provenance.created_at")
-    if mode == "manual":
-        if provider != "manual":
-            raise CaptureValidationError("manual provenance requires the manual provider")
-        forbidden_claims = {"model", "prompt_version", "tool_trace_digest", "allowed_tools"}
-        if any(field in source for field in forbidden_claims):
-            raise CaptureValidationError("manual provenance must omit automated-tool claims")
-        return common
-    if mode != "oob_verified":
-        raise CaptureValidationError("unsupported provenance.capture_mode")
-    if provider not in PROVIDER_TOOL:
-        raise CaptureValidationError("oob_verified provenance requires a supported Microsoft provider")
+    return mode, common
+
+
+def _manual_provenance(
+    source: dict[str, Any], provider: str, common: dict[str, Any]
+) -> dict[str, Any]:
+    if provider != "manual":
+        raise CaptureValidationError("manual provenance requires the manual provider")
+    forbidden_claims = {"model", "prompt_version", "tool_trace_digest", "allowed_tools"}
+    if any(field in source for field in forbidden_claims):
+        raise CaptureValidationError("manual provenance must omit automated-tool claims")
+    return common
+
+
+def _verified_tool_claims(
+    source: dict[str, Any], provider: str
+) -> tuple[str, list[str]]:
     digest = _string(
         source.get("tool_trace_digest"), "provenance.tool_trace_digest", maximum=71
     )
     if not SHA256_RE.fullmatch(digest):
-        raise CaptureValidationError("provenance.tool_trace_digest must be canonical SHA-256")
+        raise CaptureValidationError(
+            "provenance.tool_trace_digest must be canonical SHA-256"
+        )
     allowed_tools = source.get("allowed_tools")
     if not isinstance(allowed_tools, list) or not allowed_tools or len(allowed_tools) > 10:
-        raise CaptureValidationError("provenance.allowed_tools must be a non-empty array")
+        raise CaptureValidationError(
+            "provenance.allowed_tools must be a non-empty array"
+        )
     if any(not isinstance(tool, str) for tool in allowed_tools):
         raise CaptureValidationError("provenance.allowed_tools entries must be strings")
     normalized_tools = list(dict.fromkeys(allowed_tools))
     required_tools = {PROVIDER_TOOL[provider], "workstack.capture.write"}
     if set(normalized_tools) != required_tools or not set(normalized_tools) <= ALLOWED_TOOL_CLAIMS:
-        raise CaptureValidationError("provenance.allowed_tools does not prove least authority")
+        raise CaptureValidationError(
+            "provenance.allowed_tools does not prove least authority"
+        )
+    return digest, normalized_tools
+
+
+def _verified_provenance(
+    source: dict[str, Any], provider: str, common: dict[str, Any]
+) -> dict[str, Any]:
+    if provider not in PROVIDER_TOOL:
+        raise CaptureValidationError(
+            "oob_verified provenance requires a supported Microsoft provider"
+        )
+    digest, normalized_tools = _verified_tool_claims(source, provider)
     return {
         **common,
         "model": _safe_metadata(
@@ -420,38 +443,48 @@ def _project_provenance(value: Any, provider: str) -> dict[str, Any]:
     }
 
 
-def validate_capture_packet(packet: Any) -> dict[str, Any]:
-    """Reject unsafe values, then return only fields in Capture Packet v1."""
+def _project_provenance(value: Any, provider: str) -> dict[str, Any]:
+    source = _object(value, "provenance")
+    mode, common = _provenance_common(source)
+    if mode == "manual":
+        return _manual_provenance(source, provider, common)
+    if mode != "oob_verified":
+        raise CaptureValidationError("unsupported provenance.capture_mode")
+    return _verified_provenance(source, provider, common)
 
-    _reject_forbidden_keys(packet)
-    root = _object(packet, "packet")
-    if root.get("schema_version") != "1.0":
-        raise CaptureValidationError("schema_version must be 1.0")
 
-    incoming_source = _object(root.get("source"), "source")
+def _project_source(value: Any) -> dict[str, Any]:
+    incoming = _object(value, "source")
     source: dict[str, Any] = {}
     for field in (
-        "provider", "resource_type", "connection_ref", "container_ref", "object_ref",
+        "provider",
+        "resource_type",
+        "connection_ref",
+        "container_ref",
+        "object_ref",
         "version_ref",
     ):
         source[field] = _safe_metadata(
-            incoming_source.get(field), "source." + field, maximum=1024
+            incoming.get(field), "source." + field, maximum=1024
         )
     provider = source["provider"]
     if provider not in {"manual", *PROVIDER_TOOL.keys()}:
         raise CaptureValidationError("unsupported source.provider")
     source["display_title"] = _safe_required(
-        incoming_source.get("display_title"), "source.display_title", 500
+        incoming.get("display_title"), "source.display_title", 500
     )
-    source["web_url"] = _microsoft_url(incoming_source.get("web_url"), provider)
+    source["web_url"] = _microsoft_url(incoming.get("web_url"), provider)
     source["retrieved_at"] = _safe_metadata(
-        incoming_source.get("retrieved_at"), "source.retrieved_at", maximum=64
+        incoming.get("retrieved_at"), "source.retrieved_at", maximum=64
     )
     parse_rfc3339(source["retrieved_at"], "source.retrieved_at")
     source["fingerprint"] = _string(
-        incoming_source.get("fingerprint"), "source.fingerprint", maximum=71
+        incoming.get("fingerprint"), "source.fingerprint", maximum=71
     )
+    return source
 
+
+def _validated_source_key(root: dict[str, Any], source: dict[str, Any]) -> str:
     expected_key = source_key_for(source)
     received_key = root.get("source_key")
     if not isinstance(received_key, str) or not SHA256_RE.fullmatch(received_key):
@@ -460,80 +493,128 @@ def validate_capture_packet(packet: Any) -> dict[str, Any]:
         raise CaptureValidationError("source_key does not match the source locator")
     expected_fingerprint = fingerprint_for(source)
     if source["fingerprint"] != expected_fingerprint:
-        raise CaptureValidationError("source.fingerprint does not match source version")
+        raise CaptureValidationError(
+            "source.fingerprint does not match source version"
+        )
+    return expected_key
 
-    incoming_normalized = _object(root.get("normalized"), "normalized")
-    summary = _safe_text(
-        _string(incoming_normalized.get("summary"), "normalized.summary", maximum=2000),
-        "normalized.summary",
-    )
-    context = _safe_text(
-        _string(incoming_normalized.get("context"), "normalized.context", maximum=4000),
-        "normalized.context",
-    )
-    incoming_actions = incoming_normalized.get("action_items")
-    if not isinstance(incoming_actions, list) or len(incoming_actions) > 20:
-        raise CaptureValidationError("normalized.action_items must contain at most 20 items")
+
+def _action_due(value: Any) -> str | None:
+    if value is None:
+        return None
+    due = _string(value, "action.due", maximum=10)
+    try:
+        dt.date.fromisoformat(due)
+    except ValueError as error:
+        raise CaptureValidationError("action due date is invalid") from error
+    return due
+
+
+def _project_action(value: Any, index: int) -> dict[str, Any]:
+    raw_action = _object(value, "normalized.action_items[{}]".format(index))
+    priority = raw_action.get("priority", "P2")
+    if priority not in ("P0", "P1", "P2", "P3"):
+        raise CaptureValidationError("action priority is invalid")
+    due = _action_due(raw_action.get("due"))
+    return {
+        "title": _safe_required(raw_action.get("title"), "action.title", 500),
+        "detail": _safe_text(
+            _string(
+                raw_action.get("detail", ""),
+                "action.detail",
+                maximum=4000,
+                required=False,
+            ),
+            "action.detail",
+        ),
+        "priority": priority,
+        "due": due,
+    }
+
+
+def _project_actions(value: Any, source_key: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > 20:
+        raise CaptureValidationError(
+            "normalized.action_items must contain at most 20 items"
+        )
     actions: list[dict[str, Any]] = []
     occurrences: dict[str, int] = {}
-    for index, item in enumerate(incoming_actions):
-        raw_action = _object(item, "normalized.action_items[{}]".format(index))
-        priority = raw_action.get("priority", "P2")
-        if priority not in ("P0", "P1", "P2", "P3"):
-            raise CaptureValidationError("action priority is invalid")
-        due = raw_action.get("due")
-        if due is not None:
-            due = _string(due, "action.due", maximum=10)
-            try:
-                dt.date.fromisoformat(due)
-            except ValueError as error:
-                raise CaptureValidationError("action due date is invalid") from error
-        action = {
-            "title": _safe_required(raw_action.get("title"), "action.title", 500),
-            "detail": _safe_text(
-                _string(raw_action.get("detail", ""), "action.detail", maximum=4000, required=False),
-                "action.detail",
-            ),
-            "priority": priority,
-            "due": due,
-        }
+    for index, item in enumerate(value):
+        action = _project_action(item, index)
         signature = canonical_digest(action)
         occurrence = occurrences.get(signature, 0)
         occurrences[signature] = occurrence + 1
-        action["id"] = _action_id(expected_key, action, occurrence)
+        action["id"] = _action_id(source_key, action, occurrence)
         actions.append(action)
+    return actions
 
-    incoming_tags = incoming_normalized.get("tags", [])
-    if not isinstance(incoming_tags, list) or len(incoming_tags) > 50:
+
+def _project_tags(value: Any) -> list[str]:
+    if not isinstance(value, list) or len(value) > 50:
         raise CaptureValidationError("normalized.tags must contain at most 50 items")
     tags: list[str] = []
-    for index, tag in enumerate(incoming_tags):
-        safe = _safe_text(_string(tag, "normalized.tags[{}]".format(index), maximum=100), "normalized.tags")
+    for index, tag in enumerate(value):
+        safe = _safe_text(
+            _string(tag, "normalized.tags[{}]".format(index), maximum=100),
+            "normalized.tags",
+        )
         if safe not in tags:
             tags.append(safe)
+    return tags
 
-    incoming_hints = root.get("task_hints", [])
-    if not isinstance(incoming_hints, list) or len(incoming_hints) > 20:
+
+def _project_task_hints(value: Any) -> list[str]:
+    if not isinstance(value, list) or len(value) > 20:
         raise CaptureValidationError("task_hints must contain at most 20 items")
     hints: list[str] = []
-    for hint in incoming_hints:
+    for hint in value:
         if not isinstance(hint, str) or not TASK_ID_RE.fullmatch(hint):
             raise CaptureValidationError("task_hints contains an invalid task ID")
         normalized_hint = hint.upper()
         if normalized_hint not in hints:
             hints.append(normalized_hint)
+    return hints
 
+
+def _project_normalized(value: Any, source_key: str) -> dict[str, Any]:
+    incoming = _object(value, "normalized")
+    summary = _safe_text(
+        _string(incoming.get("summary"), "normalized.summary", maximum=2000),
+        "normalized.summary",
+    )
+    context = _safe_text(
+        _string(incoming.get("context"), "normalized.context", maximum=4000),
+        "normalized.context",
+    )
+    actions = _project_actions(incoming.get("action_items"), source_key)
+    tags = _project_tags(incoming.get("tags", []))
+    return {
+        "summary": summary,
+        "context": context,
+        "action_items": actions,
+        "tags": tags,
+    }
+
+
+def validate_capture_packet(packet: Any) -> dict[str, Any]:
+    """Reject unsafe values, then return only fields in Capture Packet v1."""
+
+    _reject_forbidden_keys(packet)
+    root = _object(packet, "packet")
+    if root.get("schema_version") != "1.0":
+        raise CaptureValidationError("schema_version must be 1.0")
+
+    source = _project_source(root.get("source"))
+    provider = source["provider"]
+    expected_key = _validated_source_key(root, source)
+    normalized = _project_normalized(root.get("normalized"), expected_key)
+    hints = _project_task_hints(root.get("task_hints", []))
     provenance = _project_provenance(root.get("provenance"), provider)
     return {
         "schema_version": "1.0",
         "source_key": expected_key,
         "source": source,
-        "normalized": {
-            "summary": summary,
-            "context": context,
-            "action_items": actions,
-            "tags": tags,
-        },
+        "normalized": normalized,
         "task_hints": hints,
         "provenance": provenance,
     }

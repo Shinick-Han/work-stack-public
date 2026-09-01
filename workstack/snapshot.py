@@ -126,11 +126,7 @@ def _text_metrics(value: str) -> tuple[int, int]:
     return scalars, units
 
 
-def validate_text(value: Any, field: str) -> str:
-    if field not in {"title", "detail"}:
-        raise ValueError("unknown snapshot text field")
-    if not isinstance(value, str):
-        _refuse("FIELD", "WRONG_TYPE", field=field)
+def _validate_text_characters(value: str, field: str) -> None:
     for character in value:
         codepoint = ord(character)
         if 0xD800 <= codepoint <= 0xDFFF:
@@ -157,26 +153,34 @@ def validate_text(value: Any, field: str) -> str:
                 "FIELD", "C0_FORBIDDEN", field=field,
                 public_code="SNAPSHOT_FIELD_INVALID",
             )
+
+
+def _validate_text_normalization(value: str, field: str) -> None:
     if normalize_nfc(value) != value:
         _refuse(
             "FIELD", "NOT_NFC", field=field,
             public_code="SNAPSHOT_FIELD_INVALID",
         )
+
+
+def _text_limit_reason(scalars: int, units: int, minimum: int, maximum: int) -> str | None:
+    scalar_bad = not minimum <= scalars <= maximum
+    units_bad = not minimum <= units <= maximum
+    if not scalar_bad and not units_bad:
+        return None
+    if scalars < minimum or (scalar_bad and not units_bad):
+        return "SCALAR_LIMIT"
+    if scalar_bad and units_bad:
+        return "SCALAR_AND_UTF16_LIMIT"
+    return "UTF16_LIMIT"
+
+
+def _validate_text_length(value: str, field: str) -> None:
     scalars, units = _text_metrics(value)
     minimum = 1 if field == "title" else 0
     maximum = 256 if field == "title" else 4096
-    scalar_bad = not minimum <= scalars <= maximum
-    units_bad = not minimum <= units <= maximum
-    if scalar_bad or units_bad:
-        reason = (
-            "SCALAR_LIMIT"
-            if scalars < minimum
-            else "SCALAR_AND_UTF16_LIMIT"
-            if scalar_bad and units_bad
-            else "SCALAR_LIMIT"
-            if scalar_bad
-            else "UTF16_LIMIT"
-        )
+    reason = _text_limit_reason(scalars, units, minimum, maximum)
+    if reason is not None:
         _refuse(
             "FIELD",
             reason,
@@ -184,12 +188,20 @@ def validate_text(value: Any, field: str) -> str:
             public_code="SNAPSHOT_FIELD_INVALID",
             measured={"scalars": scalars, "utf16_code_units": units},
         )
+
+
+def validate_text(value: Any, field: str) -> str:
+    if field not in {"title", "detail"}:
+        raise ValueError("unknown snapshot text field")
+    if not isinstance(value, str):
+        _refuse("FIELD", "WRONG_TYPE", field=field)
+    _validate_text_characters(value, field)
+    _validate_text_normalization(value, field)
+    _validate_text_length(value, field)
     return value
 
 
-def validate_snapshot_object(
-    value: Any, *, safety: bool = True
-) -> dict[str, Any]:
+def _validate_snapshot_keys(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         _refuse("JSON_OBJECT", "TOP_LEVEL_NOT_OBJECT")
     keys = set(value)
@@ -201,60 +213,92 @@ def validate_snapshot_object(
         _refuse("KEY_SET", "UNKNOWN_FIELD")
     if missing:
         _refuse("KEY_SET", "MISSING_FIELD")
+    return value
 
-    if not isinstance(value["format"], str):
+
+def _validate_snapshot_format(value: Any) -> None:
+    if not isinstance(value, str):
         _refuse("FIELD", "WRONG_TYPE", field="format")
-    if value["format"] != SNAPSHOT_FORMAT:
+    if value != SNAPSHOT_FORMAT:
         _refuse("FIELD", "FORMAT_INVALID", field="format")
+
+
+def _validate_legacy_task_id(value: Any) -> str:
+    if not isinstance(value, str):
+        _refuse("FIELD", "WRONG_TYPE", field="legacy_task_id")
+    if _LEGACY_ID.fullmatch(value) is None:
+        _refuse("FIELD", "LEGACY_TASK_ID_INVALID", field="legacy_task_id")
+    return value
+
+
+def _validate_revision(value: Any) -> int:
+    if type(value) is not int:
+        _refuse("FIELD", "WRONG_TYPE", field="revision")
+    if not 0 <= value <= MAX_REVISION:
+        _refuse("FIELD", "REVISION_RANGE", field="revision")
+    return value
+
+
+def _validate_enum(value: Any, field: str, allowed: set[str]) -> str:
+    if not isinstance(value, str):
+        _refuse("FIELD", "WRONG_TYPE", field=field)
+    if value not in allowed:
+        _refuse("FIELD", "ENUM_INVALID", field=field)
+    return value
+
+
+def _validate_due_date(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        _refuse("FIELD", "WRONG_TYPE", field="due_date")
+    try:
+        parsed = dt.date.fromisoformat(value)
+    except ValueError:
+        _refuse("FIELD", "DATE_INVALID", field="due_date")
+    if parsed.isoformat() != value:
+        _refuse("FIELD", "DATE_INVALID", field="due_date")
+    return value
+
+
+def _validate_origin(value: Any, workspace_uid: str, task_uid: str) -> str:
+    expected = "workstack://{}/planning-tasks/{}".format(workspace_uid, task_uid)
+    if not isinstance(value, str):
+        _refuse("FIELD", "WRONG_TYPE", field="origin_ref")
+    if value != expected:
+        _refuse("ORIGIN", "ORIGIN_DERIVATION_MISMATCH", field="origin_ref")
+    return value
+
+
+def _validate_snapshot_safety(title: str, detail: str) -> None:
+    for field, text in (("title", title), ("detail", detail)):
+        decision = evaluate_safety(text, field)
+        if decision["decision"] == "REFUSE":
+            _refuse(
+                "SAFETY",
+                decision["rule"],
+                field=field,
+                public_code=decision["code"],
+            )
+
+
+def validate_snapshot_object(
+    value: Any, *, safety: bool = True
+) -> dict[str, Any]:
+    value = _validate_snapshot_keys(value)
+    _validate_snapshot_format(value["format"])
     workspace_uid = _uuid(value["workspace_uid"], "workspace_uid")
     task_uid = _uuid(value["planning_task_uid"], "planning_task_uid")
-    legacy_id = value["legacy_task_id"]
-    if not isinstance(legacy_id, str):
-        _refuse("FIELD", "WRONG_TYPE", field="legacy_task_id")
-    if _LEGACY_ID.fullmatch(legacy_id) is None:
-        _refuse("FIELD", "LEGACY_TASK_ID_INVALID", field="legacy_task_id")
-    revision = value["revision"]
-    if type(revision) is not int:
-        _refuse("FIELD", "WRONG_TYPE", field="revision")
-    if not 0 <= revision <= MAX_REVISION:
-        _refuse("FIELD", "REVISION_RANGE", field="revision")
+    _validate_legacy_task_id(value["legacy_task_id"])
+    _validate_revision(value["revision"])
     title = validate_text(value["title"], "title")
     detail = validate_text(value["detail"], "detail")
-    if not isinstance(value["planning_status"], str):
-        _refuse("FIELD", "WRONG_TYPE", field="planning_status")
-    if value["planning_status"] not in {"open", "started", "done", "dropped"}:
-        _refuse("FIELD", "ENUM_INVALID", field="planning_status")
-    if not isinstance(value["planning_priority"], str):
-        _refuse("FIELD", "WRONG_TYPE", field="planning_priority")
-    if value["planning_priority"] not in {"P0", "P1", "P2", "P3"}:
-        _refuse("FIELD", "ENUM_INVALID", field="planning_priority")
-    due_date = value["due_date"]
-    if due_date is not None:
-        if not isinstance(due_date, str):
-            _refuse("FIELD", "WRONG_TYPE", field="due_date")
-        try:
-            parsed = dt.date.fromisoformat(due_date)
-        except ValueError:
-            _refuse("FIELD", "DATE_INVALID", field="due_date")
-        if parsed.isoformat() != due_date:
-            _refuse("FIELD", "DATE_INVALID", field="due_date")
-    expected_origin = "workstack://{}/planning-tasks/{}".format(
-        workspace_uid, task_uid
-    )
-    if not isinstance(value["origin_ref"], str):
-        _refuse("FIELD", "WRONG_TYPE", field="origin_ref")
-    if value["origin_ref"] != expected_origin:
-        _refuse("ORIGIN", "ORIGIN_DERIVATION_MISMATCH", field="origin_ref")
+    _validate_enum(value["planning_status"], "planning_status", {"open", "started", "done", "dropped"})
+    _validate_enum(value["planning_priority"], "planning_priority", {"P0", "P1", "P2", "P3"})
+    _validate_due_date(value["due_date"])
+    _validate_origin(value["origin_ref"], workspace_uid, task_uid)
     if safety:
-        for field, text in (("title", title), ("detail", detail)):
-            decision = evaluate_safety(text, field)
-            if decision["decision"] == "REFUSE":
-                _refuse(
-                    "SAFETY",
-                    decision["rule"],
-                    field=field,
-                    public_code=decision["code"],
-                )
+        _validate_snapshot_safety(title, detail)
     return dict(value)
 
 
@@ -288,86 +332,91 @@ def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+def _skip_json_whitespace(text: str, index: int) -> int:
+    while index < len(text) and text[index].isspace():
+        index += 1
+    return index
+
+
+def _json_string_end(text: str, index: int) -> int:
+    index += 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == '"':
+            return index + 1
+        index += 1
+    return len(text)
+
+
+def _read_top_level_key(body: str, index: int) -> tuple[str, int] | None:
+    index = _skip_json_whitespace(body, index)
+    if index >= len(body) or body[index] in "}":
+        return None
+    if body[index] != '"':
+        return None
+    end = _json_string_end(body, index)
+    try:
+        key = json.loads(body[index:end])
+    except json.JSONDecodeError:
+        return None
+    return key, end
+
+
+def _next_top_level_member(body: str, index: int) -> int | None:
+    depth = 0
+    while index < len(body):
+        character = body[index]
+        if character == '"':
+            index = _json_string_end(body, index)
+            continue
+        if character in "[{":
+            depth += 1
+        elif character in "]}":
+            if character == "}" and depth == 0:
+                return None
+            depth -= 1
+        elif character == "," and depth == 0:
+            return index + 1
+        index += 1
+    return None
+
+
 def _has_duplicate_top_level_key(text: str) -> bool:
     body = text[:-1]
-    index = 0
-    while index < len(body) and body[index].isspace():
-        index += 1
+    index = _skip_json_whitespace(body, 0)
     if index >= len(body) or body[index] != "{":
         return False
     index += 1
     seen: set[str] = set()
     while index < len(body):
-        while index < len(body) and body[index].isspace():
-            index += 1
-        if index < len(body) and body[index] == "}":
+        member = _read_top_level_key(body, index)
+        if member is None:
             return False
-        if index >= len(body) or body[index] != '"':
-            return False
-        start = index
-        index += 1
-        escaped = False
-        while index < len(body):
-            character = body[index]
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                index += 1
-                break
-            index += 1
-        try:
-            key = json.loads(body[start:index])
-        except json.JSONDecodeError:
-            return False
+        key, index = member
         if key in seen:
             return True
         seen.add(key)
-        while index < len(body) and body[index].isspace():
-            index += 1
+        index = _skip_json_whitespace(body, index)
         if index >= len(body) or body[index] != ":":
             return False
-        index += 1
-        depth = 0
-        in_string = False
-        escaped = False
-        while index < len(body):
-            character = body[index]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif character == "\\":
-                    escaped = True
-                elif character == '"':
-                    in_string = False
-            elif character == '"':
-                in_string = True
-            elif character in "[{":
-                depth += 1
-            elif character in "]}":
-                if character == "}" and depth == 0:
-                    return False
-                depth -= 1
-            elif character == "," and depth == 0:
-                index += 1
-                break
-            index += 1
+        index = _next_top_level_member(body, index + 1)
+        if index is None:
+            return False
     return False
 
 
-def validate_snapshot_bytes(
-    raw: bytes, supplied_digest: str | None = None
-) -> dict[str, Any]:
-    if not isinstance(raw, bytes):
-        raise TypeError("snapshot bytes must be bytes")
-    if len(raw) > MAX_SNAPSHOT_BYTES:
-        _refuse("BYTE_LENGTH", "SNAPSHOT_SIZE_LIMIT")
-    if supplied_digest is not None:
-        if not isinstance(supplied_digest, str) or _DIGEST.fullmatch(supplied_digest) is None:
-            _refuse("DIGEST", "DIGEST_SYNTAX")
-        if snapshot_digest(raw) != supplied_digest:
-            _refuse("DIGEST", "DIGEST_MISMATCH")
+def _validate_snapshot_digest(raw: bytes, supplied_digest: str | None) -> None:
+    if supplied_digest is None:
+        return
+    if not isinstance(supplied_digest, str) or _DIGEST.fullmatch(supplied_digest) is None:
+        _refuse("DIGEST", "DIGEST_SYNTAX")
+    if snapshot_digest(raw) != supplied_digest:
+        _refuse("DIGEST", "DIGEST_MISMATCH")
+
+
+def _decode_snapshot_envelope(raw: bytes) -> str:
     if raw.startswith(b"\xef\xbb\xbf"):
         _refuse("BYTE_ENVELOPE", "BOM_FORBIDDEN")
     try:
@@ -380,33 +429,49 @@ def validate_snapshot_bytes(
         _refuse("BYTE_ENVELOPE", "FINAL_LF_MISSING")
     if raw.endswith(b"\n\n"):
         _refuse("BYTE_ENVELOPE", "TRAILING_BYTES")
+    return text
+
+
+def _parse_snapshot_json(raw: bytes, text: str) -> dict[str, Any]:
     if _has_duplicate_top_level_key(text):
         _refuse("JSON_OBJECT", "DUPLICATE_KEY")
     revision_match = _REVISION_TOKEN.search(raw)
     if revision_match is not None and _SHORTEST_INTEGER.fullmatch(revision_match.group(1)) is None:
         _refuse("JSON_OBJECT", "REVISION_NUMERIC_FORM")
     try:
-        value = json.loads(text[:-1], object_pairs_hook=_object_without_duplicates)
+        return json.loads(text[:-1], object_pairs_hook=_object_without_duplicates)
     except _DuplicateKeyError:
         _refuse("JSON_OBJECT", "DUPLICATE_KEY")
     except json.JSONDecodeError:
         _refuse("JSON_OBJECT", "JSON_INVALID")
+
+
+def _noncanonical_reason(raw: bytes, canonical: bytes) -> str:
+    if b"\\/" in raw:
+        return "NONCANONICAL_ESCAPE"
+    if re.search(rb"\\u[0-9A-Fa-f]{4}", raw):
+        return "NONCANONICAL_UNICODE_ESCAPE"
+    raw_keys = re.findall(rb'"([^"\\]+)":', raw)
+    canonical_keys = re.findall(rb'"([^"\\]+)":', canonical)
+    if sorted(raw_keys) == sorted(canonical_keys) and raw_keys != canonical_keys:
+        return "NONCANONICAL_KEY_ORDER"
+    return "NONCANONICAL_JSON"
+
+
+def validate_snapshot_bytes(
+    raw: bytes, supplied_digest: str | None = None
+) -> dict[str, Any]:
+    if not isinstance(raw, bytes):
+        raise TypeError("snapshot bytes must be bytes")
+    if len(raw) > MAX_SNAPSHOT_BYTES:
+        _refuse("BYTE_LENGTH", "SNAPSHOT_SIZE_LIMIT")
+    _validate_snapshot_digest(raw, supplied_digest)
+    text = _decode_snapshot_envelope(raw)
+    value = _parse_snapshot_json(raw, text)
     validated = validate_snapshot_object(value)
     canonical = canonical_snapshot_bytes(validated)
     if canonical != raw:
-        if b"\\/" in raw:
-            reason = "NONCANONICAL_ESCAPE"
-        elif re.search(rb"\\u[0-9A-Fa-f]{4}", raw):
-            reason = "NONCANONICAL_UNICODE_ESCAPE"
-        else:
-            raw_keys = re.findall(rb'"([^"\\]+)":', raw)
-            canonical_keys = re.findall(rb'"([^"\\]+)":', canonical)
-            reason = (
-                "NONCANONICAL_KEY_ORDER"
-                if sorted(raw_keys) == sorted(canonical_keys) and raw_keys != canonical_keys
-                else "NONCANONICAL_JSON"
-            )
-        _refuse("CANONICAL_BYTES", reason)
+        _refuse("CANONICAL_BYTES", _noncanonical_reason(raw, canonical))
     return validated
 
 

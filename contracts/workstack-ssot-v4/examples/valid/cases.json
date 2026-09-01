@@ -1,0 +1,511 @@
+{
+  "cases": [
+    {
+      "name": "store-metadata",
+      "schema": "store.schema.json",
+      "instance": {
+        "format": "workstack.ssot",
+        "schema_version": 4,
+        "schema_set": "workstack.ssot.v4",
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "created_at": "2026-09-01T00:00:00Z"
+      }
+    },
+    {
+      "name": "workspace",
+      "schema": "workspace.schema.json",
+      "instance": {
+        "format": "workstack.workspace",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "uid": "11111111-1111-1111-1111-111111111111",
+        "revision": 0,
+        "created_at": null,
+        "updated_at": null,
+        "display_id": "product-planning",
+        "name": "Product planning",
+        "description": "A normalized Work Stack workspace."
+      }
+    },
+    {
+      "name": "task",
+      "schema": "task.schema.json",
+      "instance": {
+        "format": "workstack.task",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "uid": "22222222-2222-2222-2222-222222222222",
+        "revision": 4,
+        "created_at": "2026-09-01T01:00:00Z",
+        "updated_at": "2026-09-01T02:00:00Z",
+        "display_id": "T-0031",
+        "title": "Normalize the SSOT contract",
+        "detail": "Make the storage boundary executable before enabling v4 writes.",
+        "priority": "P1",
+        "due": "2026-09-05",
+        "scheduled": null,
+        "estimate_minutes": 90,
+        "tags": ["storage", "contract"],
+        "objective_uids": ["33333333-3333-3333-3333-333333333333"],
+        "parent_uid": null,
+        "dependency_uids": [],
+        "reference_uids": [],
+        "subtasks": [
+          {
+            "uid": "99999999-9999-9999-9999-999999999999",
+            "display_id": "S-1",
+            "title": "Publish valid examples",
+            "priority": "P2",
+            "status": "done"
+          }
+        ]
+      }
+    },
+    {
+      "name": "objective",
+      "schema": "objective.schema.json",
+      "instance": {
+        "format": "workstack.objective",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "uid": "33333333-3333-3333-3333-333333333333",
+        "revision": 2,
+        "created_at": "2026-09-01T00:30:00Z",
+        "updated_at": "2026-09-01T02:00:00Z",
+        "display_id": "O-6",
+        "title": "Make Work Stack storage durable",
+        "description": "Preserve readable authority while improving its contracts.",
+        "status": "active",
+        "quarter": "2026-Q3",
+        "key_results": [
+          {
+            "uid": "88888888-8888-8888-8888-888888888888",
+            "display_id": "KR-1",
+            "title": "Ship executable v4 contracts",
+            "status": "active",
+            "target": "All schema artifact tests pass",
+            "progress": 50
+          }
+        ],
+        "revision_origin": "explicit"
+      }
+    },
+    {
+      "name": "capture",
+      "schema": "capture.schema.json",
+      "instance": {
+        "format": "workstack.capture",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "uid": "44444444-4444-4444-4444-444444444444",
+        "revision": 1,
+        "created_at": "2026-09-01T03:00:00Z",
+        "updated_at": "2026-09-01T03:00:00Z",
+        "display_id": "C-0001",
+        "capture_packet_schema_version": "1.0",
+        "status": "linked",
+        "source_key": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "source": {
+          "provider": "manual",
+          "resource_type": "microsoft-web.outlook",
+          "connection_ref": "browser-user-selection",
+          "container_ref": "microsoft-outlook",
+          "object_ref": "message:sample",
+          "version_ref": "captured:2026-09-01T03:00:00Z",
+          "display_title": "Reliability review",
+          "web_url": "https://outlook.office.com/mail/id/sample",
+          "retrieved_at": "2026-09-01T03:00:00Z",
+          "fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        },
+        "normalized": {
+          "summary": "Prepare an owner-by-owner action plan.",
+          "context": "The review needs deployment and notification follow-up.",
+          "action_items": [
+            {
+              "id": "A-5b744393a6b9fd10",
+              "title": "Assign the rollback owner",
+              "detail": "Confirm ownership before release.",
+              "priority": "P1",
+              "due": null,
+              "task_display_id": "T-0031",
+              "task_uid": "22222222-2222-2222-2222-222222222222"
+            }
+          ],
+          "tags": ["source:outlook"]
+        },
+        "task_hints": ["T-0031"],
+        "provenance": {
+          "capture_mode": "manual",
+          "adapter": "microsoft-web-capture",
+          "adapter_version": "1.0.0",
+          "redaction_policy_version": "workstack-redaction-v1",
+          "raw_retained": false,
+          "created_at": "2026-09-01T03:00:00Z"
+        },
+        "linked_task_uids": ["22222222-2222-2222-2222-222222222222"],
+        "converted_task_uids": [],
+        "recent_revisions": [
+          {
+            "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "version_ref": "change-key:previous",
+            "retrieved_at": "2026-08-31T03:00:00Z",
+            "provenance_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "redaction_policy_version": "workstack-redaction-v1"
+          }
+        ]
+      }
+    },
+    {
+      "name": "legacy-objective-without-source-revision",
+      "schema": "objective.schema.json",
+      "instance": {
+        "format": "workstack.objective",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "uid": "33333333-3333-3333-3333-333333333334",
+        "revision": 0,
+        "created_at": "2026-09-01",
+        "updated_at": "2026-09-01",
+        "display_id": "O-7",
+        "title": "Preserve legacy absence",
+        "status": "active",
+        "quarter": null,
+        "key_results": [],
+        "revision_origin": "legacy_missing"
+      }
+    },
+    {
+      "name": "reply",
+      "schema": "reply.schema.json",
+      "instance": {
+        "format": "workstack.reply",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "uid": "55555555-5555-5555-5555-555555555555",
+        "revision": 0,
+        "created_at": "2026-09-01T04:00:00Z",
+        "updated_at": "2026-09-01T04:00:00Z",
+        "display_id": "R-0001",
+        "task_uid": "22222222-2222-2222-2222-222222222222",
+        "capture_uid": "44444444-4444-4444-4444-444444444444",
+        "capture_revision": 1,
+        "provider": "microsoft-outlook",
+        "capability": "outlook.reply",
+        "target": {
+          "resource_type": "message",
+          "connection_ref": "work-account",
+          "container_ref": "inbox",
+          "object_ref": "message:sample",
+          "version_ref": "etag:1",
+          "display_title": "Reliability review"
+        },
+        "body": "I will send the action plan before Thursday.",
+        "body_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "target_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "state": "sent",
+        "approved_at": "2026-09-01T04:00:00Z",
+        "receipt": {
+          "schema_version": "1.0",
+          "reply_display_id": "R-0001",
+          "provider": "microsoft-outlook",
+          "outcome": "sent",
+          "occurred_at": "2026-09-01T04:01:00Z",
+          "body_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "target_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "remote_message_ref": "message:sent-sample",
+          "web_url": "https://outlook.office.com/mail/sentitems/id/sample"
+        }
+      }
+    },
+    {
+      "name": "note",
+      "schema": "note.schema.json",
+      "instance": {
+        "format": "workstack.note",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "uid": "66666666-6666-6666-6666-666666666666",
+        "revision": 0,
+        "created_at": "2026-09-01T05:00:00Z",
+        "updated_at": "2026-09-01T05:00:00Z",
+        "display_id": "N-0001",
+        "note_kind": "standalone",
+        "task_uid": "22222222-2222-2222-2222-222222222222",
+        "text": "Projection indexes remain disposable.",
+        "links": ["O-6", "T-0031"],
+        "created_by": "local.user"
+      }
+    },
+    {
+      "name": "planning-status-event",
+      "schema": "planning-status-event.schema.json",
+      "instance": {
+        "format": "workstack.planning-status-event",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "event_uid": "77777777-7777-7777-7777-777777777771",
+        "sequence": 1,
+        "record_uid": "22222222-2222-2222-2222-222222222222",
+        "created_at": "2026-09-01T01:00:00Z",
+        "actor": "workstack.migration",
+        "provenance": "store.v3",
+        "legacy_fact_id": "PS-000001",
+        "task_uid": "22222222-2222-2222-2222-222222222222",
+        "task_display_id": "T-0031",
+        "previous_event_uid": null,
+        "previous_legacy_fact_id": null,
+        "prior_revision": null,
+        "new_revision": 0,
+        "prior_status": null,
+        "status": "open"
+      }
+    },
+    {
+      "name": "task-annotation-note",
+      "schema": "note.schema.json",
+      "instance": {
+        "format": "workstack.note",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "uid": "66666666-6666-6666-6666-666666666667",
+        "revision": 0,
+        "created_at": "2026-09-01",
+        "updated_at": "2026-09-01",
+        "display_id": "N-0002",
+        "note_kind": "task_annotation",
+        "task_uid": "22222222-2222-2222-2222-222222222222",
+        "text": "Keep the v3 source bytes unchanged.",
+        "links": [],
+        "created_by": "workstack.migration"
+      }
+    },
+    {
+      "name": "activity-event",
+      "schema": "activity-event.schema.json",
+      "instance": {
+        "format": "workstack.activity-event",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "event_uid": "77777777-7777-7777-7777-777777777772",
+        "sequence": 2,
+        "record_uid": "22222222-2222-2222-2222-222222222222",
+        "created_at": "2026-09-01T02:00:00Z",
+        "actor": null,
+        "provenance": "store.v3",
+        "legacy_event_id": "E-000001",
+        "event_type": "task.updated",
+        "details": {
+          "fields": ["detail"],
+          "revision": 4,
+          "verified": true,
+          "prior": null,
+          "nested": {"labels": ["storage", "contract"]}
+        },
+        "capture_uid": null,
+        "task_uid": "22222222-2222-2222-2222-222222222222",
+        "reply_uid": null
+      }
+    },
+    {
+      "name": "worklog-check-in-event",
+      "schema": "worklog-event.schema.json",
+      "instance": {
+        "format": "workstack.worklog-event",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "event_uid": "77777777-7777-7777-7777-777777777773",
+        "sequence": 3,
+        "record_uid": null,
+        "created_at": "2026-09-01",
+        "actor": null,
+        "provenance": "store.v3",
+        "kind": "check-in",
+        "work_date": "2026-09-01",
+        "start_time": "09:00"
+      }
+    },
+    {
+      "name": "worklog-entry-event",
+      "schema": "worklog-event.schema.json",
+      "instance": {
+        "format": "workstack.worklog-event",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "event_uid": "77777777-7777-7777-7777-777777777774",
+        "sequence": 4,
+        "record_uid": "22222222-2222-2222-2222-222222222222",
+        "created_at": "2026-09-01",
+        "actor": null,
+        "provenance": "store.v3",
+        "kind": "entry",
+        "work_date": "2026-09-01",
+        "task_uid": "22222222-2222-2222-2222-222222222222",
+        "task_display_id": "T-0031",
+        "task_title": "Normalize the SSOT contract",
+        "done": ["Captured the field inventory"],
+        "next": ["Compare the v4 projection"],
+        "blockers": ["None"],
+        "session_id": "WS-000001",
+        "duration_seconds": 1800
+      }
+    },
+    {
+      "name": "worklog-session-event",
+      "schema": "worklog-event.schema.json",
+      "instance": {
+        "format": "workstack.worklog-event",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "event_uid": "77777777-7777-7777-7777-777777777775",
+        "sequence": 5,
+        "record_uid": "22222222-2222-2222-2222-222222222222",
+        "created_at": "2026-09-01T01:00:00Z",
+        "actor": null,
+        "provenance": "store.v3",
+        "kind": "session",
+        "session_id": "WS-000001",
+        "work_date": "2026-09-01",
+        "task_uid": "22222222-2222-2222-2222-222222222222",
+        "task_display_id": "T-0031",
+        "task_title": "Normalize the SSOT contract",
+        "state": "stopped",
+        "started_at": "2026-09-01T01:00:00Z",
+        "updated_at": "2026-09-01T01:31:00Z",
+        "segments": [
+          {"started_at": "2026-09-01T01:00:00Z", "ended_at": "2026-09-01T01:15:00Z"},
+          {"started_at": "2026-09-01T01:15:00Z", "ended_at": "2026-09-01T01:30:00Z"}
+        ],
+        "worklog_state": "recorded"
+      }
+    },
+    {
+      "name": "migration-receipt",
+      "schema": "migration-receipt.schema.json",
+      "instance": {
+        "format": "workstack.migration-receipt",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "migration_uid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "algorithm_version": "workstack.v3-to-v4.v1",
+        "created_at": "2026-09-01T06:00:00Z",
+        "state": "verified_candidate",
+        "source": {
+          "format_version": 3,
+          "authority_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "semantic_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "authoritative_file_count": 9,
+          "byte_count": 32768,
+          "migration_evidence": {
+            "identity": {
+              "id": "workstack.store.v1-to-v2",
+              "origin": "migrated_v1",
+              "source_sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "planning_status": {
+              "id": "workstack.planning-status.v1",
+              "origin": "migrated_v2",
+              "source_sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+            }
+          }
+        },
+        "candidate": {
+          "format_version": 4,
+          "authority_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "semantic_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "record_count": 7,
+          "stream_event_count": 5
+        },
+        "generated_id_roster": [
+          {
+            "entity_kind": "objective",
+            "source_identity_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            "generated_uid": "33333333-3333-3333-3333-333333333333"
+          },
+          {
+            "entity_kind": "worklog_entry",
+            "source_identity_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            "generated_uid": "77777777-7777-4777-8777-777777777777"
+          }
+        ],
+      "task_note_source_roster": [
+          {
+            "task_uid": "22222222-2222-2222-2222-222222222222",
+            "source_index": 0,
+          "generated_note_uid": "66666666-6666-6666-6666-666666666667"
+        }
+      ],
+      "runtime_evidence": {
+        "idempotency_ledger_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+        "idempotency_record_count": 2
+      },
+      "artifacts": {
+          "backup": {
+            "artifact_uid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+            "byte_count": 49152,
+            "state": "verified"
+          },
+          "candidate": {
+            "artifact_uid": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "byte_count": 65536,
+            "state": "parity_verified"
+          }
+        },
+        "checks": {
+          "source_unchanged": true,
+          "schemas_valid": true,
+          "cross_invariants_valid": true,
+          "semantic_parity": true
+        }
+      }
+    },
+    {
+      "name": "idempotency-ledger",
+      "schema": "idempotency-ledger.schema.json",
+      "instance": {
+        "format": "workstack.idempotency-ledger",
+        "schema_version": 1,
+        "workspace_uid": "11111111-1111-1111-1111-111111111111",
+        "updated_at": "2026-09-01T06:00:00Z",
+        "compaction_policy": {
+          "retention_days": 30,
+          "max_records": 10000
+        },
+        "records": [
+          {
+            "key": "create-task-0001",
+            "method": "POST",
+            "path": "/api/v1/tasks",
+            "request_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+            "response_status": 201,
+            "created_at": "2026-09-01T01:00:00Z",
+            "expires_at": "2026-10-01T01:00:00Z",
+            "response_body": {
+              "data": {
+                "id": "T-0031",
+                "uid": "22222222-2222-2222-2222-222222222222",
+                "revision": 0
+              },
+              "meta": { "replayed": false }
+            }
+          },
+          {
+            "key": "approve-reply-0001",
+            "method": "POST",
+            "path": "/api/v1/replies/R-0001/approve",
+            "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "response_status": 201,
+            "created_at": "2026-09-01T04:00:00Z",
+            "expires_at": "2026-10-01T04:00:00Z",
+            "response_ref": {
+              "kind": "reply",
+              "record_uid": "55555555-5555-5555-5555-555555555555"
+            },
+            "response_meta": { "duplicate": false }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,5 +1,68 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
+
+type ThemeName = 'dark' | 'light'
+
+async function useTheme(page: Page, theme: ThemeName) {
+  const current = await page.locator('html').getAttribute('data-theme')
+  if (current !== theme) {
+    await page.getByRole('button', { name: `Use ${theme} theme` }).click()
+  }
+  await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+}
+
+async function renderedThemeStyle(locator: Locator) {
+  return locator.evaluate((element) => {
+    const style = window.getComputedStyle(element)
+    return {
+      backgroundColor: style.backgroundColor,
+      backgroundImage: style.backgroundImage,
+      borderColor: style.borderColor,
+      color: style.color,
+    }
+  })
+}
+
+type RenderedThemeStyle = Awaited<ReturnType<typeof renderedThemeStyle>>
+
+async function waitForRenderedThemeChange(
+  locator: Locator,
+  previous: RenderedThemeStyle,
+  properties: Array<keyof RenderedThemeStyle>,
+) {
+  for (const property of properties) {
+    await expect.poll(
+      async () => (await renderedThemeStyle(locator))[property],
+      { message: `${property} should follow the selected product theme` },
+    ).not.toBe(previous[property])
+  }
+  return renderedThemeStyle(locator)
+}
+
+function relativeLuminance(hexColor: string) {
+  const hex = hexColor.trim().replace(/^#/, '')
+  if (!/^[0-9a-f]{6}$/i.test(hex)) throw new Error(`Expected an opaque six-digit color, received ${hexColor}`)
+  const channels = [0, 2, 4].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255)
+  const [red, green, blue] = channels.map((channel) => (
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  ))
+  return (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+}
+
+function contrastRatio(first: string, second: string) {
+  const firstLuminance = relativeLuminance(first)
+  const secondLuminance = relativeLuminance(second)
+  return (Math.max(firstLuminance, secondLuminance) + 0.05)
+    / (Math.min(firstLuminance, secondLuminance) + 0.05)
+}
+
+async function semanticTokenContrast(page: Page, foreground: string, background: string) {
+  const values = await page.locator('html').evaluate((element, properties) => {
+    const style = window.getComputedStyle(element)
+    return properties.map((property) => style.getPropertyValue(property).trim())
+  }, [foreground, background])
+  return contrastRatio(values[0], values[1])
+}
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/?view=board')
@@ -64,7 +127,7 @@ test('Quick Add creates one Task and opens its authoritative drawer', async ({ p
 test('Workspace actions downloads an explicitly confirmed verified local backup', async ({ page }) => {
   await page.getByRole('button', { name: 'More workspace actions' }).click()
   const dialog = page.getByRole('dialog', { name: 'Workspace actions' })
-  await expect(dialog.getByText(/Work Stack 1\.0\.0/)).toBeVisible()
+  await expect(dialog.getByText(/Work Stack \d+\.\d+\.\d+/)).toBeVisible()
   await expect(dialog.getByText(/Ready · schema/)).toBeVisible()
   await expect(dialog.getByText('Manual, verified updates')).toBeVisible()
   await expect(dialog.getByRole('button', { name: 'Copy safe support summary' })).toBeVisible()
@@ -475,6 +538,94 @@ test('Quick Add restores a local draft and the latest status transition is undoa
   await page.getByRole('button', { name: 'Undo' }).click()
   await expect(status).toHaveValue('open')
   await expect(page.getByText('T-0006 restored to open')).toBeVisible()
+})
+
+test('theme switching recolors the Workspace Graph and rendered MiniMap', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/?view=graph')
+  const graph = page.locator('.wsv-graph')
+  const graphNode = page.locator('.wsv-graph-node').first()
+  const miniMap = page.locator('.react-flow__minimap')
+  await expect(graph).toBeVisible()
+  await expect(graphNode).toBeVisible()
+  await expect(miniMap).toBeVisible()
+
+  await useTheme(page, 'dark')
+  const dark = {
+    graph: await renderedThemeStyle(graph),
+    miniMap: await renderedThemeStyle(miniMap),
+    node: await renderedThemeStyle(graphNode),
+  }
+
+  await useTheme(page, 'light')
+  const light = {
+    graph: await waitForRenderedThemeChange(graph, dark.graph, ['backgroundImage']),
+    miniMap: await waitForRenderedThemeChange(miniMap, dark.miniMap, ['backgroundColor']),
+    node: await waitForRenderedThemeChange(graphNode, dark.node, ['backgroundImage', 'borderColor']),
+  }
+  expect(light.graph.backgroundImage).not.toBe(dark.graph.backgroundImage)
+  expect(light.miniMap.backgroundColor).not.toBe(dark.miniMap.backgroundColor)
+  expect(light.node.backgroundImage).not.toBe(dark.node.backgroundImage)
+  expect(light.node.borderColor).not.toBe(dark.node.borderColor)
+
+  await useTheme(page, 'dark')
+  const restoredGraph = await waitForRenderedThemeChange(graph, light.graph, ['backgroundImage'])
+  const restoredMiniMap = await waitForRenderedThemeChange(miniMap, light.miniMap, ['backgroundColor'])
+  expect(restoredGraph).toEqual(dark.graph)
+  expect(restoredMiniMap).toEqual(dark.miniMap)
+})
+
+test('theme switching recolors Focus, Context Inbox, and an open dialog', async ({ page }) => {
+  await page.goto('/?surface=focus')
+  const focusRow = page.locator('.focus-row').first()
+  await expect(focusRow).toBeVisible()
+  await useTheme(page, 'dark')
+  const darkFocus = await renderedThemeStyle(focusRow)
+  await useTheme(page, 'light')
+  const lightFocus = await waitForRenderedThemeChange(focusRow, darkFocus, ['backgroundImage', 'borderColor'])
+  expect(lightFocus.backgroundImage).not.toBe(darkFocus.backgroundImage)
+  expect(lightFocus.borderColor).not.toBe(darkFocus.borderColor)
+
+  await page.goto('/?surface=inbox')
+  const sourceDock = page.locator('.source-provider-dock')
+  await expect(sourceDock).toBeVisible()
+  await useTheme(page, 'light')
+  const lightDock = await renderedThemeStyle(sourceDock)
+  await page.getByRole('button', { name: 'Import packet' }).first().click()
+  const dialog = page.getByRole('dialog', { name: 'Import context' })
+  const dialogSurface = dialog.locator('.dialog__surface')
+  await expect(dialogSurface).toBeVisible()
+  const lightDialog = await renderedThemeStyle(dialogSurface)
+
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await useTheme(page, 'dark')
+  const darkDock = await waitForRenderedThemeChange(sourceDock, lightDock, ['backgroundImage', 'borderColor'])
+  await page.getByRole('button', { name: 'Import packet' }).first().click()
+  await expect(dialogSurface).toBeVisible()
+  const darkDialog = await waitForRenderedThemeChange(dialogSurface, lightDialog, ['backgroundImage', 'borderColor'])
+  expect(darkDock.backgroundImage).not.toBe(lightDock.backgroundImage)
+  expect(darkDock.borderColor).not.toBe(lightDock.borderColor)
+  expect(darkDialog.backgroundImage).not.toBe(lightDialog.backgroundImage)
+  expect(darkDialog.borderColor).not.toBe(lightDialog.borderColor)
+})
+
+test('both product themes retain accessible semantic token contrast', async ({ page }) => {
+  const pairs = [
+    ['--ws-text-primary', '--ws-surface-raised'],
+    ['--ws-graph-edge-label-text', '--ws-graph-edge-label-bg'],
+    ['--ws-status-success-text', '--ws-status-success-surface'],
+    ['--ws-status-warning-text', '--ws-status-warning-surface'],
+    ['--ws-status-danger-text', '--ws-status-danger-surface'],
+    ['--ws-text-muted', '--ws-status-neutral-surface'],
+  ] as const
+
+  for (const theme of ['dark', 'light'] as const) {
+    await useTheme(page, theme)
+    for (const [foreground, background] of pairs) {
+      const ratio = await semanticTokenContrast(page, foreground, background)
+      expect(ratio, `${theme}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5)
+    }
+  }
 })
 
 test('forced-colors mode keeps primary Board actions visible and focusable', async ({ page }) => {

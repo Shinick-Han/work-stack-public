@@ -44,6 +44,68 @@ class TaskCreationV1Test(unittest.TestCase):
         with self.assertRaises(DomainError):
             self.stack.create_task_v1({"title": "Valid"}, "short")
 
+    def test_strict_validation_precedence_and_schedule_normalization_are_frozen(self) -> None:
+        invalid = (
+            (
+                {"title": "Valid", "unknown": True, "detail": 42},
+                "task create has unknown fields",
+                {"fields": ["unknown"]},
+            ),
+            ({"title": " ", "detail": 42}, "title must be a non-empty string", {"field": "title"}),
+            ({"title": "Valid", "detail": 42, "priority": "urgent"}, "detail must be a string", {"field": "detail"}),
+            ({"title": "Valid", "priority": "urgent", "due": "tomorrow"}, "priority must be one of P0, P1, P2, P3", {"field": "priority"}),
+            ({"title": "Valid", "due": "tomorrow", "scheduled": "later"}, "due must be null or YYYY-MM-DD", {"field": "due"}),
+            ({"title": "Valid", "scheduled": "later", "estimate_minutes": True}, "scheduled must be null or YYYY-MM-DD", {"field": "scheduled"}),
+            ({"title": "Valid", "estimate_minutes": True, "tags": "bad"}, "estimate_minutes must be null or an integer from 1 to 1440", {"field": "estimate_minutes"}),
+            ({"title": "Valid", "tags": "bad", "objective_ids": "bad"}, "tags must be an array of strings", {"field": "tags"}),
+        )
+        before = {path.name: path.read_bytes() for path in self.root.glob("*.json")}
+        for index, (body, message, details) in enumerate(invalid):
+            with self.subTest(index=index):
+                with self.assertRaises(DomainError) as raised:
+                    self.stack.create_task_v1(body, "create.precedence.{:02d}".format(index))
+                self.assertEqual(str(raised.exception), message)
+                self.assertEqual(raised.exception.details, details)
+        self.assertEqual(
+            before,
+            {name: self.root.joinpath(name).read_bytes() for name in before},
+        )
+
+        objective = self.stack.add_objective("Execution quality")
+        created = self.stack.create_task_v1(
+            {
+                "title": "  Scheduled task  ",
+                "scheduled": "2030-02-03",
+                "estimate_minutes": 45,
+                "tags": [" beta ", "alpha", "beta"],
+                "objective_ids": [objective["id"].lower(), objective["id"]],
+            },
+            "create.schedule.0001",
+        )["body"]["data"]
+        self.assertEqual(created["title"], "Scheduled task")
+        self.assertEqual(created["scheduled"], "2030-02-03")
+        self.assertEqual(created["estimate_minutes"], 45)
+        self.assertEqual(created["tags"], ["alpha", "beta"])
+        self.assertEqual(created["objective_ids"], [objective["id"]])
+
+    def test_append_task_relationship_normalization_and_error_precedence_are_frozen(self) -> None:
+        parent = self.stack.add_task("Parent")
+        child = self.stack.add_task(
+            "Child",
+            parent_id="  {}  ".format(parent["id"].lower()),
+            dependencies=[parent["id"].lower(), parent["id"], " "],
+        )
+        self.assertEqual(child["parent_id"], parent["id"])
+        self.assertEqual(child["dependencies"], [parent["id"]])
+
+        with self.assertRaisesRegex(ValueError, "priority must be one of"):
+            self.stack.add_task("Valid", priority="urgent", due="tomorrow")
+        with self.assertRaisesRegex(ValueError, "unknown task ids: T-9999"):
+            self.stack.add_task(" ", parent_id="t-9999")
+        with self.assertRaisesRegex(ValueError, "title is required"):
+            self.stack.add_task(" ", objective_ids=["O-9999"])
+        self.assertEqual([task["id"] for task in self.stack.list_tasks(status="all")], [parent["id"], child["id"]])
+
     def test_first_creation_exact_replay_and_conflict(self) -> None:
         body = {
             "title": "  One task  ",

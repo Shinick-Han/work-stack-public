@@ -7,7 +7,7 @@ import { getErrorMessage, getObjectiveTitle } from '../../utils/format'
 import {
   blockingDependenciesFromIndex,
   indexDependencyTasks,
-} from '../tasks/taskRelationships'
+} from '../../domain/taskRelationships'
 
 interface ObjectiveHubPageProps {
   objectiveId: string

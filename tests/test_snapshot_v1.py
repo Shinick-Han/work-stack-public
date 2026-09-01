@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from workstack.snapshot import (
     validate_snapshot_object,
 )
 from workstack.snapshot_conformance import run_conformance_kit
+from workstack import snapshot_safety
 from workstack.snapshot_safety import evaluate_safety
 from workstack.unicode17 import UNICODE_DATA_VERSION, normalize_nfc
 
@@ -105,6 +107,59 @@ class SnapshotV1ConformanceTest(unittest.TestCase):
                     },
                 )
 
+    def test_s005_authority_boundary_is_characterized(self) -> None:
+        at = chr(64)
+        valid = (
+            "user:abcdefgh" + at + "example.com",
+            "user:abcdefgh" + at + "example.com:",
+            "user:abcdefgh" + at + "%41.example",
+            "user:abcdefgh" + at + "[::1]",
+            "user:abcdefgh" + at + "[::1]:443",
+            "user:abcdefgh" + at + "[v1.foo]",
+            "user:abcdefgh" + at,
+        )
+        invalid = (
+            "user:abcdefgh",
+            at + "example.com",
+            "%GG:abcdefgh" + at + "example.com",
+            "user:abcdefgh" + at + "café.example",
+            "user:abcdefgh" + at + "[",
+            "user:abcdefgh" + at + "[127.0.0.1]",
+            "user:abcdefgh" + at + "[v.foo]",
+            "user:abcdefgh" + at + "[v1.]",
+            "user:abcdefgh" + at + "[::1]tail",
+            "user:abcdefgh" + at + "[::1]:abc",
+            "user:abcdefgh" + at + "::1",
+            "user:abcdefgh" + at + ":443",
+            "user:abcdefgh" + at + "example.com:abc",
+            "user:abcdefgh" + at + "example[com",
+            "user:abcdefgh" + at + "example%",
+            "user:abcdefgh" + at + "example%G0",
+        )
+
+        for authority in valid:
+            with self.subTest(authority=authority, expected="valid"):
+                self.assertTrue(snapshot_safety._authority_valid(authority))
+        for authority in invalid:
+            with self.subTest(authority=authority, expected="invalid"):
+                self.assertFalse(snapshot_safety._authority_valid(authority))
+
+    def test_s005_public_decision_tracks_authority_validity(self) -> None:
+        at = chr(64)
+        for authority, decision in (
+            ("user:abcdefgh" + at + "%41.example", "REFUSE"),
+            ("user:abcdefgh" + at + "[::1]:443", "REFUSE"),
+            ("user:abcdefgh" + at + "[v1.foo]", "REFUSE"),
+            ("user:abcdefgh" + at + "[127.0.0.1]", "ALLOW"),
+            ("user:abcdefgh" + at + "[::1]:abc", "ALLOW"),
+            ("user:abcdefgh" + at + "example%G0", "ALLOW"),
+        ):
+            with self.subTest(authority=authority):
+                self.assertEqual(
+                    evaluate_safety("Document http://" + authority, "detail")["decision"],
+                    decision,
+                )
+
     def test_duplicate_key_precedes_revision_numeric_form(self) -> None:
         raw = KIT.joinpath("fixtures/valid/basic.snapshot.json").read_bytes()
         raw = raw.replace(b'"revision":3', b'"revision":3e0', 1)
@@ -112,6 +167,45 @@ class SnapshotV1ConformanceTest(unittest.TestCase):
         with self.assertRaises(SnapshotValidationError) as raised:
             validate_snapshot_bytes(raw)
         self.assertEqual((raised.exception.stage, raised.exception.reason), ("JSON_OBJECT", "DUPLICATE_KEY"))
+
+    def test_duplicate_key_scanning_ignores_key_like_text_inside_a_string(self) -> None:
+        candidate = json.loads(
+            KIT.joinpath("fixtures/valid/basic.snapshot.json").read_text(encoding="utf-8")
+        )
+        candidate["detail"] = 'Literal text: \\"title\\":\\"not a member\\"'
+
+        raw = canonical_snapshot_bytes(candidate)
+
+        self.assertEqual(validate_snapshot_bytes(raw), candidate)
+
+    def test_nested_duplicate_key_is_refused_before_field_type_validation(self) -> None:
+        raw = KIT.joinpath("fixtures/valid/basic.snapshot.json").read_bytes()
+        raw = re.sub(
+            rb'"detail":"[^"]*"',
+            b'"detail":{"nested":1,"nested":2}',
+            raw,
+            count=1,
+        )
+
+        with self.assertRaises(SnapshotValidationError) as raised:
+            validate_snapshot_bytes(raw)
+
+        self.assertEqual(
+            (raised.exception.stage, raised.exception.reason),
+            ("JSON_OBJECT", "DUPLICATE_KEY"),
+        )
+
+    def test_noncanonical_line_ending_precedes_duplicate_detection(self) -> None:
+        raw = KIT.joinpath("fixtures/valid/basic.snapshot.json").read_bytes()
+        raw = raw.replace(b'}\n', b',"title":"Duplicate"}\r\n', 1)
+
+        with self.assertRaises(SnapshotValidationError) as raised:
+            validate_snapshot_bytes(raw)
+
+        self.assertEqual(
+            (raised.exception.stage, raised.exception.reason),
+            ("BYTE_ENVELOPE", "NONCANONICAL_LINE_ENDING"),
+        )
 
     def test_unhashable_enum_values_refuse_as_wrong_type(self) -> None:
         base = json.loads(

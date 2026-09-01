@@ -128,6 +128,138 @@ export function parseAgentCaptureResultText(
   })
 }
 
+function firstReadableMicrosoftProvider(providerGates: MicrosoftProviderGates): MicrosoftProvider {
+  if (providerReadVerified('microsoft-outlook', providerGates)) return 'microsoft-outlook'
+  if (providerReadVerified('microsoft-teams', providerGates)) return 'microsoft-teams'
+  return 'microsoft-outlook'
+}
+
+type CopyState = 'idle' | 'copied' | 'error'
+
+function MicrosoftOobFooter({ copyState, microsoftReadAvailable, mode, onBack, onClose, pending, provider, providerGates, query, packets, text }: {
+  copyState: CopyState
+  microsoftReadAvailable: boolean
+  mode: MicrosoftOobMode
+  onBack: () => void
+  onClose: () => void
+  pending: boolean
+  provider: MicrosoftProvider
+  providerGates: MicrosoftProviderGates
+  query: string
+  packets: CapturePacket[]
+  text: string
+}) {
+  if (mode === 'request') {
+    return <>
+      <Button disabled={pending} onClick={onClose} variant="ghost">Cancel</Button>
+      {copyState === 'copied' ? <Button disabled={!microsoftReadAvailable} onClick={onBack}>Import agent result</Button> : null}
+      <Button disabled={!microsoftReadAvailable || !providerReadVerified(provider, providerGates) || !query.trim()} form="microsoft-oob-request-form" icon="command" type="submit" variant="primary">
+        {copyState === 'copied' ? 'Copy again' : 'Copy request'}
+      </Button>
+    </>
+  }
+  const countLabel = `${packets.length || ''} result${packets.length === 1 ? '' : 's'}`.trim()
+  return <>
+    <Button disabled={pending} onClick={onBack} variant="ghost">Back to request</Button>
+    <Button disabled={!microsoftReadAvailable || pending || !text.trim()} form="microsoft-oob-import-form" icon="upload" type="submit" variant="primary">
+      {pending ? 'Importing…' : `Import ${countLabel}`}
+    </Button>
+  </>
+}
+
+function MicrosoftOobSteps({ available, mode, onMode }: {
+  available: boolean
+  mode: MicrosoftOobMode
+  onMode: (mode: MicrosoftOobMode) => void
+}) {
+  return <div aria-label="Handoff steps" className="oob-steps">
+    <button aria-current={mode === 'request' ? 'step' : undefined} className={mode === 'request' ? 'is-active' : ''} disabled={!available} onClick={() => onMode('request')} type="button"><span>1</span> Copy read request</button>
+    <button aria-current={mode === 'import' ? 'step' : undefined} className={mode === 'import' ? 'is-active' : ''} disabled={!available} onClick={() => onMode('import')} type="button"><span>2</span> Import agent result</button>
+  </div>
+}
+
+function MicrosoftProviderGateNote({ available }: { available: boolean }) {
+  if (available) return null
+  return <div className="provider-gate-note" role="status">
+    <Icon name="warning" size={16} />
+    <div><strong>Microsoft 365 handoff unavailable</strong><span>No Outlook or Teams read capability has passed Gate 0 in this build.</span></div>
+  </div>
+}
+
+function MicrosoftOobRequestForm({ copyState, onCopy, provider, providerGates, query, request, resultLimit, setCopyState, setProvider, setQuery, setResultLimit }: {
+  copyState: CopyState
+  onCopy: (event: FormEvent) => Promise<void>
+  provider: MicrosoftProvider
+  providerGates: MicrosoftProviderGates
+  query: string
+  request: OobRequest | null
+  resultLimit: number
+  setCopyState: (state: CopyState) => void
+  setProvider: (provider: MicrosoftProvider) => void
+  setQuery: (query: string) => void
+  setResultLimit: (limit: number) => void
+}) {
+  return <form className="form-stack" id="microsoft-oob-request-form" onSubmit={(event) => void onCopy(event)}>
+    <div className="handoff-note">
+      <strong>Read only, one request at a time</strong>
+      <p>The copied instruction permits a search/read and asks the agent for sanitized Capture Packet v1 results. It grants no write authority and contains no Microsoft credentials.</p>
+    </div>
+    <div className="form-grid">
+      <label className="field">
+        <span>Microsoft source</span>
+        <select onChange={(event) => { setProvider(event.target.value as MicrosoftProvider); setCopyState('idle') }} value={provider}>
+          <option disabled={!providerReadVerified('microsoft-outlook', providerGates)} value="microsoft-outlook">Outlook email{providerReadVerified('microsoft-outlook', providerGates) ? '' : ' · unavailable'}</option>
+          <option disabled={!providerReadVerified('microsoft-teams', providerGates)} value="microsoft-teams">Teams messages{providerReadVerified('microsoft-teams', providerGates) ? '' : ' · unavailable'}</option>
+        </select>
+      </label>
+      <label className="field">
+        <span>Maximum results</span>
+        <input max={10} min={1} onChange={(event) => { setResultLimit(Number(event.target.value)); setCopyState('idle') }} type="number" value={resultLimit} />
+      </label>
+    </div>
+    <label className="field field--prominent">
+      <span>What should the agent find?</span>
+      <textarea autoFocus maxLength={500} onChange={(event) => { setQuery(event.target.value); setCopyState('idle') }} placeholder="For example: messages about the September release review from the last two weeks" required rows={4} value={query} />
+    </label>
+    {copyState === 'copied' && request ? (
+      <div className="copy-feedback" role="status">
+        <Pill tone="verified">Copied</Pill>
+        <div><strong>Request ready for your connected agent</strong><p>Paste it into that agent. When the agent returns sanitized JSON, come back to Import agent result.</p><small>Request {request.request_id}</small></div>
+      </div>
+    ) : null}
+  </form>
+}
+
+function MicrosoftOobImportForm({ loadFile, onImport, packets, setText, setValidationError, text }: {
+  loadFile: (event: ChangeEvent<HTMLInputElement>) => Promise<void>
+  onImport: (event: FormEvent) => void
+  packets: CapturePacket[]
+  setText: (text: string) => void
+  setValidationError: (error: string | null) => void
+  text: string
+}) {
+  return <form className="capture-import" id="microsoft-oob-import-form" onSubmit={onImport}>
+    <div className="handoff-note">
+      <strong>Paste the returned result as-is</strong>
+      <p>You do not need to edit JSON. Work Stack validates every packet, rejects raw-content fields, then sends each valid packet through the normal Capture ingest API.</p>
+    </div>
+    <label className="file-drop">
+      <input accept="application/json,.json" onChange={(event) => void loadFile(event)} type="file" />
+      <span><strong>Choose the agent’s JSON result</strong><small>or paste the complete result below</small></span>
+    </label>
+    <label className="field">
+      <span>Agent result</span>
+      <textarea className="code-input" onChange={(event) => { setText(event.target.value); setValidationError(null) }} placeholder="Paste one Capture Packet v1 or an array of packets" rows={12} spellCheck={false} value={text} />
+    </label>
+    {packets.length ? (
+      <div className="agent-result-preview" role="status">
+        <strong>{packets.length} sanitized capture{packets.length === 1 ? '' : 's'} ready</strong>
+        <ul>{packets.map((packet) => <li key={packet.source_key}><Pill tone="verified">{packet.source.provider.includes('outlook') ? 'Outlook' : 'Teams'}</Pill><span>{packet.source.display_title}</span></li>)}</ul>
+      </div>
+    ) : null}
+  </form>
+}
+
 export function MicrosoftOobDialog({
   initialMode,
   onClose,
@@ -138,17 +270,13 @@ export function MicrosoftOobDialog({
   serverError,
 }: MicrosoftOobDialogProps) {
   const microsoftReadAvailable = anyProviderReadVerified(providerGates)
-  const firstReadableProvider: MicrosoftProvider = providerReadVerified('microsoft-outlook', providerGates)
-    ? 'microsoft-outlook'
-    : providerReadVerified('microsoft-teams', providerGates)
-      ? 'microsoft-teams'
-      : 'microsoft-outlook'
+  const firstReadableProvider = firstReadableMicrosoftProvider(providerGates)
   const [mode, setMode] = useState<MicrosoftOobMode>(initialMode)
   const [provider, setProvider] = useState<MicrosoftProvider>(firstReadableProvider)
   const [query, setQuery] = useState('')
   const [resultLimit, setResultLimit] = useState(5)
   const [request, setRequest] = useState<OobRequest | null>(null)
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+  const [copyState, setCopyState] = useState<CopyState>('idle')
   const [text, setText] = useState('')
   const [validationError, setValidationError] = useState<string | null>(null)
 
@@ -219,91 +347,20 @@ export function MicrosoftOobDialog({
   return (
     <Dialog
       description="A one-shot handoff to your already connected agent. Work Stack does not connect, sync, or poll Microsoft 365."
-      footer={mode === 'request' ? (
-        <>
-          <Button disabled={pending} onClick={onClose} variant="ghost">Cancel</Button>
-          {copyState === 'copied' ? <Button disabled={!microsoftReadAvailable} onClick={() => setMode('import')}>Import agent result</Button> : null}
-          <Button disabled={!microsoftReadAvailable || !providerReadVerified(provider, providerGates) || !query.trim()} form="microsoft-oob-request-form" icon="command" type="submit" variant="primary">
-            {copyState === 'copied' ? 'Copy again' : 'Copy request'}
-          </Button>
-        </>
-      ) : (
-        <>
-          <Button disabled={pending} onClick={() => setMode('request')} variant="ghost">Back to request</Button>
-          <Button disabled={!microsoftReadAvailable || pending || !text.trim()} form="microsoft-oob-import-form" icon="upload" type="submit" variant="primary">
-            {pending ? 'Importing…' : `Import ${packets.length || ''} result${packets.length === 1 ? '' : 's'}`.replace('  ', ' ')}
-          </Button>
-        </>
-      )}
+      footer={<MicrosoftOobFooter copyState={copyState} microsoftReadAvailable={microsoftReadAvailable} mode={mode} onBack={() => setMode(mode === 'request' ? 'import' : 'request')} onClose={onClose} packets={packets} pending={pending} provider={provider} providerGates={providerGates} query={query} text={text} />}
       onClose={onClose}
       open={open}
       size="large"
       title="Microsoft 365 agent handoff"
     >
       <div className="oob-dialog">
-        <div aria-label="Handoff steps" className="oob-steps">
-          <button aria-current={mode === 'request' ? 'step' : undefined} className={mode === 'request' ? 'is-active' : ''} disabled={!microsoftReadAvailable} onClick={() => setMode('request')} type="button"><span>1</span> Copy read request</button>
-          <button aria-current={mode === 'import' ? 'step' : undefined} className={mode === 'import' ? 'is-active' : ''} disabled={!microsoftReadAvailable} onClick={() => setMode('import')} type="button"><span>2</span> Import agent result</button>
-        </div>
-
-        {!microsoftReadAvailable ? (
-          <div className="provider-gate-note" role="status">
-            <Icon name="warning" size={16} />
-            <div><strong>Microsoft 365 handoff unavailable</strong><span>No Outlook or Teams read capability has passed Gate 0 in this build.</span></div>
-          </div>
-        ) : null}
+        <MicrosoftOobSteps available={microsoftReadAvailable} mode={mode} onMode={setMode} />
+        <MicrosoftProviderGateNote available={microsoftReadAvailable} />
 
         {mode === 'request' ? (
-          <form className="form-stack" id="microsoft-oob-request-form" onSubmit={(event) => void copyRequest(event)}>
-            <div className="handoff-note">
-              <strong>Read only, one request at a time</strong>
-              <p>The copied instruction permits a search/read and asks the agent for sanitized Capture Packet v1 results. It grants no write authority and contains no Microsoft credentials.</p>
-            </div>
-            <div className="form-grid">
-              <label className="field">
-                <span>Microsoft source</span>
-                <select onChange={(event) => { setProvider(event.target.value as MicrosoftProvider); setCopyState('idle') }} value={provider}>
-                  <option disabled={!providerReadVerified('microsoft-outlook', providerGates)} value="microsoft-outlook">Outlook email{providerReadVerified('microsoft-outlook', providerGates) ? '' : ' · unavailable'}</option>
-                  <option disabled={!providerReadVerified('microsoft-teams', providerGates)} value="microsoft-teams">Teams messages{providerReadVerified('microsoft-teams', providerGates) ? '' : ' · unavailable'}</option>
-                </select>
-              </label>
-              <label className="field">
-                <span>Maximum results</span>
-                <input max={10} min={1} onChange={(event) => { setResultLimit(Number(event.target.value)); setCopyState('idle') }} type="number" value={resultLimit} />
-              </label>
-            </div>
-            <label className="field field--prominent">
-              <span>What should the agent find?</span>
-              <textarea autoFocus maxLength={500} onChange={(event) => { setQuery(event.target.value); setCopyState('idle') }} placeholder="For example: messages about the September release review from the last two weeks" required rows={4} value={query} />
-            </label>
-            {copyState === 'copied' && request ? (
-              <div className="copy-feedback" role="status">
-                <Pill tone="verified">Copied</Pill>
-                <div><strong>Request ready for your connected agent</strong><p>Paste it into that agent. When the agent returns sanitized JSON, come back to Import agent result.</p><small>Request {request.request_id}</small></div>
-              </div>
-            ) : null}
-          </form>
+          <MicrosoftOobRequestForm copyState={copyState} onCopy={copyRequest} provider={provider} providerGates={providerGates} query={query} request={request} resultLimit={resultLimit} setCopyState={setCopyState} setProvider={setProvider} setQuery={setQuery} setResultLimit={setResultLimit} />
         ) : (
-          <form className="capture-import" id="microsoft-oob-import-form" onSubmit={importResult}>
-            <div className="handoff-note">
-              <strong>Paste the returned result as-is</strong>
-              <p>You do not need to edit JSON. Work Stack validates every packet, rejects raw-content fields, then sends each valid packet through the normal Capture ingest API.</p>
-            </div>
-            <label className="file-drop">
-              <input accept="application/json,.json" onChange={(event) => void loadFile(event)} type="file" />
-              <span><strong>Choose the agent’s JSON result</strong><small>or paste the complete result below</small></span>
-            </label>
-            <label className="field">
-              <span>Agent result</span>
-              <textarea className="code-input" onChange={(event) => { setText(event.target.value); setValidationError(null) }} placeholder="Paste one Capture Packet v1 or an array of packets" rows={12} spellCheck={false} value={text} />
-            </label>
-            {packets.length ? (
-              <div className="agent-result-preview" role="status">
-                <strong>{packets.length} sanitized capture{packets.length === 1 ? '' : 's'} ready</strong>
-                <ul>{packets.map((packet) => <li key={packet.source_key}><Pill tone="verified">{packet.source.provider.includes('outlook') ? 'Outlook' : 'Teams'}</Pill><span>{packet.source.display_title}</span></li>)}</ul>
-              </div>
-            ) : null}
-          </form>
+          <MicrosoftOobImportForm loadFile={loadFile} onImport={importResult} packets={packets} setText={setText} setValidationError={setValidationError} text={text} />
         )}
         {validationError || serverError ? <p className="inline-error oob-dialog__error" role="alert">{validationError ?? serverError}</p> : null}
       </div>

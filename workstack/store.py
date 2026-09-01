@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import secrets
 import tempfile
 import threading
 import uuid
+import zipfile
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -75,6 +77,8 @@ LOCK_NAME = ".workstack.lock"
 SERVER_INFO_NAME = ".workstack-server.json"
 CAPTURE_TOKEN_NAME = ".workstack-capture-token"
 STORE_MANIFEST_NAME = ".workstack-store-manifest.json"
+SYNC_ADOPTION_RECEIPT_NAME = ".workstack-sync-adoption-receipt.json"
+SYNC_REBIND_RECEIPT_NAME = ".workstack-sync-rebind-receipt.json"
 STORE_MANIFEST_VERSION = 1
 
 
@@ -94,6 +98,16 @@ class StoreExternalChangeError(RuntimeError):
             "authoritative store changed outside Work Stack; review synchronization status"
         )
         self.status = dict(status)
+
+
+class StoreAdoptionConflictError(RuntimeError):
+    """Raised when one sync-adoption key is reused for another candidate."""
+
+
+def _serialized_json_bytes(value: Any) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -156,6 +170,402 @@ def _validate_auxiliary_store(name: str, value: dict[str, Any]) -> None:
             raise StoreCorruptError("{}.{} must be an array".format(name, key))
         if isinstance(default_value, dict) and not isinstance(value.get(key), dict):
             raise StoreCorruptError("{}.{} must be an object".format(name, key))
+
+
+def _migration_evidence_records(
+    migrations: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(migrations, dict) or set(migrations) != {
+        "identity",
+        "planning_status",
+    }:
+        raise StoreCorruptError("store migration evidence is invalid")
+    identity = migrations.get("identity")
+    planning = migrations.get("planning_status")
+    expected = {"id", "origin", "source_sha256"}
+    if (
+        not isinstance(identity, dict)
+        or set(identity) != expected
+        or not isinstance(planning, dict)
+        or set(planning) != expected
+    ):
+        raise StoreCorruptError("store migration evidence is invalid")
+    return identity, planning
+
+
+def _validate_identity_migration(identity: dict[str, Any]) -> str:
+    origin = identity.get("origin")
+    source_sha256 = identity.get("source_sha256")
+    if origin == "fresh":
+        if identity.get("id") != "workstack.store.v2" or source_sha256 is not None:
+            raise StoreCorruptError("fresh store migration evidence is invalid")
+        return origin
+    if origin == "migrated_v1":
+        valid_digest = isinstance(source_sha256, str) and re.fullmatch(
+            r"sha256:[0-9a-f]{64}", source_sha256
+        )
+        if identity.get("id") != "workstack.store.v1-to-v2" or not valid_digest:
+            raise StoreCorruptError("v1 migration evidence is invalid")
+        return origin
+    raise StoreCorruptError("store migration origin is invalid")
+
+
+def _validate_planning_migration(planning: dict[str, Any]) -> None:
+    origin = planning.get("origin")
+    digest = planning.get("source_sha256")
+    if planning.get("id") != "workstack.planning-status.v1":
+        raise StoreCorruptError("planning-status migration evidence is invalid")
+    if origin == "fresh":
+        if digest is not None:
+            raise StoreCorruptError("fresh planning-status evidence is invalid")
+        return
+    if origin in {"migrated_v1", "migrated_v2"}:
+        if not (
+            isinstance(digest, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+        ):
+            raise StoreCorruptError("planning-status migration evidence is invalid")
+        return
+    raise StoreCorruptError("planning-status migration origin is invalid")
+
+
+def _validate_store_metadata(metadata: dict[str, Any]) -> str:
+    if set(metadata) != {"version", "store_schema_version", "migrations"}:
+        raise StoreCorruptError("store metadata has unknown or missing fields")
+    if metadata.get("version") != 2:
+        raise StoreCorruptError("store metadata version is unsupported")
+    schema_version = metadata.get("store_schema_version")
+    if schema_version != STORE_SCHEMA_VERSION:
+        if type(schema_version) is int and schema_version > STORE_SCHEMA_VERSION:
+            raise StoreCorruptError("store schema is newer than this Work Stack build")
+        raise StoreCorruptError("store schema version is invalid")
+    identity, planning = _migration_evidence_records(metadata.get("migrations"))
+    origin = _validate_identity_migration(identity)
+    _validate_planning_migration(planning)
+    return origin
+
+
+def _validate_ready_auxiliary_stores(values: Mapping[str, dict[str, Any]]) -> None:
+    for name in DEFAULTS:
+        if name not in IDENTITY_STORES:
+            _validate_auxiliary_store(name, values[name])
+
+
+def _validate_ready_activity(value: dict[str, Any]) -> None:
+    expected = DEFAULTS["activity.json"]
+    if (
+        not isinstance(expected, dict)
+        or set(value) != set(expected)
+        or value.get("version") != 2
+        or not isinstance(value.get("activity"), list)
+        or not isinstance(value.get("idempotency"), list)
+        or not isinstance(value.get("planning_status"), list)
+    ):
+        raise StoreCorruptError("activity.json schema is invalid")
+
+
+def _validate_store_manifest_header(manifest: dict[str, Any]) -> None:
+    expected = {
+        "version",
+        "workspace_id",
+        "store_schema_version",
+        "generation",
+        "files",
+        "tasks",
+    }
+    if set(manifest) != expected or manifest.get("version") != STORE_MANIFEST_VERSION:
+        raise StoreCorruptError("store manifest schema is invalid")
+    if type(manifest.get("generation")) is not int or manifest["generation"] < 0:
+        raise StoreCorruptError("store manifest generation is invalid")
+    if manifest.get("store_schema_version") != STORE_SCHEMA_VERSION:
+        raise StoreCorruptError("store manifest schema version is invalid")
+    _canonical_uuid(manifest.get("workspace_id"), "store_manifest.workspace_id")
+
+
+def _validate_store_manifest_files(files: Any) -> None:
+    if not isinstance(files, dict) or set(files) != set(DEFAULTS):
+        raise StoreCorruptError("store manifest file roster is invalid")
+    if any(
+        not isinstance(value, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", value)
+        for value in files.values()
+    ):
+        raise StoreCorruptError("store manifest file digest is invalid")
+
+
+def _validate_store_manifest_task(task_id: Any, task: Any) -> None:
+    if (
+        not isinstance(task_id, str)
+        or not re.fullmatch(r"T-[0-9]{4,}", task_id)
+        or not isinstance(task, dict)
+        or set(task) != {"revision", "digest"}
+        or type(task.get("revision")) is not int
+        or not 0 <= task["revision"] <= MAX_REVISION
+        or not isinstance(task.get("digest"), str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", task["digest"])
+    ):
+        raise StoreCorruptError("store manifest task baseline is invalid")
+
+
+def _validate_store_manifest_tasks(tasks: Any) -> None:
+    if not isinstance(tasks, dict):
+        raise StoreCorruptError("store manifest task baseline is invalid")
+    for task_id, task in tasks.items():
+        _validate_store_manifest_task(task_id, task)
+
+
+def _validated_rebind_file_records(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, list) or len(value) != len(DEFAULTS):
+        raise StoreCorruptError("sync rebind receipt is invalid")
+    records: dict[str, dict[str, Any]] = {}
+    for record in value:
+        if not isinstance(record, dict) or set(record) != {"name", "size", "sha256"}:
+            raise StoreCorruptError("sync rebind receipt is invalid")
+        name = record.get("name")
+        size = record.get("size")
+        digest = record.get("sha256")
+        if not isinstance(name, str) or name not in DEFAULTS or name in records:
+            raise StoreCorruptError("sync rebind receipt is invalid")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise StoreCorruptError("sync rebind receipt is invalid")
+        if not isinstance(digest, str) or re.fullmatch(
+            r"sha256:[0-9a-f]{64}", digest
+        ) is None:
+            raise StoreCorruptError("sync rebind receipt is invalid")
+        records[name] = record
+    if set(records) != set(DEFAULTS):
+        raise StoreCorruptError("sync rebind receipt is invalid")
+    return records
+
+
+def _validated_rebind_artifact_name(
+    value: Any, prefix: str, suffix: str
+) -> str:
+    if not isinstance(value, str):
+        raise StoreCorruptError("sync rebind receipt is invalid")
+    if not value.startswith(prefix) or not value.endswith(suffix):
+        raise StoreCorruptError("sync rebind receipt is invalid")
+    if "/" in value or "\\" in value or Path(value).name != value:
+        raise StoreCorruptError("sync rebind receipt is invalid")
+    return value
+
+
+def _validate_recovery_timestamp(value: Any) -> None:
+    if not isinstance(value, str) or not value:
+        raise StoreCorruptError("recovery journal created_at is invalid")
+    try:
+        parsed = dt.datetime.fromisoformat(
+            value[:-1] + "+00:00" if value.endswith("Z") else value
+        )
+    except ValueError as error:
+        raise StoreCorruptError("recovery journal created_at is invalid") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise StoreCorruptError("recovery journal created_at must include a timezone")
+
+
+def _recovery_writes(journal: dict[str, Any]) -> list[dict[str, Any]]:
+    if set(journal) != {"version", "operation_id", "created_at", "writes"}:
+        raise StoreCorruptError("recovery journal has unknown or missing fields")
+    if type(journal["version"]) is not int or journal["version"] != 1:
+        raise StoreCorruptError("unsupported recovery journal version")
+    operation_id = journal["operation_id"]
+    if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 200:
+        raise StoreCorruptError("recovery journal operation_id is invalid")
+    _validate_recovery_timestamp(journal["created_at"])
+    writes = journal["writes"]
+    if not isinstance(writes, list) or not writes:
+        raise StoreCorruptError("recovery journal writes must be a non-empty array")
+    return writes
+
+
+def _validate_recovery_write(write: Any, seen: set[str]) -> None:
+    if not isinstance(write, dict) or set(write) != {"name", "value", "sha256"}:
+        raise StoreCorruptError("recovery journal write entry is invalid")
+    name = write["name"]
+    if name not in DEFAULTS or name in seen:
+        raise StoreCorruptError("recovery journal target is unknown or repeated")
+    seen.add(name)
+    if not isinstance(write["value"], dict):
+        raise StoreCorruptError("recovery journal target value must be an object")
+    expected = "sha256:" + hashlib.sha256(_compact_json(write["value"])).hexdigest()
+    if not secrets.compare_digest(str(write["sha256"]), expected):
+        raise StoreCorruptError("recovery journal value digest mismatch")
+
+
+def _backlog_identity_tasks(
+    backlog: dict[str, Any], version: int
+) -> list[Any]:
+    if set(backlog) != {"version", "tasks"} or backlog.get("version") != version:
+        raise StoreCorruptError("backlog identity schema is invalid")
+    tasks = backlog.get("tasks")
+    if not isinstance(tasks, list):
+        raise StoreCorruptError("backlog.tasks must be an array")
+    return tasks
+
+
+def _validated_task_id(source: dict[str, Any], label: str, seen: set[str]) -> str:
+    task_id = source.get("id")
+    if not isinstance(task_id, str) or not re.fullmatch(r"T-[0-9]{4,}", task_id):
+        raise StoreCorruptError("{}.id is invalid".format(label))
+    if task_id in seen:
+        raise StoreCorruptError("duplicate task id: {}".format(task_id))
+    seen.add(task_id)
+    return task_id
+
+
+def _validated_task_uid(
+    task: dict[str, Any],
+    task_id: str,
+    label: str,
+    workspace_uid: str,
+    seen: set[str],
+    migrate_legacy: bool,
+) -> str:
+    if "uid" in task:
+        task_uid = _canonical_uuid(task["uid"], "{}.uid".format(label))
+    elif migrate_legacy:
+        task_uid = str(uuid.uuid5(uuid.UUID(workspace_uid), task_id))
+        task["uid"] = task_uid
+    else:
+        raise StoreCorruptError("{}.uid is missing".format(label))
+    if task_uid in seen:
+        raise StoreCorruptError("duplicate persisted UUID: {}".format(task_uid))
+    seen.add(task_uid)
+    return task_uid
+
+
+def _validate_task_revision(
+    task: dict[str, Any], label: str, migrate_legacy: bool
+) -> None:
+    if "revision" in task:
+        _stored_revision(task["revision"], "{}.revision".format(label))
+    elif migrate_legacy:
+        task["revision"] = 0
+    else:
+        raise StoreCorruptError("{}.revision is missing".format(label))
+
+
+def _validate_task_status_fact(task: dict[str, Any], label: str, version: int) -> None:
+    if version != 3:
+        return
+    status_fact_id = task.get("status_fact_id")
+    if not isinstance(status_fact_id, str) or not re.fullmatch(
+        r"PS-[0-9]{6,}", status_fact_id
+    ):
+        raise StoreCorruptError("{}.status_fact_id is invalid".format(label))
+
+
+def _validated_task_identity(
+    source: Any,
+    index: int,
+    workspace_uid: str,
+    version: int,
+    migrate_legacy: bool,
+    seen_ids: set[str],
+    seen_uids: set[str],
+) -> dict[str, Any]:
+    label = "backlog.tasks[{}]".format(index)
+    if not isinstance(source, dict):
+        raise StoreCorruptError("{} must be an object".format(label))
+    task_id = _validated_task_id(source, label, seen_ids)
+    task = copy.deepcopy(source)
+    _validated_task_uid(
+        task, task_id, label, workspace_uid, seen_uids, migrate_legacy
+    )
+    _validate_task_revision(task, label, migrate_legacy)
+    _validate_task_status_fact(task, label, version)
+    return task
+
+
+def _validated_v2_identity_evidence(metadata: dict[str, Any]) -> dict[str, Any]:
+    if (
+        set(metadata) != {"version", "store_schema_version", "migration"}
+        or metadata.get("version") != 1
+        or metadata.get("store_schema_version") != 2
+        or not isinstance(metadata.get("migration"), dict)
+    ):
+        raise StoreCorruptError("v2 store migration evidence is invalid")
+    identity = copy.deepcopy(metadata["migration"])
+    if set(identity) != {"id", "origin", "source_sha256"}:
+        raise StoreCorruptError("v2 store migration evidence is invalid")
+    origin = identity.get("origin")
+    if origin == "fresh":
+        valid = (
+            identity.get("id") == "workstack.store.v2"
+            and identity.get("source_sha256") is None
+        )
+    elif origin == "migrated_v1":
+        valid = (
+            identity.get("id") == "workstack.store.v1-to-v2"
+            and re.fullmatch(
+                r"sha256:[0-9a-f]{64}", str(identity.get("source_sha256", ""))
+            )
+            is not None
+        )
+    else:
+        valid = False
+    if not valid:
+        raise StoreCorruptError("v2 identity evidence is invalid")
+    return identity
+
+
+def _validated_v2_activity(value: dict[str, Any]) -> dict[str, Any]:
+    activity = copy.deepcopy(value)
+    if (
+        set(activity) != {"version", "activity", "idempotency"}
+        or activity.get("version") != 1
+        or not isinstance(activity.get("activity"), list)
+        or not isinstance(activity.get("idempotency"), list)
+    ):
+        raise StoreCorruptError("v2 activity schema is invalid")
+    return activity
+
+
+def _validate_v2_auxiliary_stores(values: Mapping[str, dict[str, Any]]) -> None:
+    identity_stores = {
+        "workspace.json", "backlog.json", "store-meta.json", "activity.json"
+    }
+    for name in DEFAULTS:
+        if name not in identity_stores:
+            _validate_auxiliary_store(name, values[name])
+
+
+def _bootstrap_migrated_activity(
+    activity: dict[str, Any], tasks: list[dict[str, Any]], provenance: str
+) -> None:
+    activity["version"] = 2
+    activity["planning_status"] = []
+    created_at = (
+        dt.datetime.now(dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    for task in tasks:
+        append_bootstrap(
+            activity,
+            task,
+            created_at=created_at,
+            actor="workstack.migration",
+            provenance=provenance,
+        )
+
+
+def _v3_migration_metadata(
+    identity: dict[str, Any], source_sha256: str
+) -> dict[str, Any]:
+    return {
+        "version": 2,
+        "store_schema_version": STORE_SCHEMA_VERSION,
+        "migrations": {
+            "identity": identity,
+            "planning_status": {
+                "id": "workstack.planning-status.v1",
+                "origin": "migrated_v2",
+                "source_sha256": source_sha256,
+            },
+        },
+    }
 
 
 class _FileLease:
@@ -270,6 +680,14 @@ class Store:
     def store_manifest_path(self) -> Path:
         return self.runtime_root / STORE_MANIFEST_NAME
 
+    @property
+    def sync_adoption_receipt_path(self) -> Path:
+        return self.runtime_root / SYNC_ADOPTION_RECEIPT_NAME
+
+    @property
+    def sync_rebind_receipt_path(self) -> Path:
+        return self.runtime_root / SYNC_REBIND_RECEIPT_NAME
+
     def path(self, name: str) -> Path:
         if name not in DEFAULTS:
             raise ValueError("unknown store: {}".format(name))
@@ -292,41 +710,9 @@ class Store:
             manifest = self._read_json_locked(self.store_manifest_path)
         except FileNotFoundError:
             return None
-        expected = {
-            "version",
-            "workspace_id",
-            "store_schema_version",
-            "generation",
-            "files",
-            "tasks",
-        }
-        if set(manifest) != expected or manifest.get("version") != STORE_MANIFEST_VERSION:
-            raise StoreCorruptError("store manifest schema is invalid")
-        if type(manifest.get("generation")) is not int or manifest["generation"] < 0:
-            raise StoreCorruptError("store manifest generation is invalid")
-        if manifest.get("store_schema_version") != STORE_SCHEMA_VERSION:
-            raise StoreCorruptError("store manifest schema version is invalid")
-        _canonical_uuid(manifest.get("workspace_id"), "store_manifest.workspace_id")
-        files = manifest.get("files")
-        if not isinstance(files, dict) or set(files) != set(DEFAULTS):
-            raise StoreCorruptError("store manifest file roster is invalid")
-        if any(not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in files.values()):
-            raise StoreCorruptError("store manifest file digest is invalid")
-        tasks = manifest.get("tasks")
-        if not isinstance(tasks, dict):
-            raise StoreCorruptError("store manifest task baseline is invalid")
-        for task_id, task in tasks.items():
-            if (
-                not isinstance(task_id, str)
-                or not re.fullmatch(r"T-[0-9]{4,}", task_id)
-                or not isinstance(task, dict)
-                or set(task) != {"revision", "digest"}
-                or type(task.get("revision")) is not int
-                or not 0 <= task["revision"] <= MAX_REVISION
-                or not isinstance(task.get("digest"), str)
-                or not re.fullmatch(r"sha256:[0-9a-f]{64}", task["digest"])
-            ):
-                raise StoreCorruptError("store manifest task baseline is invalid")
+        _validate_store_manifest_header(manifest)
+        _validate_store_manifest_files(manifest.get("files"))
+        _validate_store_manifest_tasks(manifest.get("tasks"))
         return manifest
 
     def _manifest_digest(self, manifest: Mapping[str, Any]) -> str:
@@ -363,15 +749,23 @@ class Store:
         self._event_condition.notify_all()
 
     def _write_committed_manifest_locked(
-        self, changed_files: list[str], *, event_type: str = "store.committed"
+        self,
+        changed_files: list[str],
+        *,
+        event_type: str = "store.committed",
+        expected_hashes: Mapping[str, str] | None = None,
     ) -> None:
         hashes_before = self._authoritative_hashes_locked()
+        if expected_hashes is not None and hashes_before != expected_hashes:
+            raise StoreExternalChangeError(self._inspect_sync_locked())
         tasks_before = self._task_semantics_locked()
         readiness = self._validate_ready_state_locked()
         hashes_after = self._authoritative_hashes_locked()
         tasks_after = self._task_semantics_locked()
         if hashes_before != hashes_after or tasks_before != tasks_after:
             raise StoreCorruptError("authoritative store changed while committing its manifest")
+        if expected_hashes is not None and hashes_after != expected_hashes:
+            raise StoreExternalChangeError(self._inspect_sync_locked())
         previous = self._read_manifest_locked()
         persisted_generation = previous["generation"] if previous is not None else 0
         self._generation = max(self._generation, persisted_generation) + 1
@@ -389,111 +783,219 @@ class Store:
         self._sync_fingerprint = None
         self._emit_event_locked(event_type, readiness.workspace_uid, changed_files)
 
-    def _inspect_sync_locked(self) -> dict[str, Any]:
-        manifest = self._read_manifest_locked()
-        if manifest is None:
-            readiness = self._validate_ready_state_locked()
-            self._generation = max(self._generation, 0)
-            manifest = {
-                "version": STORE_MANIFEST_VERSION,
-                "workspace_id": readiness.workspace_uid,
-                "store_schema_version": readiness.schema_version,
-                "generation": self._generation,
-                "files": self._authoritative_hashes_locked(),
-                "tasks": self._task_semantics_locked(),
-            }
-            self._atomic_write_locked(self.store_manifest_path, manifest)
-            self._readiness = readiness
+    def _write_local_baseline_locked(
+        self,
+        previous: Mapping[str, Any],
+        files: Mapping[str, str],
+        tasks: Mapping[str, Any],
+        changed_files: list[str],
+    ) -> None:
+        """Commit only declared local bytes while leaving unrelated bytes external."""
 
-        self._generation = max(self._generation, manifest["generation"])
-        changed_files: list[str]
-        validation_error: str | None = None
+        persisted_generation = previous["generation"]
+        self._generation = max(self._generation, persisted_generation) + 1
+        manifest = {
+            "version": STORE_MANIFEST_VERSION,
+            "workspace_id": previous["workspace_id"],
+            "store_schema_version": previous["store_schema_version"],
+            "generation": self._generation,
+            "files": dict(files),
+            "tasks": copy.deepcopy(tasks),
+        }
+        self._atomic_write_locked(self.store_manifest_path, manifest)
+        self._sync_state = "in-sync"
+        self._sync_fingerprint = None
+        self._emit_event_locked(
+            "store.committed", previous["workspace_id"], changed_files
+        )
+
+    def _local_baseline_tasks_locked(
+        self,
+        previous: Mapping[str, Any],
+        expected_hashes: Mapping[str, str],
+        changed_files: list[str],
+    ) -> Mapping[str, Any]:
+        before = self._authoritative_hashes_locked()
+        if any(before[name] != expected_hashes[name] for name in changed_files):
+            raise StoreCorruptError(
+                "local commit target changed concurrently; recovery journal retained"
+            )
+        tasks = (
+            self._task_semantics_locked()
+            if "backlog.json" in changed_files
+            else previous["tasks"]
+        )
+        after = self._authoritative_hashes_locked()
+        if any(after[name] != expected_hashes[name] for name in changed_files):
+            raise StoreCorruptError(
+                "local commit target changed concurrently; recovery journal retained"
+            )
+        return tasks
+
+    def _ensure_sync_manifest_locked(self) -> dict[str, Any]:
+        manifest = self._read_manifest_locked()
+        if manifest is not None:
+            return manifest
+        readiness = self._validate_ready_state_locked()
+        self._generation = max(self._generation, 0)
+        manifest = {
+            "version": STORE_MANIFEST_VERSION,
+            "workspace_id": readiness.workspace_uid,
+            "store_schema_version": readiness.schema_version,
+            "generation": self._generation,
+            "files": self._authoritative_hashes_locked(),
+            "tasks": self._task_semantics_locked(),
+        }
+        self._atomic_write_locked(self.store_manifest_path, manifest)
+        self._readiness = readiness
+        return manifest
+
+    @staticmethod
+    def _changed_manifest_files(
+        manifest: Mapping[str, Any], current_hashes: Mapping[str, str]
+    ) -> list[str]:
+        return sorted(
+            name for name in DEFAULTS if current_hashes[name] != manifest["files"][name]
+        )
+
+    @staticmethod
+    def _validate_candidate_tasks(
+        baseline_tasks: Mapping[str, Any], candidate_tasks: Mapping[str, Any]
+    ) -> None:
+        removed = sorted(set(baseline_tasks) - set(candidate_tasks))
+        if removed:
+            raise StoreCorruptError("external candidate removes existing Tasks")
+        for task_id, candidate in candidate_tasks.items():
+            baseline = baseline_tasks.get(task_id)
+            if baseline is None:
+                if candidate["revision"] != 0:
+                    raise StoreCorruptError(
+                        "external candidate new Task revision is invalid"
+                    )
+            elif (
+                candidate["digest"] != baseline["digest"]
+                and candidate["revision"] <= baseline["revision"]
+            ):
+                raise StoreCorruptError(
+                    "external candidate Task revision did not advance"
+                )
+
+    def _validate_external_candidate_locked(
+        self,
+        manifest: Mapping[str, Any],
+        current_hashes: Mapping[str, str],
+        candidate_workspace_id: str,
+    ) -> None:
+        if candidate_workspace_id != manifest["workspace_id"]:
+            raise StoreCorruptError("external candidate workspace identity changed")
+        self._validate_candidate_tasks(
+            manifest["tasks"], self._task_semantics_locked()
+        )
+        if self._authoritative_hashes_locked() != current_hashes:
+            raise StoreCorruptError("external candidate changed during validation")
+
+    def _invalid_candidate_changed_files_locked(
+        self, manifest: Mapping[str, Any]
+    ) -> list[str]:
+        return sorted(
+            name
+            for name in DEFAULTS
+            if not self.path(name).is_file()
+            or manifest["files"].get(name)
+            != ("sha256:" + hashlib.sha256(self.path(name).read_bytes()).hexdigest())
+        )
+
+    def _inspect_candidate_locked(
+        self, manifest: Mapping[str, Any]
+    ) -> tuple[str, dict[str, str], list[str], str | None]:
         candidate_workspace_id = manifest["workspace_id"]
         try:
             current_hashes = self._authoritative_hashes_locked()
-            changed_files = sorted(
-                name for name in DEFAULTS if current_hashes[name] != manifest["files"][name]
-            )
+            changed_files = self._changed_manifest_files(manifest, current_hashes)
             if changed_files:
                 readiness = self._validate_ready_state_locked()
                 candidate_workspace_id = readiness.workspace_uid
-                if readiness.workspace_uid != manifest["workspace_id"]:
-                    raise StoreCorruptError("external candidate workspace identity changed")
-                candidate_tasks = self._task_semantics_locked()
-                baseline_tasks = manifest["tasks"]
-                removed = sorted(set(baseline_tasks) - set(candidate_tasks))
-                if removed:
-                    raise StoreCorruptError("external candidate removes existing Tasks")
-                for task_id, candidate in candidate_tasks.items():
-                    baseline = baseline_tasks.get(task_id)
-                    if baseline is None:
-                        if candidate["revision"] != 0:
-                            raise StoreCorruptError(
-                                "external candidate new Task revision is invalid"
-                            )
-                    elif (
-                        candidate["digest"] != baseline["digest"]
-                        and candidate["revision"] <= baseline["revision"]
-                    ):
-                        raise StoreCorruptError(
-                            "external candidate Task revision did not advance"
-                        )
-                if self._authoritative_hashes_locked() != current_hashes:
-                    raise StoreCorruptError("external candidate changed during validation")
+                self._validate_external_candidate_locked(
+                    manifest, current_hashes, candidate_workspace_id
+                )
         except StoreCorruptError as error:
             current_hashes = {}
-            changed_files = sorted(
-                name for name in DEFAULTS
-                if not self.path(name).is_file()
-                or manifest["files"].get(name)
-                != ("sha256:" + hashlib.sha256(self.path(name).read_bytes()).hexdigest())
-            )
-            validation_error = str(error)
+            changed_files = self._invalid_candidate_changed_files_locked(manifest)
+            return candidate_workspace_id, current_hashes, changed_files, str(error)
+        return candidate_workspace_id, current_hashes, changed_files, None
 
+    @staticmethod
+    def _sync_inspection_state(
+        changed_files: list[str], validation_error: str | None
+    ) -> str:
         if validation_error is not None:
-            state = "external-change-invalid"
-        elif changed_files:
-            state = "external-change-detected"
-        else:
-            state = "in-sync"
-        fingerprint = "{}:{}".format(
+            return "external-change-invalid"
+        return "external-change-detected" if changed_files else "in-sync"
+
+    @staticmethod
+    def _sync_candidate_fingerprint(
+        state: str, current_hashes: Mapping[str, str], changed_files: list[str]
+    ) -> str:
+        return "{}:{}".format(
             state,
             hashlib.sha256(_compact_json({"files": current_hashes, "changed": changed_files})).hexdigest(),
+        )
+
+    def _candidate_manifest_digest_locked(
+        self,
+        manifest: Mapping[str, Any],
+        candidate_workspace_id: str,
+        current_hashes: Mapping[str, str],
+        changed_files: list[str],
+        validation_error: str | None,
+    ) -> str | None:
+        if validation_error is not None or not changed_files:
+            return None
+        candidate = {
+            "workspace_id": candidate_workspace_id,
+            "store_schema_version": manifest["store_schema_version"],
+            "generation": manifest["generation"],
+            "files": current_hashes,
+            "tasks": self._task_semantics_locked(),
+        }
+        return "sha256:" + hashlib.sha256(_compact_json(candidate)).hexdigest()
+
+    def _inspect_sync_locked(self) -> dict[str, Any]:
+        manifest = self._ensure_sync_manifest_locked()
+        self._generation = max(self._generation, manifest["generation"])
+        (
+            candidate_workspace_id,
+            current_hashes,
+            changed_files,
+            validation_error,
+        ) = self._inspect_candidate_locked(manifest)
+        state = self._sync_inspection_state(changed_files, validation_error)
+        fingerprint = self._sync_candidate_fingerprint(
+            state, current_hashes, changed_files
         )
         if state != "in-sync" and fingerprint != self._sync_fingerprint:
             self._emit_event_locked("store." + state, candidate_workspace_id, changed_files)
         self._sync_state = state
         self._sync_fingerprint = None if state == "in-sync" else fingerprint
+        candidate_digest = self._candidate_manifest_digest_locked(
+            manifest,
+            candidate_workspace_id,
+            current_hashes,
+            changed_files,
+            validation_error,
+        )
         return {
             "status": state,
             "writes_allowed": state == "in-sync",
             "workspace_id": manifest["workspace_id"],
+            "candidate_workspace_id": candidate_workspace_id,
             "store_schema_version": manifest["store_schema_version"],
             "generation": manifest["generation"],
             "manifest_digest": self._manifest_digest(manifest),
             "files": copy.deepcopy(manifest["files"]),
             "changed_files": changed_files,
             "validation_error": validation_error,
-            "candidate_digest": (
-                "sha256:"
-                + hashlib.sha256(
-                    _compact_json(
-                        {
-                            "workspace_id": candidate_workspace_id,
-                            "store_schema_version": manifest["store_schema_version"],
-                            "generation": manifest["generation"],
-                            "files": current_hashes,
-                            "tasks": (
-                                self._task_semantics_locked()
-                                if validation_error is None
-                                else {}
-                            ),
-                        }
-                    )
-                ).hexdigest()
-                if validation_error is None and changed_files
-                else None
-            ),
+            "candidate_digest": candidate_digest,
         }
 
     def sync_status(self) -> dict[str, Any]:
@@ -506,6 +1008,7 @@ class Store:
                     else status["status"]
                 ),
                 "workspace_id": status["workspace_id"],
+                "candidate_workspace_id": status["candidate_workspace_id"],
                 "generation": status["generation"],
                 "manifest_digest": status["candidate_digest"] or status["manifest_digest"],
                 "changed_files": status["changed_files"],
@@ -514,10 +1017,569 @@ class Store:
                     if status["validation_error"] is not None
                     else None
                 ),
+                "rebind_available": (
+                    status["status"] == "external-change-invalid"
+                    and status["validation_error"]
+                    == "external candidate workspace identity changed"
+                ),
             }
 
+    def _workspace_rebind_candidate_locked(
+        self,
+    ) -> tuple[dict[str, Any], StoreReadiness, dict[str, bytes], dict[str, Any]]:
+        status = self._inspect_sync_locked()
+        if (
+            status["status"] != "external-change-invalid"
+            or status["validation_error"]
+            != "external candidate workspace identity changed"
+        ):
+            raise StoreExternalChangeError(status)
+        readiness = self._validate_ready_state_locked()
+        bodies = {name: self.path(name).read_bytes() for name in sorted(DEFAULTS)}
+        files = [
+            {
+                "name": name,
+                "size": len(body),
+                "sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+            }
+            for name, body in bodies.items()
+        ]
+        candidate_coordinate = {
+            "workspace_id": readiness.workspace_uid,
+            "store_schema_version": readiness.schema_version,
+            "files": files,
+        }
+        candidate_digest = "sha256:" + hashlib.sha256(
+            _compact_json(candidate_coordinate)
+        ).hexdigest()
+        if any(self.path(name).read_bytes() != body for name, body in bodies.items()):
+            raise StoreExternalChangeError(self._inspect_sync_locked())
+        preview = {
+            "state": "workspace-identity-mismatch",
+            "manifest_workspace_id": status["workspace_id"],
+            "candidate_workspace_id": readiness.workspace_uid,
+            "manifest_digest": status["manifest_digest"],
+            "candidate_digest": candidate_digest,
+            "changed_files": status["changed_files"],
+        }
+        return status, readiness, bodies, preview
+
+    def workspace_rebind_preview(self) -> dict[str, Any]:
+        with self._process_lock:
+            return copy.deepcopy(self._workspace_rebind_candidate_locked()[3])
+
+    @staticmethod
+    def _candidate_backup_bytes(
+        bodies: Mapping[str, bytes], preview: Mapping[str, Any]
+    ) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for name in sorted(bodies):
+                archive.writestr(name, bodies[name])
+            archive.writestr(
+                "recovery-manifest.json",
+                _compact_json(
+                    {
+                        "schema_version": 1,
+                        "operation": "workspace-rebind-candidate-backup",
+                        "candidate_workspace_id": preview["candidate_workspace_id"],
+                        "candidate_digest": preview["candidate_digest"],
+                    }
+                ),
+            )
+        result = buffer.getvalue()
+        with zipfile.ZipFile(io.BytesIO(result)) as archive:
+            for name, body in bodies.items():
+                if archive.read(name) != body:
+                    raise StoreCorruptError("workspace rebind backup verification failed")
+        return result
+
+    def _read_rebind_receipt_locked(self) -> dict[str, Any] | None:
+        try:
+            receipt = self._read_json_locked(self.sync_rebind_receipt_path)
+        except FileNotFoundError:
+            return None
+        required = {
+            "schema_version",
+            "operation",
+            "idempotency_key",
+            "previous_workspace_id",
+            "candidate_workspace_id",
+            "manifest_digest",
+            "candidate_digest",
+            "result_manifest_digest",
+            "authoritative_files",
+            "backup_file",
+            "backup_digest",
+            "quarantined_manifest_file",
+            "quarantined_manifest_digest",
+            "created_at",
+            "planning_mutated",
+        }
+        if (
+            set(receipt) != required
+            or receipt.get("schema_version") != 1
+            or receipt.get("operation") != "workspace-rebind"
+            or receipt.get("planning_mutated") is not False
+            or not isinstance(receipt.get("idempotency_key"), str)
+            or re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", receipt["idempotency_key"])
+            is None
+            or not isinstance(receipt.get("authoritative_files"), list)
+        ):
+            raise StoreCorruptError("sync rebind receipt is invalid")
+        for field in (
+            "manifest_digest",
+            "candidate_digest",
+            "result_manifest_digest",
+            "backup_digest",
+            "quarantined_manifest_digest",
+        ):
+            if not isinstance(receipt.get(field), str) or re.fullmatch(
+                r"sha256:[0-9a-f]{64}", receipt[field]
+            ) is None:
+                raise StoreCorruptError("sync rebind receipt is invalid")
+        _canonical_uuid(
+            receipt.get("previous_workspace_id"),
+            "sync_rebind_receipt.previous_workspace_id",
+        )
+        _canonical_uuid(
+            receipt.get("candidate_workspace_id"),
+            "sync_rebind_receipt.candidate_workspace_id",
+        )
+        _validated_rebind_file_records(receipt["authoritative_files"])
+        _validated_rebind_artifact_name(
+            receipt.get("backup_file"), "workstack-rebind-candidate-", ".zip"
+        )
+        _validated_rebind_artifact_name(
+            receipt.get("quarantined_manifest_file"),
+            ".workstack-store-manifest.quarantine-",
+            ".json",
+        )
+        _validate_recovery_timestamp(receipt.get("created_at"))
+        return receipt
+
+    @staticmethod
+    def _verified_rebind_artifact_body(
+        path: Path, expected_digest: str, label: str
+    ) -> bytes:
+        try:
+            body = path.read_bytes()
+        except FileNotFoundError as error:
+            raise StoreCorruptError(
+                "workspace rebind {} is missing".format(label)
+            ) from error
+        actual_digest = "sha256:" + hashlib.sha256(body).hexdigest()
+        if not secrets.compare_digest(actual_digest, expected_digest):
+            raise StoreCorruptError(
+                "workspace rebind {} digest mismatch".format(label)
+            )
+        return body
+
+    def _verify_rebind_recovery_artifacts_locked(
+        self, receipt: Mapping[str, Any]
+    ) -> dict[str, bytes]:
+        backup_body = self._verified_rebind_artifact_body(
+            self.runtime_root / receipt["backup_file"],
+            receipt["backup_digest"],
+            "candidate backup",
+        )
+        backup_bodies = self._verified_rebind_backup_bodies(receipt, backup_body)
+        self._verify_rebind_quarantined_manifest(receipt)
+        return backup_bodies
+
+    @staticmethod
+    def _verified_rebind_backup_bodies(
+        receipt: Mapping[str, Any], backup_body: bytes
+    ) -> dict[str, bytes]:
+        records = _validated_rebind_file_records(receipt["authoritative_files"])
+        expected_members = set(DEFAULTS) | {"recovery-manifest.json"}
+        try:
+            with zipfile.ZipFile(io.BytesIO(backup_body)) as archive:
+                members = archive.namelist()
+                if len(members) != len(set(members)) or set(members) != expected_members:
+                    raise StoreCorruptError(
+                        "workspace rebind candidate backup members are invalid"
+                    )
+                backup_bodies = {name: archive.read(name) for name in DEFAULTS}
+                recovery_manifest = json.loads(
+                    archive.read("recovery-manifest.json").decode("utf-8")
+                )
+        except (KeyError, UnicodeError, ValueError, zipfile.BadZipFile) as error:
+            raise StoreCorruptError(
+                "workspace rebind candidate backup is invalid"
+            ) from error
+        if recovery_manifest != {
+            "schema_version": 1,
+            "operation": "workspace-rebind-candidate-backup",
+            "candidate_workspace_id": receipt["candidate_workspace_id"],
+            "candidate_digest": receipt["candidate_digest"],
+        }:
+            raise StoreCorruptError(
+                "workspace rebind candidate backup manifest is invalid"
+            )
+        for name, body in backup_bodies.items():
+            record = records[name]
+            if len(body) != record["size"] or not secrets.compare_digest(
+                "sha256:" + hashlib.sha256(body).hexdigest(), record["sha256"]
+            ):
+                raise StoreCorruptError(
+                    "workspace rebind candidate backup evidence mismatch"
+                )
+        return backup_bodies
+
+    def _verify_rebind_quarantined_manifest(
+        self, receipt: Mapping[str, Any]
+    ) -> None:
+        quarantined_body = self._verified_rebind_artifact_body(
+            self.runtime_root / receipt["quarantined_manifest_file"],
+            receipt["quarantined_manifest_digest"],
+            "quarantined manifest",
+        )
+        try:
+            quarantined_manifest = json.loads(quarantined_body.decode("utf-8"))
+            if not isinstance(quarantined_manifest, dict):
+                raise ValueError("manifest must be an object")
+            _validate_store_manifest_header(quarantined_manifest)
+            _validate_store_manifest_files(quarantined_manifest.get("files"))
+            _validate_store_manifest_tasks(quarantined_manifest.get("tasks"))
+        except (UnicodeError, ValueError) as error:
+            raise StoreCorruptError(
+                "workspace rebind quarantined manifest is invalid"
+            ) from error
+        if (
+            quarantined_manifest.get("workspace_id")
+            != receipt["previous_workspace_id"]
+            or not secrets.compare_digest(
+                self._manifest_digest(quarantined_manifest),
+                receipt["manifest_digest"],
+            )
+        ):
+            raise StoreCorruptError(
+                "workspace rebind quarantined manifest evidence mismatch"
+            )
+
+    def _rebind_result_locked(self, receipt: Mapping[str, Any]) -> dict[str, Any]:
+        receipt_body = self.sync_rebind_receipt_path.read_bytes()
+        return {
+            "state": "in-sync",
+            "workspace_id": receipt["candidate_workspace_id"],
+            "generation": 0,
+            "recovery": {
+                "backup_path": str(self.runtime_root / receipt["backup_file"]),
+                "backup_digest": receipt["backup_digest"],
+                "receipt_path": str(self.sync_rebind_receipt_path),
+                "receipt_digest": "sha256:" + hashlib.sha256(receipt_body).hexdigest(),
+                "quarantined_manifest_path": str(
+                    self.runtime_root / receipt["quarantined_manifest_file"]
+                ),
+                "quarantined_manifest_digest": receipt[
+                    "quarantined_manifest_digest"
+                ],
+                "planning_mutated": False,
+            },
+        }
+
+    def _validate_rebind_request(
+        self,
+        confirmed: bool,
+        manifest_workspace_id: str,
+        candidate_workspace_id: str,
+        manifest_digest: str,
+        candidate_digest: str,
+        idempotency_key: str,
+    ) -> tuple[str, str, str, str]:
+        if confirmed is not True:
+            raise ValueError("workspace rebind requires explicit confirmation")
+        manifest_workspace_id = _canonical_uuid(
+            manifest_workspace_id, "expected_manifest_workspace_id"
+        )
+        candidate_workspace_id = _canonical_uuid(
+            candidate_workspace_id, "expected_candidate_workspace_id"
+        )
+        for label, digest in (
+            ("manifest_digest", manifest_digest),
+            ("candidate_digest", candidate_digest),
+        ):
+            if not isinstance(digest, str) or re.fullmatch(
+                r"sha256:[0-9a-f]{64}", digest
+            ) is None:
+                raise ValueError("{} is invalid".format(label))
+        self._validate_adoption_key(idempotency_key)
+        if idempotency_key is None:
+            raise ValueError("idempotency_key is required")
+        return (
+            manifest_workspace_id,
+            candidate_workspace_id,
+            manifest_digest,
+            candidate_digest,
+        )
+
+    def _rebind_replay_locked(
+        self,
+        coordinate: tuple[str, str, str, str],
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        receipt = self._read_rebind_receipt_locked()
+        if receipt is None or receipt.get("idempotency_key") != idempotency_key:
+            return None
+        receipt_coordinate = (
+            receipt.get("previous_workspace_id"),
+            receipt.get("candidate_workspace_id"),
+            receipt.get("manifest_digest"),
+            receipt.get("candidate_digest"),
+        )
+        if receipt_coordinate != coordinate:
+            raise StoreAdoptionConflictError(
+                "Idempotency-Key was already used for a different workspace rebind"
+            )
+        backup_bodies = self._verify_rebind_recovery_artifacts_locked(receipt)
+        manifest = self._read_manifest_locked()
+        if manifest is None or manifest.get("workspace_id") != coordinate[1]:
+            return None
+        if not secrets.compare_digest(
+            receipt.get("result_manifest_digest", ""), self._manifest_digest(manifest)
+        ):
+            return None
+        try:
+            authoritative_bodies = {
+                name: self.path(name).read_bytes() for name in sorted(DEFAULTS)
+            }
+        except FileNotFoundError:
+            raise StoreExternalChangeError(self._inspect_sync_locked())
+        if authoritative_bodies != backup_bodies:
+            raise StoreExternalChangeError(self._inspect_sync_locked())
+        return self._rebind_result_locked(receipt)
+
+    def _commit_workspace_rebind_locked(
+        self,
+        coordinate: tuple[str, str, str, str],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        manifest_workspace_id, candidate_workspace_id, manifest_digest, candidate_digest = coordinate
+        status, readiness, bodies, preview = self._workspace_rebind_candidate_locked()
+        actual = (
+            preview["manifest_workspace_id"],
+            preview["candidate_workspace_id"],
+            preview["manifest_digest"],
+            preview["candidate_digest"],
+        )
+        if actual != coordinate:
+            raise StoreExternalChangeError(status)
+
+        old_manifest_body = self.store_manifest_path.read_bytes()
+        old_manifest_raw_digest = "sha256:" + hashlib.sha256(old_manifest_body).hexdigest()
+        previous_manifest = self._read_manifest_locked()
+        if previous_manifest is None or not secrets.compare_digest(
+            self._manifest_digest(previous_manifest), manifest_digest
+        ):
+            raise StoreExternalChangeError(self._inspect_sync_locked())
+        timestamp = dt.datetime.now(dt.timezone.utc)
+        suffix = timestamp.strftime("%Y%m%dT%H%M%S%fZ")
+        backup_name = "workstack-rebind-candidate-{}.zip".format(suffix)
+        quarantine_name = ".workstack-store-manifest.quarantine-{}.json".format(suffix)
+        backup_body = self._candidate_backup_bytes(bodies, preview)
+        backup_digest = "sha256:" + hashlib.sha256(backup_body).hexdigest()
+        files = [
+            {
+                "name": name,
+                "size": len(body),
+                "sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+            }
+            for name, body in bodies.items()
+        ]
+        replacement = {
+            "version": STORE_MANIFEST_VERSION,
+            "workspace_id": candidate_workspace_id,
+            "store_schema_version": readiness.schema_version,
+            "generation": 0,
+            "files": {record["name"]: record["sha256"] for record in files},
+            "tasks": self._task_semantics_locked(),
+        }
+        receipt = {
+            "schema_version": 1,
+            "operation": "workspace-rebind",
+            "idempotency_key": idempotency_key,
+            "previous_workspace_id": manifest_workspace_id,
+            "candidate_workspace_id": candidate_workspace_id,
+            "manifest_digest": manifest_digest,
+            "candidate_digest": candidate_digest,
+            "result_manifest_digest": self._manifest_digest(replacement),
+            "authoritative_files": files,
+            "backup_file": backup_name,
+            "backup_digest": backup_digest,
+            "quarantined_manifest_file": quarantine_name,
+            "quarantined_manifest_digest": old_manifest_raw_digest,
+            "created_at": timestamp.replace(microsecond=0).isoformat().replace(
+                "+00:00", "Z"
+            ),
+            "planning_mutated": False,
+        }
+
+        self._atomic_write_bytes_locked(self.runtime_root / backup_name, backup_body)
+        self._atomic_write_bytes_locked(
+            self.runtime_root / quarantine_name, old_manifest_body
+        )
+        self._atomic_write_locked(self.sync_rebind_receipt_path, receipt)
+        _, _, final_bodies, final_preview = self._workspace_rebind_candidate_locked()
+        if final_preview["candidate_digest"] != candidate_digest or final_bodies != bodies:
+            raise StoreExternalChangeError(self._inspect_sync_locked())
+        self._atomic_write_locked(self.store_manifest_path, replacement)
+        try:
+            post_replace_bodies = {
+                name: self.path(name).read_bytes() for name in sorted(DEFAULTS)
+            }
+        except FileNotFoundError:
+            raise StoreExternalChangeError(self._inspect_sync_locked())
+        if post_replace_bodies != bodies:
+            self._sync_fingerprint = None
+            raise StoreExternalChangeError(self._inspect_sync_locked())
+        self._generation = 0
+        self._readiness = readiness
+        self._sync_fingerprint = None
+        self._sync_state = "in-sync"
+        self._emit_event_locked("store.workspace-rebound", candidate_workspace_id, [])
+        return self._rebind_result_locked(receipt)
+
+    def rebind_workspace_identity(
+        self,
+        *,
+        confirmed: bool,
+        expected_manifest_workspace_id: str,
+        expected_candidate_workspace_id: str,
+        expected_manifest_digest: str,
+        expected_candidate_digest: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        coordinate = self._validate_rebind_request(
+            confirmed,
+            expected_manifest_workspace_id,
+            expected_candidate_workspace_id,
+            expected_manifest_digest,
+            expected_candidate_digest,
+            idempotency_key,
+        )
+
+        with self._process_lock:
+            replay = self._rebind_replay_locked(coordinate, idempotency_key)
+            return replay or self._commit_workspace_rebind_locked(
+                coordinate, idempotency_key
+            )
+
+    def _read_adoption_receipt_locked(self) -> dict[str, Any] | None:
+        try:
+            receipt = self._read_json_locked(self.sync_adoption_receipt_path)
+        except FileNotFoundError:
+            return None
+        expected = {
+            "version",
+            "idempotency_key",
+            "expected_generation",
+            "expected_manifest_digest",
+            "result_generation",
+            "result_manifest_digest",
+            "workspace_id",
+        }
+        valid_key = receipt.get("idempotency_key") is None or (
+            isinstance(receipt.get("idempotency_key"), str)
+            and re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", receipt["idempotency_key"])
+        )
+        valid_digest = all(
+            isinstance(receipt.get(field), str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", receipt[field])
+            for field in ("expected_manifest_digest", "result_manifest_digest")
+        )
+        if (
+            set(receipt) != expected
+            or receipt.get("version") != 1
+            or not valid_key
+            or type(receipt.get("expected_generation")) is not int
+            or receipt["expected_generation"] < 0
+            or type(receipt.get("result_generation")) is not int
+            or receipt["result_generation"] < 0
+            or not valid_digest
+        ):
+            raise StoreCorruptError("sync adoption receipt is invalid")
+        _canonical_uuid(receipt.get("workspace_id"), "sync_adoption_receipt.workspace_id")
+        return receipt
+
+    @staticmethod
+    def _validate_adoption_key(idempotency_key: str | None) -> None:
+        if idempotency_key is not None and re.fullmatch(
+            r"[A-Za-z0-9._:-]{8,128}", idempotency_key
+        ) is None:
+            raise ValueError("idempotency_key is invalid")
+
+    def _guard_adoption_key_locked(
+        self,
+        receipt: Mapping[str, Any] | None,
+        idempotency_key: str | None,
+        expected_generation: int,
+        expected_manifest_digest: str,
+    ) -> None:
+        if (
+            receipt is not None
+            and idempotency_key is not None
+            and receipt.get("idempotency_key") == idempotency_key
+            and (
+                receipt.get("expected_generation") != expected_generation
+                or not secrets.compare_digest(
+                    receipt.get("expected_manifest_digest", ""),
+                    expected_manifest_digest,
+                )
+            )
+        ):
+            raise StoreAdoptionConflictError(
+                "Idempotency-Key was already used for a different sync candidate"
+            )
+
+    def _adoption_replay_locked(
+        self,
+        receipt: Mapping[str, Any] | None,
+        status: Mapping[str, Any],
+        expected_generation: int,
+        expected_manifest_digest: str,
+    ) -> bool:
+        if status["status"] != "in-sync":
+            return False
+        manifest = self._read_manifest_locked()
+        receipt_match = bool(
+            receipt is not None
+            and manifest is not None
+            and receipt.get("workspace_id") == manifest["workspace_id"]
+            and receipt.get("expected_generation") == expected_generation
+            and secrets.compare_digest(
+                receipt.get("expected_manifest_digest", ""),
+                expected_manifest_digest,
+            )
+            and receipt.get("result_generation") == manifest["generation"]
+            and secrets.compare_digest(
+                receipt.get("result_manifest_digest", ""),
+                self._manifest_digest(manifest),
+            )
+        )
+        if receipt_match:
+            return True
+        if manifest is None or manifest["generation"] != expected_generation + 1:
+            return False
+        reconstructed_candidate = {
+            "workspace_id": manifest["workspace_id"],
+            "store_schema_version": manifest["store_schema_version"],
+            "generation": expected_generation,
+            "files": manifest["files"],
+            "tasks": manifest["tasks"],
+        }
+        reconstructed_digest = "sha256:" + hashlib.sha256(
+            _compact_json(reconstructed_candidate)
+        ).hexdigest()
+        return secrets.compare_digest(
+            reconstructed_digest, expected_manifest_digest
+        )
+
     def adopt_external_change(
-        self, expected_generation: int, expected_manifest_digest: str
+        self,
+        expected_generation: int,
+        expected_manifest_digest: str,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         if type(expected_generation) is not int or expected_generation < 0:
             raise ValueError("expected_generation must be a non-negative integer")
@@ -525,8 +1587,23 @@ class Store:
             r"sha256:[0-9a-f]{64}", expected_manifest_digest
         ):
             raise ValueError("manifest_digest is invalid")
+        self._validate_adoption_key(idempotency_key)
         with self.transaction():
             status = self._inspect_sync_locked()
+            receipt = self._read_adoption_receipt_locked()
+            self._guard_adoption_key_locked(
+                receipt,
+                idempotency_key,
+                expected_generation,
+                expected_manifest_digest,
+            )
+            if self._adoption_replay_locked(
+                receipt,
+                status,
+                expected_generation,
+                expected_manifest_digest,
+            ):
+                return self.sync_status()
             public_digest = status["candidate_digest"] or status["manifest_digest"]
             if (
                 status["status"] != "external-change-detected"
@@ -543,6 +1620,21 @@ class Store:
                 raise StoreExternalChangeError(current)
             self._write_committed_manifest_locked(
                 changed_files, event_type="store.external-change-adopted"
+            )
+            manifest = self._read_manifest_locked()
+            if manifest is None:
+                raise StoreCorruptError("committed sync manifest is missing")
+            self._atomic_write_locked(
+                self.sync_adoption_receipt_path,
+                {
+                    "version": 1,
+                    "idempotency_key": idempotency_key,
+                    "expected_generation": expected_generation,
+                    "expected_manifest_digest": expected_manifest_digest,
+                    "result_generation": manifest["generation"],
+                    "result_manifest_digest": self._manifest_digest(manifest),
+                    "workspace_id": manifest["workspace_id"],
+                },
             )
             return self.sync_status()
 
@@ -701,51 +1793,23 @@ class Store:
         version: int,
         migrate_legacy: bool = False,
     ) -> list[dict[str, Any]]:
-        if set(backlog) != {"version", "tasks"} or backlog.get("version") != version:
-            raise StoreCorruptError("backlog identity schema is invalid")
-        tasks = backlog.get("tasks")
-        if not isinstance(tasks, list):
-            raise StoreCorruptError("backlog.tasks must be an array")
+        tasks = _backlog_identity_tasks(backlog, version)
         seen_ids: set[str] = set()
         seen_uids: set[str] = {workspace_uid}
-        migrated: list[dict[str, Any]] = []
-        for index, source in enumerate(tasks):
-            label = "backlog.tasks[{}]".format(index)
-            if not isinstance(source, dict):
-                raise StoreCorruptError("{} must be an object".format(label))
-            task_id = source.get("id")
-            if not isinstance(task_id, str) or not re.fullmatch(r"T-[0-9]{4,}", task_id):
-                raise StoreCorruptError("{}.id is invalid".format(label))
-            if task_id in seen_ids:
-                raise StoreCorruptError("duplicate task id: {}".format(task_id))
-            seen_ids.add(task_id)
-            task = copy.deepcopy(source)
-            if "uid" in task:
-                task_uid = _canonical_uuid(task["uid"], "{}.uid".format(label))
-            elif migrate_legacy:
-                task_uid = str(uuid.uuid5(uuid.UUID(workspace_uid), task_id))
-                task["uid"] = task_uid
-            else:
-                raise StoreCorruptError("{}.uid is missing".format(label))
-            if task_uid in seen_uids:
-                raise StoreCorruptError("duplicate persisted UUID: {}".format(task_uid))
-            seen_uids.add(task_uid)
-            if "revision" in task:
-                _stored_revision(task["revision"], "{}.revision".format(label))
-            elif migrate_legacy:
-                task["revision"] = 0
-            else:
-                raise StoreCorruptError("{}.revision is missing".format(label))
-            if version == 3:
-                status_fact_id = task.get("status_fact_id")
-                if not isinstance(status_fact_id, str) or not re.fullmatch(
-                    r"PS-[0-9]{6,}", status_fact_id
-                ):
-                    raise StoreCorruptError("{}.status_fact_id is invalid".format(label))
-            migrated.append(task)
-        return migrated
+        return [
+            _validated_task_identity(
+                source,
+                index,
+                workspace_uid,
+                version,
+                migrate_legacy,
+                seen_ids,
+                seen_uids,
+            )
+            for index, source in enumerate(tasks)
+        ]
 
-    def _validate_ready_state_locked(self) -> StoreReadiness:
+    def _load_required_store_values_locked(self) -> dict[str, dict[str, Any]]:
         values: dict[str, dict[str, Any]] = {}
         for name in DEFAULTS:
             try:
@@ -754,78 +1818,18 @@ class Store:
                 raise StoreCorruptError(
                     "required store is missing: {}".format(self.path(name))
                 ) from error
+        return values
+
+    def _validate_ready_state_locked(self) -> StoreReadiness:
+        values = self._load_required_store_values_locked()
         workspace_uid = self._validate_workspace(values["workspace.json"], 2)
         tasks = self._validate_task_identities(
             values["backlog.json"], workspace_uid, version=3
         )
-        metadata = values["store-meta.json"]
-        if set(metadata) != {"version", "store_schema_version", "migrations"}:
-            raise StoreCorruptError("store metadata has unknown or missing fields")
-        if metadata.get("version") != 2:
-            raise StoreCorruptError("store metadata version is unsupported")
-        schema_version = metadata.get("store_schema_version")
-        if schema_version != STORE_SCHEMA_VERSION:
-            if type(schema_version) is int and schema_version > STORE_SCHEMA_VERSION:
-                raise StoreCorruptError("store schema is newer than this Work Stack build")
-            raise StoreCorruptError("store schema version is invalid")
-        migrations = metadata.get("migrations")
-        if not isinstance(migrations, dict) or set(migrations) != {
-            "identity",
-            "planning_status",
-        }:
-            raise StoreCorruptError("store migration evidence is invalid")
-        identity = migrations.get("identity")
-        planning = migrations.get("planning_status")
-        expected_evidence = {"id", "origin", "source_sha256"}
-        if (
-            not isinstance(identity, dict)
-            or set(identity) != expected_evidence
-            or not isinstance(planning, dict)
-            or set(planning) != expected_evidence
-        ):
-            raise StoreCorruptError("store migration evidence is invalid")
-        origin = identity.get("origin")
-        source_sha256 = identity.get("source_sha256")
-        if origin == "fresh":
-            if identity.get("id") != "workstack.store.v2" or source_sha256 is not None:
-                raise StoreCorruptError("fresh store migration evidence is invalid")
-        elif origin == "migrated_v1":
-            if identity.get("id") != "workstack.store.v1-to-v2" or not (
-                isinstance(source_sha256, str)
-                and re.fullmatch(r"sha256:[0-9a-f]{64}", source_sha256)
-            ):
-                raise StoreCorruptError("v1 migration evidence is invalid")
-        else:
-            raise StoreCorruptError("store migration origin is invalid")
-        planning_origin = planning.get("origin")
-        planning_digest = planning.get("source_sha256")
-        if planning.get("id") != "workstack.planning-status.v1":
-            raise StoreCorruptError("planning-status migration evidence is invalid")
-        if planning_origin == "fresh":
-            if planning_digest is not None:
-                raise StoreCorruptError("fresh planning-status evidence is invalid")
-        elif planning_origin in {"migrated_v1", "migrated_v2"}:
-            if not (
-                isinstance(planning_digest, str)
-                and re.fullmatch(r"sha256:[0-9a-f]{64}", planning_digest)
-            ):
-                raise StoreCorruptError("planning-status migration evidence is invalid")
-        else:
-            raise StoreCorruptError("planning-status migration origin is invalid")
-        for name in DEFAULTS:
-            if name not in IDENTITY_STORES:
-                _validate_auxiliary_store(name, values[name])
+        origin = _validate_store_metadata(values["store-meta.json"])
+        _validate_ready_auxiliary_stores(values)
         activity = values["activity.json"]
-        expected_activity = DEFAULTS["activity.json"]
-        if (
-            not isinstance(expected_activity, dict)
-            or set(activity) != set(expected_activity)
-            or activity.get("version") != 2
-            or not isinstance(activity.get("activity"), list)
-            or not isinstance(activity.get("idempotency"), list)
-            or not isinstance(activity.get("planning_status"), list)
-        ):
-            raise StoreCorruptError("activity.json schema is invalid")
+        _validate_ready_activity(activity)
         try:
             validate_and_project(values["backlog.json"], activity)
         except PlanningStatusValidationError as error:
@@ -836,6 +1840,7 @@ class Store:
             task_count=len(tasks),
             migration_origin=origin,
         )
+
 
     def _migrate_v1_locked(
         self,
@@ -910,64 +1915,13 @@ class Store:
         tasks = self._validate_task_identities(
             values["backlog.json"], workspace_uid, version=2
         )
-        metadata_v2 = values["store-meta.json"]
-        if (
-            set(metadata_v2) != {"version", "store_schema_version", "migration"}
-            or metadata_v2.get("version") != 1
-            or metadata_v2.get("store_schema_version") != 2
-            or not isinstance(metadata_v2.get("migration"), dict)
-        ):
-            raise StoreCorruptError("v2 store migration evidence is invalid")
-        identity = copy.deepcopy(metadata_v2["migration"])
-        if set(identity) != {"id", "origin", "source_sha256"}:
-            raise StoreCorruptError("v2 store migration evidence is invalid")
-        if identity.get("origin") == "fresh":
-            if identity.get("id") != "workstack.store.v2" or identity.get("source_sha256") is not None:
-                raise StoreCorruptError("v2 identity evidence is invalid")
-        elif identity.get("origin") == "migrated_v1":
-            if identity.get("id") != "workstack.store.v1-to-v2" or not re.fullmatch(
-                r"sha256:[0-9a-f]{64}", str(identity.get("source_sha256", ""))
-            ):
-                raise StoreCorruptError("v2 identity evidence is invalid")
-        else:
-            raise StoreCorruptError("v2 identity evidence is invalid")
-
-        activity = copy.deepcopy(values["activity.json"])
-        if (
-            set(activity) != {"version", "activity", "idempotency"}
-            or activity.get("version") != 1
-            or not isinstance(activity.get("activity"), list)
-            or not isinstance(activity.get("idempotency"), list)
-        ):
-            raise StoreCorruptError("v2 activity schema is invalid")
-        for name in DEFAULTS:
-            if name not in {"workspace.json", "backlog.json", "store-meta.json", "activity.json"}:
-                _validate_auxiliary_store(name, values[name])
+        identity = _validated_v2_identity_evidence(values["store-meta.json"])
+        activity = _validated_v2_activity(values["activity.json"])
+        _validate_v2_auxiliary_stores(values)
         source_sha256 = "sha256:" + hashlib.sha256(_compact_json(dict(values))).hexdigest()
-        activity["version"] = 2
-        activity["planning_status"] = []
-        created_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        for task in tasks:
-            append_bootstrap(
-                activity,
-                task,
-                created_at=created_at,
-                actor="workstack.migration",
-                provenance="store.v2",
-            )
+        _bootstrap_migrated_activity(activity, tasks, "store.v2")
         backlog = {"version": 3, "tasks": tasks}
-        metadata = {
-            "version": 2,
-            "store_schema_version": STORE_SCHEMA_VERSION,
-            "migrations": {
-                "identity": identity,
-                "planning_status": {
-                    "id": "workstack.planning-status.v1",
-                    "origin": "migrated_v2",
-                    "source_sha256": source_sha256,
-                },
-            },
-        }
+        metadata = _v3_migration_metadata(identity, source_sha256)
         self.save_many(
             {
                 "backlog.json": backlog,
@@ -990,6 +1944,18 @@ class Store:
                 output.write("\n")
                 output.flush()
                 os.fsync(output.fileno())
+            expectations = getattr(self._local, "replace_expectations", {})
+            if path.name in expectations:
+                expected = expectations[path.name]
+                current = (
+                    "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                    if path.is_file()
+                    else None
+                )
+                if current != expected:
+                    raise StoreCorruptError(
+                        "local commit target changed before replacement; journal retained"
+                    )
             os.replace(str(temporary), str(path))
         finally:
             temporary.unlink(missing_ok=True)
@@ -1009,11 +1975,138 @@ class Store:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def _atomic_write_bytes_locked(self, path: Path, value: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(value)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(str(temporary), str(path))
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def save(self, name: str, value: dict[str, Any]) -> None:
         self.path(name)
         if not isinstance(value, dict):
             raise ValueError("store value must be a JSON object")
         self.save_many({name: value})
+
+    def _commit_baseline_locked(
+        self, prepared: list[dict[str, Any]]
+    ) -> tuple[dict[str, Any] | None, dict[str, str], dict[str, str | None]]:
+        baseline = self._read_manifest_locked()
+        if baseline is not None:
+            expected = dict(baseline["files"])
+        else:
+            expected = {
+                name: "sha256:" + hashlib.sha256(self.path(name).read_bytes()).hexdigest()
+                for name in DEFAULTS
+                if self.path(name).is_file()
+            }
+        original = {name: expected.get(name) for name in DEFAULTS}
+        for write in prepared:
+            expected[write["name"]] = "sha256:" + hashlib.sha256(
+                _serialized_json_bytes(write["value"])
+            ).hexdigest()
+        return baseline, expected, original
+
+    @staticmethod
+    def _commit_race_groups(
+        actual: Mapping[str, str],
+        expected: Mapping[str, str],
+        changed_files: list[str],
+        has_baseline: bool,
+    ) -> tuple[list[str], list[str]]:
+        targets = [
+            name for name in changed_files if actual.get(name) != expected.get(name)
+        ]
+        unrelated = [
+            name
+            for name in DEFAULTS
+            if has_baseline
+            and name not in changed_files
+            and actual.get(name) != expected.get(name)
+        ]
+        return targets, unrelated
+
+    def _commit_local_with_external_candidate_locked(
+        self,
+        baseline: Mapping[str, Any],
+        expected_hashes: Mapping[str, str],
+        changed_files: list[str],
+    ) -> None:
+        tasks = self._local_baseline_tasks_locked(
+            baseline, expected_hashes, changed_files
+        )
+        self._write_local_baseline_locked(
+            baseline, expected_hashes, tasks, changed_files
+        )
+        self.journal_path.unlink()
+        self._inspect_sync_locked()
+
+    def _resolve_late_external_change_locked(
+        self,
+        baseline: Mapping[str, Any] | None,
+        expected_hashes: Mapping[str, str],
+        changed_files: list[str],
+    ) -> None:
+        final_hashes = self._authoritative_hashes_locked()
+        targets_match = all(
+            final_hashes[name] == expected_hashes[name] for name in changed_files
+        )
+        if baseline is None or not targets_match:
+            raise StoreExternalChangeError(self._inspect_sync_locked())
+        self._commit_local_with_external_candidate_locked(
+            baseline, expected_hashes, changed_files
+        )
+
+    def _commit_prepared_locked(
+        self, prepared: list[dict[str, Any]], journal: dict[str, Any]
+    ) -> None:
+        self._assert_writable_locked()
+        if self.journal_path.exists():
+            raise StoreCorruptError("refusing to overwrite a pending recovery journal")
+        baseline, expected_hashes, original_hashes = self._commit_baseline_locked(prepared)
+        self._atomic_write_locked(self.journal_path, journal)
+        self._local.replace_expectations = {
+            write["name"]: original_hashes[write["name"]] for write in prepared
+        }
+        try:
+            for write in prepared:
+                self._atomic_write_locked(self.path(write["name"]), write["value"])
+        finally:
+            self._local.replace_expectations = {}
+        changed_files = sorted(write["name"] for write in prepared)
+        targets, unrelated = self._commit_race_groups(
+            self._authoritative_hashes_locked(),
+            expected_hashes,
+            changed_files,
+            baseline is not None,
+        )
+        if targets:
+            raise StoreCorruptError(
+                "local commit target changed concurrently; recovery journal retained"
+            )
+        if unrelated and baseline is not None:
+            self._commit_local_with_external_candidate_locked(
+                baseline, expected_hashes, changed_files
+            )
+            return
+        try:
+            self._write_committed_manifest_locked(
+                changed_files, expected_hashes=expected_hashes
+            )
+        except StoreExternalChangeError:
+            self._resolve_late_external_change_locked(
+                baseline, expected_hashes, changed_files
+            )
+            return
+        self.journal_path.unlink()
 
     def save_many(
         self,
@@ -1041,128 +2134,149 @@ class Store:
             "writes": prepared,
         }
         with self.transaction():
-            self._assert_writable_locked()
-            if self.journal_path.exists():
-                raise StoreCorruptError(
-                    "refusing to overwrite a pending recovery journal"
-                )
-            self._atomic_write_locked(self.journal_path, journal)
-            for write in prepared:
-                self._atomic_write_locked(self.path(write["name"]), write["value"])
-            self._write_committed_manifest_locked(
-                sorted(write["name"] for write in prepared)
-            )
-            self.journal_path.unlink()
+            self._commit_prepared_locked(prepared, journal)
 
     def _validate_journal(self, journal: dict[str, Any]) -> list[dict[str, Any]]:
-        if set(journal) != {"version", "operation_id", "created_at", "writes"}:
-            raise StoreCorruptError("recovery journal has unknown or missing fields")
-        if type(journal["version"]) is not int or journal["version"] != 1:
-            raise StoreCorruptError("unsupported recovery journal version")
-        if (
-            not isinstance(journal["operation_id"], str)
-            or not 1 <= len(journal["operation_id"]) <= 200
-        ):
-            raise StoreCorruptError("recovery journal operation_id is invalid")
-        if not isinstance(journal["created_at"], str) or not journal["created_at"]:
-            raise StoreCorruptError("recovery journal created_at is invalid")
-        try:
-            created_at = journal["created_at"]
-            parsed = dt.datetime.fromisoformat(
-                created_at[:-1] + "+00:00" if created_at.endswith("Z") else created_at
-            )
-        except ValueError as error:
-            raise StoreCorruptError("recovery journal created_at is invalid") from error
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            raise StoreCorruptError("recovery journal created_at must include a timezone")
-        writes = journal["writes"]
-        if not isinstance(writes, list) or not writes:
-            raise StoreCorruptError("recovery journal writes must be a non-empty array")
+        writes = _recovery_writes(journal)
         seen: set[str] = set()
         for write in writes:
-            if not isinstance(write, dict) or set(write) != {"name", "value", "sha256"}:
-                raise StoreCorruptError("recovery journal write entry is invalid")
-            name = write["name"]
-            if name not in DEFAULTS or name in seen:
-                raise StoreCorruptError("recovery journal target is unknown or repeated")
-            seen.add(name)
-            if not isinstance(write["value"], dict):
-                raise StoreCorruptError("recovery journal target value must be an object")
-            expected = "sha256:" + hashlib.sha256(_compact_json(write["value"])).hexdigest()
-            if not secrets.compare_digest(str(write["sha256"]), expected):
-                raise StoreCorruptError("recovery journal value digest mismatch")
+            _validate_recovery_write(write, seen)
         return writes
+
+    def _assert_recovery_targets_safe_locked(
+        self, writes: list[dict[str, Any]]
+    ) -> None:
+        manifest = self._read_manifest_locked()
+        if manifest is None:
+            return
+        for write in writes:
+            path = self.path(write["name"])
+            current = (
+                "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                if path.is_file()
+                else None
+            )
+            intended = "sha256:" + hashlib.sha256(
+                _serialized_json_bytes(write["value"])
+            ).hexdigest()
+            if current not in {manifest["files"][write["name"]], intended}:
+                raise StoreCorruptError(
+                    "recovery target changed outside Work Stack; journal retained"
+                )
 
     def _recover_locked(self) -> None:
         if not self.journal_path.exists():
             return
         journal = self._read_json_locked(self.journal_path)
         writes = self._validate_journal(journal)
-        for write in writes:
-            self._atomic_write_locked(self.path(write["name"]), write["value"])
+        self._assert_recovery_targets_safe_locked(writes)
+        manifest = self._read_manifest_locked()
+        self._local.replace_expectations = {
+            write["name"]: (
+                "sha256:" + hashlib.sha256(self.path(write["name"]).read_bytes()).hexdigest()
+                if self.path(write["name"]).is_file()
+                else None
+            )
+            for write in writes
+        }
+        try:
+            for write in writes:
+                self._atomic_write_locked(self.path(write["name"]), write["value"])
+        finally:
+            self._local.replace_expectations = {}
+        recovered_files = sorted(write["name"] for write in writes)
+        if manifest is not None:
+            expected_hashes = dict(manifest["files"])
+            for write in writes:
+                expected_hashes[write["name"]] = "sha256:" + hashlib.sha256(
+                    _serialized_json_bytes(write["value"])
+                ).hexdigest()
+            tasks = self._local_baseline_tasks_locked(
+                manifest, expected_hashes, recovered_files
+            )
+            self._write_local_baseline_locked(
+                manifest, expected_hashes, tasks, recovered_files
+            )
+            self.journal_path.unlink()
+            self._inspect_sync_locked()
+            self._recovered_files = []
+            return
         self.journal_path.unlink()
         self._generation += 1
-        self._recovered_files = sorted(write["name"] for write in writes)
+        self._recovered_files = recovered_files
+
+    def _initialize_fresh_locked(self) -> StoreReadiness:
+        workspace = _workspace_default()
+        fresh = {
+            name: (
+                workspace
+                if name == "workspace.json"
+                else _store_meta_default()
+                if name == "store-meta.json"
+                else _default_for(name)
+            )
+            for name in DEFAULTS
+        }
+        self.save_many(fresh, operation_id="store-initialize-v3")
+        return self._validate_ready_state_locked()
+
+    def _existing_store_values_locked(
+        self, existing: set[str]
+    ) -> dict[str, dict[str, Any]]:
+        required_legacy = set(DEFAULTS) - {"store-meta.json"}
+        if existing not in (set(DEFAULTS), required_legacy):
+            missing = sorted(set(DEFAULTS) - existing)
+            raise StoreCorruptError(
+                "required store roster is incomplete: {}".format(", ".join(missing))
+            )
+        values = {
+            name: self._read_json_locked(self.path(name))
+            for name in existing
+        }
+        for name in required_legacy - set(IDENTITY_STORES):
+            _validate_auxiliary_store(name, values[name])
+        return values
+
+    def _existing_store_readiness_locked(
+        self, existing: set[str], values: dict[str, dict[str, Any]]
+    ) -> StoreReadiness:
+        workspace = values["workspace.json"]
+        backlog = values["backlog.json"]
+        if "store-meta.json" not in existing:
+            if workspace.get("version") != 1 or backlog.get("version") != 1:
+                raise StoreCorruptError("store migration is partial or missing evidence")
+            return self._migrate_v1_locked(workspace, backlog, values)
+        metadata = values["store-meta.json"]
+        is_v2 = (
+            metadata.get("version") == 1
+            and metadata.get("store_schema_version") == 2
+            and backlog.get("version") == 2
+            and values["activity.json"].get("version") == 1
+        )
+        if is_v2:
+            return self._migrate_v2_locked(values)
+        return self._validate_ready_state_locked()
+
+    def _finish_initialization_locked(self) -> StoreReadiness:
+        if self._recovered_files:
+            self._write_committed_manifest_locked(self._recovered_files)
+            self._recovered_files = []
+        self._inspect_sync_locked()
+        assert self._readiness is not None
+        return self._readiness
 
     def initialize(self) -> StoreReadiness:
         with self.transaction():
             self._recover_locked()
             existing = {name for name in DEFAULTS if self.path(name).exists()}
             if not existing:
-                workspace = _workspace_default()
-                fresh = {
-                    name: (
-                        workspace
-                        if name == "workspace.json"
-                        else _store_meta_default()
-                        if name == "store-meta.json"
-                        else _default_for(name)
-                    )
-                    for name in DEFAULTS
-                }
-                self.save_many(fresh, operation_id="store-initialize-v3")
-                self._readiness = self._validate_ready_state_locked()
-                if self._recovered_files:
-                    self._write_committed_manifest_locked(self._recovered_files)
-                    self._recovered_files = []
-                self._inspect_sync_locked()
-                return self._readiness
-
-            required_legacy = set(DEFAULTS) - {"store-meta.json"}
-            if existing not in (set(DEFAULTS), required_legacy):
-                missing = sorted(set(DEFAULTS) - existing)
-                raise StoreCorruptError(
-                    "required store roster is incomplete: {}".format(", ".join(missing))
-                )
-            values = {
-                name: self._read_json_locked(self.path(name))
-                for name in existing
-            }
-            for name in required_legacy - set(IDENTITY_STORES):
-                _validate_auxiliary_store(name, values[name])
-            workspace = values["workspace.json"]
-            backlog = values["backlog.json"]
-            metadata_exists = "store-meta.json" in existing
-            if not metadata_exists:
-                if workspace.get("version") != 1 or backlog.get("version") != 1:
-                    raise StoreCorruptError("store migration is partial or missing evidence")
-                self._readiness = self._migrate_v1_locked(workspace, backlog, values)
+                self._readiness = self._initialize_fresh_locked()
             else:
-                metadata = values["store-meta.json"]
-                if (
-                    metadata.get("version") == 1
-                    and metadata.get("store_schema_version") == 2
-                    and backlog.get("version") == 2
-                    and values["activity.json"].get("version") == 1
-                ):
-                    self._readiness = self._migrate_v2_locked(values)
-                else:
-                    self._readiness = self._validate_ready_state_locked()
-            if self._recovered_files:
-                self._write_committed_manifest_locked(self._recovered_files)
-                self._recovered_files = []
-            self._inspect_sync_locked()
-            return self._readiness
+                values = self._existing_store_values_locked(existing)
+                self._readiness = self._existing_store_readiness_locked(
+                    existing, values
+                )
+            return self._finish_initialization_locked()
 
     def seed_demo(self, source_root: Path | str) -> bool:
         """Copy tracked demo fixtures only into a wholly empty runtime core."""

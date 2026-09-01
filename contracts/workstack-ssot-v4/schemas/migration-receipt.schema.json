@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/migration-receipt.schema.json",
+  "title": "Work Stack SSOT v3 to v4 migration receipt",
+  "$comment": "This receipt is content-free: it records identities, digests, counts, artifacts, and verification outcomes, never source paths or domain text.",
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "identityEvidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "origin", "source_sha256"],
+          "properties": {
+            "id": { "const": "workstack.store.v2" },
+            "origin": { "const": "fresh" },
+            "source_sha256": { "type": "null" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "origin", "source_sha256"],
+          "properties": {
+            "id": { "const": "workstack.store.v1-to-v2" },
+            "origin": { "const": "migrated_v1" },
+            "source_sha256": { "$ref": "common.schema.json#/$defs/sha256" }
+          }
+        }
+      ]
+    },
+    "planningEvidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "origin", "source_sha256"],
+          "properties": {
+            "id": { "const": "workstack.planning-status.v1" },
+            "origin": { "const": "fresh" },
+            "source_sha256": { "type": "null" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "origin", "source_sha256"],
+          "properties": {
+            "id": { "const": "workstack.planning-status.v1" },
+            "origin": { "enum": ["migrated_v1", "migrated_v2"] },
+            "source_sha256": { "$ref": "common.schema.json#/$defs/sha256" }
+          }
+        }
+      ]
+    },
+    "generatedId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_kind", "source_identity_digest", "generated_uid"],
+      "properties": {
+        "entity_kind": {
+          "enum": [
+            "objective",
+            "key_result",
+            "capture",
+            "reply",
+            "standalone_note",
+            "subtask",
+            "planning_status_event",
+            "activity_event",
+            "worklog_check_in",
+            "worklog_entry",
+            "worklog_session"
+          ]
+        },
+        "source_identity_digest": { "$ref": "common.schema.json#/$defs/sha256" },
+        "generated_uid": { "$ref": "common.schema.json#/$defs/uuid" }
+      }
+    },
+    "taskNoteSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_uid", "source_index", "generated_note_uid"],
+      "properties": {
+        "task_uid": { "$ref": "common.schema.json#/$defs/uuid" },
+        "source_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "generated_note_uid": { "$ref": "common.schema.json#/$defs/uuid" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["artifact_uid", "digest", "byte_count"],
+      "properties": {
+        "artifact_uid": { "$ref": "common.schema.json#/$defs/uuid" },
+        "digest": { "$ref": "common.schema.json#/$defs/sha256" },
+        "byte_count": { "$ref": "#/$defs/count" }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "schema_version",
+    "workspace_uid",
+    "migration_uid",
+    "algorithm_version",
+    "created_at",
+    "state",
+    "source",
+    "candidate",
+    "generated_id_roster",
+    "task_note_source_roster",
+    "runtime_evidence",
+    "artifacts",
+    "checks"
+  ],
+  "properties": {
+    "format": { "const": "workstack.migration-receipt" },
+    "schema_version": { "const": 1 },
+    "workspace_uid": { "$ref": "common.schema.json#/$defs/uuid" },
+    "migration_uid": { "$ref": "common.schema.json#/$defs/uuid" },
+    "algorithm_version": { "const": "workstack.v3-to-v4.v1" },
+    "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "state": { "enum": ["verified_candidate", "activated", "restored"] },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format_version",
+        "authority_digest",
+        "semantic_digest",
+        "authoritative_file_count",
+        "byte_count",
+        "migration_evidence"
+      ],
+      "properties": {
+        "format_version": { "const": 3 },
+        "authority_digest": { "$ref": "common.schema.json#/$defs/sha256" },
+        "semantic_digest": { "$ref": "common.schema.json#/$defs/sha256" },
+        "authoritative_file_count": { "$ref": "#/$defs/count" },
+        "byte_count": { "$ref": "#/$defs/count" },
+        "migration_evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity", "planning_status"],
+          "properties": {
+            "identity": { "$ref": "#/$defs/identityEvidence" },
+            "planning_status": { "$ref": "#/$defs/planningEvidence" }
+          }
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format_version",
+        "authority_digest",
+        "semantic_digest",
+        "record_count",
+        "stream_event_count"
+      ],
+      "properties": {
+        "format_version": { "const": 4 },
+        "authority_digest": { "$ref": "common.schema.json#/$defs/sha256" },
+        "semantic_digest": { "$ref": "common.schema.json#/$defs/sha256" },
+        "record_count": { "$ref": "#/$defs/count" },
+        "stream_event_count": { "$ref": "#/$defs/count" }
+      }
+    },
+    "generated_id_roster": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/generatedId" }
+    },
+    "task_note_source_roster": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/taskNoteSource" }
+    },
+    "runtime_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idempotency_ledger_digest", "idempotency_record_count"],
+      "properties": {
+        "idempotency_ledger_digest": { "$ref": "common.schema.json#/$defs/sha256" },
+        "idempotency_record_count": { "$ref": "#/$defs/count" }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backup", "candidate"],
+      "properties": {
+        "backup": {
+          "allOf": [
+            { "$ref": "#/$defs/artifact" },
+            {
+              "type": "object",
+              "required": ["state"],
+              "properties": { "state": { "enum": ["verified", "retained", "restored"] } }
+            }
+          ],
+          "unevaluatedProperties": false
+        },
+        "candidate": {
+          "allOf": [
+            { "$ref": "#/$defs/artifact" },
+            {
+              "type": "object",
+              "required": ["state"],
+              "properties": {
+                "state": {
+                  "enum": ["validated", "parity_verified", "activated", "retained"]
+                }
+              }
+            }
+          ],
+          "unevaluatedProperties": false
+        }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_unchanged",
+        "schemas_valid",
+        "cross_invariants_valid",
+        "semantic_parity"
+      ],
+      "properties": {
+        "source_unchanged": { "const": true },
+        "schemas_valid": { "const": true },
+        "cross_invariants_valid": { "const": true },
+        "semantic_parity": { "const": true }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "verified_candidate" } } },
+      "then": {
+        "properties": {
+          "artifacts": {
+            "properties": {
+              "backup": { "properties": { "state": { "enum": ["verified", "retained"] } } },
+              "candidate": { "properties": { "state": { "const": "parity_verified" } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "state": { "const": "activated" } } },
+      "then": {
+        "properties": {
+          "artifacts": {
+            "properties": {
+              "backup": { "properties": { "state": { "const": "retained" } } },
+              "candidate": { "properties": { "state": { "const": "activated" } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "state": { "const": "restored" } } },
+      "then": {
+        "properties": {
+          "artifacts": {
+            "properties": {
+              "backup": { "properties": { "state": { "const": "restored" } } },
+              "candidate": { "properties": { "state": { "const": "retained" } } }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

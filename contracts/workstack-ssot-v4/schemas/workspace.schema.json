@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/workspace.schema.json",
+  "title": "Work Stack SSOT v4 workspace record",
+  "allOf": [
+    { "$ref": "common.schema.json#/$defs/recordEnvelope" },
+    {
+      "type": "object",
+      "required": ["display_id", "name"],
+      "properties": {
+        "format": { "const": "workstack.workspace" },
+        "schema_version": { "const": 1 },
+        "display_id": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 4000 }
+      }
+    }
+  ],
+  "unevaluatedProperties": false
+}

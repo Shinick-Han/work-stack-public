@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, vi } from 'vitest'
 import { InboxPage } from './InboxPage'
@@ -42,6 +42,39 @@ test('links a sanitized capture to the hinted task', async () => {
   expect(onImportAgentResult).toHaveBeenCalledOnce()
   await userEvent.click(screen.getByRole('button', { name: 'Link to task' }))
   expect(onLink).toHaveBeenCalledWith('C-0001', 'T-0001')
+})
+
+test('does not offer duplicate conversion for an action already linked to a Task', () => {
+  const linkedCapture = {
+    ...capture,
+    normalized: {
+      ...capture.normalized,
+      action_items: [{ ...capture.normalized.action_items[0], task_id: 'T-0001' }],
+    },
+    converted_task_ids: ['T-0001'],
+  }
+  render(
+    <InboxPage
+      captures={[linkedCapture]}
+      onCreateSourceTask={vi.fn()}
+      onConvert={vi.fn()}
+      onDismiss={vi.fn()}
+      onCopyMicrosoftRequest={vi.fn()}
+      onImportAgentResult={vi.fn()}
+      onImport={vi.fn()}
+      onLink={vi.fn()}
+      onSearchChange={vi.fn()}
+      onSelectCapture={vi.fn()}
+      search=""
+      selectedCaptureId={null}
+      workspace={workspace}
+    />,
+  )
+
+  const linkedAction = screen.getByText('Add rollback check').closest('.capture-action') as HTMLElement | null
+  expect(linkedAction).not.toBeNull()
+  expect(within(linkedAction!).queryByRole('button', { name: 'Create task' })).not.toBeInTheDocument()
+  expect(within(linkedAction!).getByText('Linked to T-0001')).toBeInTheDocument()
 })
 
 test('keeps unavailable agent handoff out of the primary UI while preserving manual import', () => {
@@ -184,6 +217,42 @@ test('attaches a reviewed embedded source to an existing Task without creating a
   }))
 })
 
+test('infers the provider and lets the user search for the existing Task to attach', async () => {
+  const secondTask = {
+    ...workspace.tasks[0],
+    id: 'T-0002',
+    uid: '33333333-3333-4333-8333-333333333333',
+    title: 'Plan dependency upgrades',
+  }
+  render(
+    <InboxPage
+      captures={[]}
+      onConvert={vi.fn()}
+      onCreateSourceTask={vi.fn().mockResolvedValue(undefined)}
+      onDismiss={vi.fn()}
+      onCopyMicrosoftRequest={vi.fn()}
+      onImportAgentResult={vi.fn()}
+      onImport={vi.fn()}
+      onLink={vi.fn()}
+      onSearchChange={vi.fn()}
+      onSelectCapture={vi.fn()}
+      search=""
+      selectedCaptureId={null}
+      workspace={{ ...workspace, tasks: [...workspace.tasks, secondTask] }}
+    />,
+  )
+
+  await userEvent.click(screen.getByRole('button', { name: 'Capture copied Teams content' }))
+  expect(screen.getByLabelText('Source provider')).toHaveValue('Teams · Explicit clipboard')
+  expect(screen.queryByRole('group', { name: 'Source' })).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('radio', { name: /Attach to existing Task/i }))
+  await userEvent.type(screen.getByLabelText('Find existing Task'), 'dependency')
+
+  expect(screen.getByRole('option', { name: 'T-0002 · Plan dependency upgrades' })).toBeInTheDocument()
+  expect(screen.queryByRole('option', { name: 'T-0001 · Define release quality gate' })).not.toBeInTheDocument()
+  expect(screen.getByText('1 matching Task')).toBeInTheDocument()
+})
+
 test('opens a reviewed Teams capture draft without claiming OOB provenance', async () => {
   const onCreateSourceTask = vi.fn().mockResolvedValue(undefined)
   render(
@@ -205,17 +274,21 @@ test('opens a reviewed Teams capture draft without claiming OOB provenance', asy
   )
 
   await userEvent.click(screen.getByRole('button', { name: 'Capture copied Teams content' }))
+  expect(screen.getByLabelText('Source provider')).toHaveValue('Teams · Explicit clipboard')
   await userEvent.type(screen.getByLabelText('Capture title'), 'Open the Webex room')
   await userEvent.type(screen.getByLabelText('Captured source content'), 'Open the meeting room before the review.')
   await userEvent.click(screen.getByLabelText('Task title'))
   await userEvent.keyboard('{Tab}')
+  await userEvent.clear(screen.getByLabelText('Task title'))
+  await userEvent.type(screen.getByLabelText('Task title'), 'Prepare the Webex room')
+  expect(screen.getByLabelText('Capture title')).toHaveValue('Open the Webex room')
   await userEvent.type(screen.getByLabelText('Action detail'), 'Open the meeting room before the review.')
   await userEvent.click(screen.getByRole('button', { name: 'Create Task from source' }))
 
   expect(onCreateSourceTask).toHaveBeenCalledWith(expect.objectContaining({
     provider: 'teams',
     captureTitle: 'Open the Webex room',
-    taskTitle: 'Open the Webex room',
+    taskTitle: 'Prepare the Webex room',
     text: 'Open the meeting room before the review.',
     priority: 'P2',
   }))
@@ -255,6 +328,8 @@ test('keeps one capture identity across an explicit retry', async () => {
 
   expect(onCreateSourceTask).toHaveBeenCalledTimes(2)
   expect(onCreateSourceTask.mock.calls[1][0].capturedAt).toBe(onCreateSourceTask.mock.calls[0][0].capturedAt)
+  expect(onCreateSourceTask.mock.calls[0][0].intentId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  expect(onCreateSourceTask.mock.calls[1][0].intentId).toBe(onCreateSourceTask.mock.calls[0][0].intentId)
 })
 
 test('keeps Microsoft navigation inside Source Inbox when the desktop host is available', async () => {

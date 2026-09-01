@@ -9,10 +9,10 @@ import secrets
 import unicodedata
 import uuid
 from functools import wraps
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Protocol
 from urllib.parse import urlsplit
 
-from . import __version__
+from . import REMOTE_PROTOCOL_VERSION, __version__
 from .capture import (
     EMAIL_RE,
     PercentDecodingLimitError,
@@ -35,7 +35,12 @@ from .planning_status import (
 from .maintenance import BackupDownload, create_backup_download
 from .snapshot import SnapshotValidationError
 from .snapshot_export import SnapshotArtifact, create_snapshot_artifact
-from .store import DEFAULTS, MAX_REVISION, Store, StoreCorruptError, StoreLockedError
+from .storage.document_repository import (
+    DocumentRepository,
+    StoreDocumentRepository,
+    WorkspaceDocument,
+)
+from .store import MAX_REVISION, Store, StoreCorruptError, StoreLockedError
 
 
 TASK_STATUSES = ("open", "started", "done", "dropped")
@@ -74,6 +79,22 @@ SECRET_TEXT_RE = re.compile(
     r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b)"
 )
 RAW_CANARY_RE = re.compile(r"(?:RAW|ATTACHMENT)_CANARY_DO_NOT_STORE", re.I)
+TASK_PATCH_FIELDS = frozenset({
+    "title",
+    "detail",
+    "status",
+    "priority",
+    "due",
+    "scheduled",
+    "estimate_minutes",
+    "tags",
+    "objective_ids",
+    "parent_id",
+    "dependencies",
+    "revision",
+})
+
+
 class DomainError(ValueError):
     code = "invalid_request"
 
@@ -135,6 +156,208 @@ class SnapshotExportRefusedError(DomainError):
             self.code = error.public_code
 
 
+_CAPTURE_REPLY_ERROR_TYPES: dict[str, type[DomainError]] = {
+    "capture_not_found": NotFoundError,
+    "task_not_found": NotFoundError,
+    "reply_not_found": NotFoundError,
+    "not_found": NotFoundError,
+    "revision_conflict": RevisionConflictError,
+    "idempotency_conflict": IdempotencyConflictError,
+    "stale_capture": StaleCaptureError,
+    "source_revision_conflict": SourceRevisionConflictError,
+    "reply_receipt_conflict": ReplyReceiptConflictError,
+}
+
+_OPTIONAL_COMMAND_ERROR_TYPES: dict[str, type[DomainError]] = {
+    "TASK_NOT_FOUND": NotFoundError,
+    "OBJECTIVE_NOT_FOUND": NotFoundError,
+    "not_found": NotFoundError,
+    "OBJECTIVE_REVISION_CONFLICT": RevisionConflictError,
+    "revision_conflict": RevisionConflictError,
+    "OBJECTIVE_REVISION_EXHAUSTED": RevisionExhaustedError,
+    "IDEMPOTENCY_KEY_CONFLICT": IdempotencyConflictError,
+    "idempotency_conflict": IdempotencyConflictError,
+    "WORK_SESSION_NOT_FOUND": NotFoundError,
+    "WORK_SESSION_ALREADY_ACTIVE": WorkSessionConflictError,
+    "WORK_SESSION_TRANSITION_CONFLICT": WorkSessionConflictError,
+    "WORK_SESSION_WORKLOG_CONFLICT": WorkSessionConflictError,
+}
+
+
+def _capture_reply_command(action: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    try:
+        return action()
+    except ValueError as error:
+        if getattr(error, "command_boundary", None) != "capture-reply":
+            raise
+        repository_code = str(getattr(error, "code", "invalid_request"))
+        error_type = _CAPTURE_REPLY_ERROR_TYPES.get(repository_code, DomainError)
+        raise error_type(
+            "capture/reply command was refused",
+            {"repository_code": repository_code},
+        ) from error
+
+
+def _capture_reply_backend(method):
+    @wraps(method)
+    def wrapped(self: "WorkStack", *args: Any, **kwargs: Any):
+        commands = self.capture_reply_commands
+        if commands is not None:
+            command = getattr(commands, method.__name__)
+            return _capture_reply_command(lambda: command(*args, **kwargs))
+        return method(self, *args, **kwargs)
+
+    return wrapped
+
+
+def _optional_command(
+    action: Callable[[], Any], boundary: str
+) -> Any:
+    try:
+        return action()
+    except (ValueError, RuntimeError) as error:
+        if getattr(error, "command_boundary", None) != boundary:
+            raise
+        repository_code = str(getattr(error, "code", "invalid_request"))
+        error_type = _OPTIONAL_COMMAND_ERROR_TYPES.get(repository_code, DomainError)
+        raise error_type(
+            "{} command was refused".format(boundary),
+            {"repository_code": repository_code},
+        ) from error
+
+
+def _optional_command_backend(attribute: str, backend_method: str, boundary: str):
+    def decorate(method):
+        @wraps(method)
+        def wrapped(self: "WorkStack", *args: Any, **kwargs: Any):
+            commands = getattr(self, attribute)
+            if commands is not None:
+                command = getattr(commands, backend_method)
+                return _optional_command(
+                    lambda: command(*args, **kwargs), boundary
+                )
+            return method(self, *args, **kwargs)
+
+        return wrapped
+
+    return decorate
+
+
+_TASK_SCALAR_PATCH_FIELDS = {
+    "title", "detail", "priority", "due", "scheduled", "estimate_minutes"
+}
+_TASK_RELATIONSHIP_PATCH_FIELDS = {"parent_id", "dependencies"}
+
+
+def _relationship_task_projection(
+    stack: "WorkStack", task_id: str, receipt: Any
+) -> dict[str, Any]:
+    task = stack._project_task(
+        stack.get_task(task_id), planning_status=str(receipt.status)
+    )
+    task.update(
+        {
+            "revision": int(receipt.revision),
+            "status": str(receipt.status),
+            "parent_id": receipt.parent_id,
+            "dependencies": list(receipt.dependencies),
+        }
+    )
+    return task
+
+
+def _task_patch_backends(method):
+    @wraps(method)
+    def wrapped(self: "WorkStack", task_id: str, patch: dict[str, Any]):
+        if not isinstance(patch, dict):
+            return method(self, task_id, patch)
+        fields = set(patch) - {"revision"}
+        if not fields and self.task_commands is not None:
+            return _optional_command(
+                lambda: self.task_commands.patch_task(task_id, patch), "task"
+            )
+        if fields and fields <= _TASK_SCALAR_PATCH_FIELDS:
+            if self.task_commands is not None:
+                return _optional_command(
+                    lambda: self.task_commands.patch_task(task_id, patch), "task"
+                )
+            return method(self, task_id, patch)
+        if fields and fields <= _TASK_RELATIONSHIP_PATCH_FIELDS:
+            if self.relationship_commands is not None:
+                receipt = _optional_command(
+                    lambda: self.relationship_commands.patch_relationships(
+                        task_id, patch
+                    ),
+                    "relationship",
+                )
+                return _relationship_task_projection(self, task_id, receipt)
+            return method(self, task_id, patch)
+        if fields == {"status"}:
+            return _status_patch_backend(self, method, task_id, patch)
+        if any(
+            command is not None
+            for command in (
+                self.task_commands,
+                self.relationship_commands,
+                self.planning_commands,
+            )
+        ):
+            raise DomainError("task patch spans an inactive command slice")
+        return method(self, task_id, patch)
+
+    return wrapped
+
+
+def _status_patch_backend(
+    stack: "WorkStack", method, task_id: str, patch: dict[str, Any]
+) -> dict[str, Any]:
+    if patch.get("status") == "dropped" and stack.relationship_commands is not None:
+        receipt = _optional_command(
+            lambda: stack.relationship_commands.delete_task(
+                task_id, patch.get("revision")
+            ),
+            "relationship",
+        )
+        return _relationship_task_projection(stack, task_id, receipt)
+    if stack.planning_commands is not None:
+        return _optional_command(
+            lambda: stack.planning_commands.patch_status(
+                task_id, patch.get("status"), patch.get("revision")
+            ),
+            "task",
+        )
+    return method(stack, task_id, patch)
+
+
+def _query_search_backend(method):
+    @wraps(method)
+    def wrapped(self: "WorkStack", query: str, limit: int = 30):
+        if self.query_commands is None:
+            return method(self, query, limit)
+        result = _optional_command(
+            lambda: self.query_commands.search(query, limit=limit), "query"
+        )
+        return result.to_released_projection()
+
+    return wrapped
+
+
+def _query_graph_backend(method):
+    @wraps(method)
+    def wrapped(self: "WorkStack"):
+        projection = method(self)
+        if self.query_commands is None:
+            return projection
+        result = _optional_command(lambda: self.query_commands.graph(), "query")
+        projection["edges"] = [
+            {"kind": kind, "source": source, "target": target}
+            for kind, source, target in result.edges
+        ]
+        return projection
+
+    return wrapped
+
+
 def _transactional(method):
     @wraps(method)
     def wrapped(self: "WorkStack", *args: Any, **kwargs: Any):
@@ -166,6 +389,85 @@ def _next_id(records: Iterable[dict[str, Any]], prefix: str, width: int = 0) -> 
             largest = max(largest, int(match.group(1)))
     number = largest + 1
     return "{}-{:0{width}d}".format(prefix.upper(), number, width=width) if width else "{}-{}".format(prefix.upper(), number)
+
+
+def _capture_review_digest(capture: dict[str, Any]) -> str:
+    """Digest reviewed fields while ignoring server-owned action links."""
+
+    normalized = copy.deepcopy(capture.get("normalized", {}))
+    for action in normalized.get("action_items", []):
+        if isinstance(action, dict):
+            action.pop("task_id", None)
+    return canonical_digest({
+        "normalized": normalized,
+        "task_hints": copy.deepcopy(capture.get("task_hints", [])),
+    })
+
+
+def _require_matching_capture_review(
+    existing: dict[str, Any], incoming: dict[str, Any]
+) -> None:
+    if _capture_review_digest(existing) != _capture_review_digest(incoming):
+        raise SourceRevisionConflictError(
+            "the same source fingerprint has different reviewed capture content"
+        )
+
+
+def _capture_task_intent_id(task_fields: dict[str, Any]) -> str | None:
+    value = task_fields.get("intent_id")
+    if value is None:
+        return None
+    try:
+        normalized = str(uuid.UUID(value)) if isinstance(value, str) else ""
+        valid = normalized == value and uuid.UUID(normalized).int != 0
+    except ValueError:
+        valid = False
+    if not valid:
+        raise DomainError(
+            "intent_id must be a canonical non-nil UUID",
+            {"field": "intent_id"},
+        )
+    return normalized
+
+
+def _validate_capture_task_fields(
+    task_fields: dict[str, Any],
+) -> tuple[str | None, dict[str, Any]]:
+    allowed = {
+        "intent_id", "title", "detail", "priority", "due", "tags",
+        "objective_ids", "parent_id", "dependencies",
+    }
+    unknown = sorted(set(task_fields) - allowed)
+    if unknown:
+        raise DomainError("unknown task fields", {"fields": unknown})
+    if "title" not in task_fields or not isinstance(task_fields["title"], str):
+        raise DomainError("title is required and must be a string", {"field": "title"})
+    _validate_capture_task_scalars(task_fields)
+    _validate_capture_task_arrays(task_fields)
+    intent_id = _capture_task_intent_id(task_fields)
+    task_input = {field: value for field, value in task_fields.items() if field != "intent_id"}
+    return intent_id, task_input
+
+
+def _validate_capture_task_scalars(task_fields: dict[str, Any]) -> None:
+    for field in ("detail", "priority"):
+        if field in task_fields and not isinstance(task_fields[field], str):
+            raise DomainError("{} must be a string".format(field), {"field": field})
+    due = task_fields.get("due")
+    if "due" in task_fields and due is not None and not isinstance(due, str):
+        raise DomainError("due must be an ISO date or null", {"field": "due"})
+    parent_id = task_fields.get("parent_id")
+    if "parent_id" in task_fields and parent_id is not None and not isinstance(parent_id, str):
+        raise DomainError("parent_id must be a task ID or null", {"field": "parent_id"})
+
+
+def _validate_capture_task_arrays(task_fields: dict[str, Any]) -> None:
+    for field in ("tags", "objective_ids", "dependencies"):
+        value = task_fields.get(field)
+        if field in task_fields and (
+            not isinstance(value, list) or any(not isinstance(item, str) for item in value)
+        ):
+            raise DomainError("{} must be an array of strings".format(field), {"field": field})
 
 
 def _required_text(value: Any, field: str) -> str:
@@ -214,6 +516,195 @@ def _relationship_reaches(
                 if isinstance(dependency, str) and dependency
             )
     return False
+
+
+def _validate_patch_local_date(value: Any, field: str) -> None:
+    if value is None:
+        return
+    message = "{} must be an ISO date or null".format(field)
+    if not isinstance(value, str):
+        raise DomainError(message)
+    try:
+        parsed = dt.date.fromisoformat(value)
+    except ValueError as error:
+        raise DomainError(message) from error
+    if parsed.isoformat() != value:
+        raise DomainError(message)
+
+
+def _normalize_patch_title(changes: dict[str, Any]) -> None:
+    if "title" not in changes:
+        return
+    if not isinstance(changes["title"], str):
+        raise DomainError("title must be a string")
+    changes["title"] = _required_text(changes["title"], "title")
+
+
+def _normalize_patch_detail(changes: dict[str, Any]) -> None:
+    if "detail" not in changes:
+        return
+    if not isinstance(changes["detail"], str):
+        raise DomainError("detail must be a string")
+    changes["detail"] = changes["detail"].strip()
+
+
+def _validate_patch_enums(changes: dict[str, Any]) -> None:
+    if "status" in changes and changes["status"] not in TASK_STATUSES:
+        raise DomainError("invalid task status")
+    if "priority" in changes and changes["priority"] not in PRIORITIES:
+        raise DomainError("invalid task priority")
+
+
+def _validate_patch_estimate(changes: dict[str, Any]) -> None:
+    if "estimate_minutes" not in changes or changes["estimate_minutes"] is None:
+        return
+    estimate = changes["estimate_minutes"]
+    if (
+        not isinstance(estimate, int)
+        or isinstance(estimate, bool)
+        or not 1 <= estimate <= 1440
+    ):
+        raise DomainError(
+            "estimate_minutes must be null or an integer from 1 to 1440"
+        )
+
+
+def _normalize_patch_scalar_fields(changes: dict[str, Any]) -> None:
+    _normalize_patch_title(changes)
+    _normalize_patch_detail(changes)
+    _validate_patch_enums(changes)
+    for field in ("due", "scheduled"):
+        if field in changes:
+            _validate_patch_local_date(changes[field], field)
+    _validate_patch_estimate(changes)
+
+
+def _require_patch_array(changes: dict[str, Any], field: str) -> None:
+    if field in changes and not isinstance(changes[field], list):
+        raise DomainError("{} must be an array".format(field))
+
+
+def _normalize_patch_tags(changes: dict[str, Any]) -> None:
+    if "tags" not in changes:
+        return
+    if any(not isinstance(item, str) for item in changes["tags"]):
+        raise DomainError("tags entries must be strings")
+    changes["tags"] = sorted(
+        {item.strip() for item in changes["tags"] if item.strip()}
+    )
+
+
+def _normalize_patch_objectives(
+    changes: dict[str, Any], objectives: set[str]
+) -> None:
+    if "objective_ids" not in changes:
+        return
+    if any(not isinstance(item, str) for item in changes["objective_ids"]):
+        raise DomainError("objective_ids entries must be strings")
+    changes["objective_ids"] = sorted(
+        {item.strip().upper() for item in changes["objective_ids"] if item.strip()}
+    )
+    missing = sorted(set(changes["objective_ids"]) - objectives)
+    if missing:
+        raise DomainError("unknown objective ids", {"ids": missing})
+
+
+def _normalize_patch_dependencies(changes: dict[str, Any]) -> None:
+    if "dependencies" not in changes:
+        return
+    if any(not isinstance(item, str) for item in changes["dependencies"]):
+        raise DomainError("dependencies entries must be strings")
+    changes["dependencies"] = sorted(
+        {item.strip().upper() for item in changes["dependencies"] if item.strip()}
+    )
+
+
+def _normalize_patch_collection_fields(
+    changes: dict[str, Any], objectives: set[str]
+) -> None:
+    for field in ("tags", "objective_ids", "dependencies"):
+        _require_patch_array(changes, field)
+    _normalize_patch_tags(changes)
+    _normalize_patch_objectives(changes, objectives)
+    _normalize_patch_dependencies(changes)
+
+
+def _validate_patch_dependencies(
+    changes: dict[str, Any],
+    task: dict[str, Any],
+    tasks_by_id: dict[str, dict[str, Any]],
+) -> None:
+    if "dependencies" not in changes:
+        return
+    missing = sorted(set(changes["dependencies"]) - set(tasks_by_id))
+    if missing or task["id"] in changes["dependencies"]:
+        raise DomainError("invalid dependency ids", {"ids": missing})
+    cyclic_dependencies = [
+        dependency
+        for dependency in changes["dependencies"]
+        if _relationship_reaches(
+            tasks_by_id, [dependency], task["id"], "dependencies"
+        )
+    ]
+    if cyclic_dependencies:
+        raise DomainError(
+            "dependency relationship would create a cycle",
+            {"ids": cyclic_dependencies},
+        )
+
+
+def _normalize_and_validate_patch_parent(
+    changes: dict[str, Any],
+    task: dict[str, Any],
+    tasks_by_id: dict[str, dict[str, Any]],
+) -> None:
+    if "parent_id" not in changes:
+        return
+    parent = changes["parent_id"]
+    if parent is not None and not isinstance(parent, str):
+        raise DomainError("parent_id must be a task ID or null")
+    parent = parent.strip().upper() if parent else None
+    if parent == task["id"] or (parent and parent not in tasks_by_id):
+        raise DomainError("invalid parent task")
+    if parent and _relationship_reaches(
+        tasks_by_id, [parent], task["id"], "parent_id"
+    ):
+        raise DomainError(
+            "parent relationship would create a cycle",
+            {"id": parent},
+        )
+    changes["parent_id"] = parent
+
+
+def _normalize_and_validate_patch_relationships(
+    changes: dict[str, Any],
+    task: dict[str, Any],
+    tasks_by_id: dict[str, dict[str, Any]],
+) -> None:
+    _validate_patch_dependencies(changes, task, tasks_by_id)
+    _normalize_and_validate_patch_parent(changes, task, tasks_by_id)
+
+
+def _patch_change_set(
+    patch: dict[str, Any],
+    task: dict[str, Any],
+    tasks_by_id: dict[str, dict[str, Any]],
+    objectives: set[str],
+) -> tuple[dict[str, Any], Any]:
+    changes = {key: value for key, value in patch.items() if key != "revision"}
+    _normalize_patch_scalar_fields(changes)
+    _normalize_patch_collection_fields(changes, objectives)
+    _normalize_and_validate_patch_relationships(changes, task, tasks_by_id)
+    return changes, changes.pop("status", None)
+
+
+def _patch_changed_fields(
+    changes: dict[str, Any], requested_status: Any, current_status: str
+) -> list[str]:
+    fields = sorted(changes)
+    if requested_status is not None and requested_status != current_status:
+        fields.append("status")
+    return fields
 
 
 def _task_uid(workspace_id: str, task_id: str) -> str:
@@ -379,9 +870,637 @@ def _microsoft_web_url(value: Any) -> str:
     return url
 
 
+REPLY_RECEIPT_REQUIRED_FIELDS = frozenset({
+    "schema_version",
+    "reply_id",
+    "provider",
+    "outcome",
+    "occurred_at",
+    "body_digest",
+    "target_digest",
+})
+
+
+class CaptureReplyCommands(Protocol):
+    """Backend-neutral completed capture/reply command slice."""
+
+    def ingest_capture(
+        self,
+        packet: dict[str, Any],
+        idempotency_key: str,
+        request_digest: str | None = None,
+        *,
+        method: str = "POST",
+        path: str = "/api/v1/captures",
+    ) -> dict[str, Any]: ...
+
+    def link_capture(
+        self,
+        capture_id: str,
+        task_id: str,
+        idempotency_key: str,
+        request_digest: str | None = None,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def approve_reply(
+        self,
+        request: dict[str, Any],
+        idempotency_key: str,
+        request_digest: str | None = None,
+        *,
+        path: str = "/api/v1/replies",
+    ) -> dict[str, Any]: ...
+
+    def apply_reply_receipt(
+        self,
+        reply_id: str,
+        receipt: dict[str, Any],
+        idempotency_key: str,
+        request_digest: str | None = None,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]: ...
+
+
+class IntentCommands(Protocol):
+    def create_note(
+        self, body: dict[str, Any], idempotency_key: str, *, path: str
+    ) -> dict[str, Any]: ...
+
+    def checkin(
+        self, body: dict[str, Any], idempotency_key: str, *, path: str
+    ) -> dict[str, Any]: ...
+
+    def add_worklog(
+        self, body: dict[str, Any], idempotency_key: str, *, path: str
+    ) -> dict[str, Any]: ...
+
+
+class ObjectiveCommands(Protocol):
+    def create_objective(
+        self, body: dict[str, Any], idempotency_key: str, *, path: str
+    ) -> dict[str, Any]: ...
+
+    def add_key_result(
+        self,
+        objective_id: str,
+        body: dict[str, Any],
+        idempotency_key: str,
+        *,
+        path: str,
+    ) -> dict[str, Any]: ...
+
+
+class TaskCommands(Protocol):
+    def create_task_v1(
+        self, body: dict[str, Any], idempotency_key: str, *, path: str
+    ) -> dict[str, Any]: ...
+
+    def patch_task(
+        self, task_id: str, patch: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
+
+class RelationshipCommands(Protocol):
+    def patch_relationships(
+        self, task_id: str, request: dict[str, Any]
+    ) -> Any: ...
+
+    def delete_task(self, task_id: str, expected_revision: int) -> Any: ...
+
+
+class PlanningCommands(Protocol):
+    def set_task_status(
+        self,
+        task_id: str,
+        status: str,
+        expected_revision: int | None = None,
+        *,
+        provenance: str = "cli",
+    ) -> dict[str, Any]: ...
+
+    def patch_status(
+        self, task_id: str, status: str, expected_revision: int
+    ) -> dict[str, Any]: ...
+
+
+class WorkSessionCommands(Protocol):
+    def projection(self) -> dict[str, Any]: ...
+
+    def start(
+        self, body: dict[str, Any], idempotency_key: str, *, path: str
+    ) -> dict[str, Any]: ...
+
+    def transition(
+        self,
+        session_id: str,
+        action: str,
+        body: dict[str, Any],
+        idempotency_key: str,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def record_worklog(
+        self,
+        session_id: str,
+        body: dict[str, Any],
+        idempotency_key: str,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]: ...
+
+
+class QueryCommands(Protocol):
+    def search(self, query: str, *, limit: int = 50) -> Any: ...
+
+    def graph(self) -> Any: ...
+REPLY_RECEIPT_OPTIONAL_FIELDS = frozenset({
+    "remote_message_ref", "web_url", "error_code"
+})
+
+
+def _validate_reply_receipt_shape(receipt: dict[str, Any]) -> None:
+    unknown = sorted(
+        set(receipt) - REPLY_RECEIPT_REQUIRED_FIELDS - REPLY_RECEIPT_OPTIONAL_FIELDS
+    )
+    missing = sorted(REPLY_RECEIPT_REQUIRED_FIELDS - set(receipt))
+    if unknown or missing:
+        raise DomainError(
+            "reply receipt has unknown or missing fields",
+            {"missing": missing, "unknown": unknown},
+        )
+
+
+def _reply_receipt_provider(receipt: dict[str, Any]) -> str:
+    provider = receipt["provider"]
+    if not isinstance(provider, str) or provider not in REPLY_CAPABILITIES:
+        raise DomainError("provider is not supported", {"field": "provider"})
+    return provider
+
+
+def _reply_receipt_outcome(receipt: dict[str, Any]) -> str:
+    outcome = receipt["outcome"]
+    if outcome not in REPLY_OUTCOMES:
+        raise DomainError(
+            "outcome must be sent, failed, or unknown", {"field": "outcome"}
+        )
+    return outcome
+
+
+def _reply_receipt_occurred_at(receipt: dict[str, Any]) -> str:
+    occurred_at = receipt["occurred_at"]
+    if not isinstance(occurred_at, str):
+        raise DomainError("occurred_at must be a string", {"field": "occurred_at"})
+    try:
+        parse_rfc3339(occurred_at, "occurred_at")
+    except ValueError as error:
+        raise DomainError(
+            "occurred_at must be strict RFC3339", {"field": "occurred_at"}
+        ) from error
+    return occurred_at
+
+
+def _reply_receipt_digests(receipt: dict[str, Any]) -> dict[str, str]:
+    digests: dict[str, str] = {}
+    for field in ("body_digest", "target_digest"):
+        value = receipt[field]
+        if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
+            raise DomainError(
+                "{} must be canonical SHA-256".format(field), {"field": field}
+            )
+        digests[field] = value
+    return digests
+
+
+def _project_reply_receipt_optional_fields(
+    receipt: dict[str, Any], projected: dict[str, Any]
+) -> None:
+    if "remote_message_ref" in receipt:
+        projected["remote_message_ref"] = _remote_message_reference(
+            receipt["remote_message_ref"]
+        )
+    if "web_url" in receipt:
+        projected["web_url"] = _microsoft_web_url(receipt["web_url"])
+    if "error_code" in receipt:
+        error_code = receipt["error_code"]
+        if not isinstance(error_code, str) or not ERROR_CODE_RE.fullmatch(error_code):
+            raise DomainError(
+                "error_code must be a bounded symbolic code",
+                {"field": "error_code"},
+            )
+        projected["error_code"] = error_code
+
+
+def _reply_receipt_mismatches(
+    receipt: dict[str, Any], reply: dict[str, Any]
+) -> list[str]:
+    mismatched: list[str] = []
+    if receipt["reply_id"] != reply["id"]:
+        mismatched.append("reply_id")
+    if receipt["provider"] != reply["provider"]:
+        mismatched.append("provider")
+    for field in ("body_digest", "target_digest"):
+        if not secrets.compare_digest(receipt[field], reply[field]):
+            mismatched.append(field)
+    return mismatched
+
+
+def _apply_terminal_reply_state(
+    reply: dict[str, Any], receipt: dict[str, Any]
+) -> tuple[bool, dict[str, Any] | None]:
+    stored_receipt = reply.get("receipt")
+    if stored_receipt is not None:
+        if stored_receipt != receipt:
+            raise ReplyReceiptConflictError(
+                "reply already has a different terminal receipt",
+                {"reply_id": reply["id"], "state": reply.get("state")},
+            )
+        return True, None
+    if reply.get("state") != "approved":
+        raise ReplyReceiptConflictError(
+            "reply is already terminal",
+            {"reply_id": reply["id"], "state": reply.get("state")},
+        )
+    reply["state"] = receipt["outcome"]
+    reply["receipt"] = receipt
+    reply["updated_at"] = utc_now()
+    event_details: dict[str, Any] = {
+        "provider": reply["provider"],
+        "state": reply["state"],
+    }
+    if "error_code" in receipt:
+        event_details["error_code"] = receipt["error_code"]
+    return False, event_details
+
+
+TASK_CREATE_FIELDS = frozenset({
+    "title", "detail", "priority", "due", "scheduled", "estimate_minutes",
+    "tags", "objective_ids",
+})
+
+
+def _validate_new_task_schedule(
+    priority: str,
+    due: str | None,
+    scheduled: str | None,
+    estimate_minutes: int | None,
+) -> None:
+    if priority not in PRIORITIES:
+        raise ValueError("priority must be one of {}".format(", ".join(PRIORITIES)))
+    if due:
+        dt.date.fromisoformat(due)
+    if scheduled:
+        dt.date.fromisoformat(scheduled)
+    if estimate_minutes is not None and (
+        not isinstance(estimate_minutes, int)
+        or isinstance(estimate_minutes, bool)
+        or not 1 <= estimate_minutes <= 1440
+    ):
+        raise ValueError("estimate_minutes must be null or an integer from 1 to 1440")
+
+
+def _normalize_new_task_relationships(
+    tasks: list[dict[str, Any]],
+    parent_id: str | None,
+    dependencies: Iterable[str],
+) -> tuple[str | None, list[str]]:
+    known_tasks = {item["id"] for item in tasks}
+    normalized_parent = parent_id.strip().upper() if parent_id else None
+    normalized_dependencies = sorted(
+        set(str(item).strip().upper() for item in dependencies if str(item).strip())
+    )
+    referenced = ({normalized_parent} if normalized_parent else set()) | set(
+        normalized_dependencies
+    )
+    unknown_tasks = sorted(item for item in referenced if item not in known_tasks)
+    if unknown_tasks:
+        raise ValueError("unknown task ids: {}".format(", ".join(unknown_tasks)))
+    return normalized_parent, normalized_dependencies
+
+
+def _new_task_record(
+    *,
+    task_id: str,
+    workspace_id: str,
+    title: str,
+    detail: str,
+    priority: str,
+    due: str | None,
+    scheduled: str | None,
+    estimate_minutes: int | None,
+    tags: Iterable[str],
+    objective_ids: Iterable[str],
+    parent_id: str | None,
+    dependencies: list[str],
+) -> dict[str, Any]:
+    return {
+        "id": task_id,
+        "uid": _task_uid(workspace_id, task_id),
+        "title": _required_text(title, "title"),
+        "detail": str(detail or "").strip(),
+        "status": "open",
+        "priority": priority,
+        "due": due or None,
+        "scheduled": scheduled or None,
+        "estimate_minutes": estimate_minutes,
+        "tags": sorted(set(str(tag).strip() for tag in tags if str(tag).strip())),
+        "objective_ids": sorted(
+            set(str(oid).strip().upper() for oid in objective_ids if str(oid).strip())
+        ),
+        "parent_id": parent_id,
+        "dependencies": dependencies,
+        "subtasks": [],
+        "notes": [],
+        "created": today(),
+        "updated_at": today(),
+        "revision": 0,
+    }
+
+
+def _validate_task_create_shape(body: Any) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        raise DomainError("request body must be a JSON object")
+    unknown = sorted(set(body) - TASK_CREATE_FIELDS)
+    if unknown:
+        raise DomainError("task create has unknown fields", {"fields": unknown})
+    return body
+
+
+def _task_create_text_fields(body: dict[str, Any]) -> tuple[str, str, str]:
+    title = body.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise DomainError("title must be a non-empty string", {"field": "title"})
+    detail = body.get("detail", "")
+    if not isinstance(detail, str):
+        raise DomainError("detail must be a string", {"field": "detail"})
+    priority = body.get("priority", "P2")
+    if not isinstance(priority, str) or priority not in PRIORITIES:
+        raise DomainError(
+            "priority must be one of {}".format(", ".join(PRIORITIES)),
+            {"field": "priority"},
+        )
+    return title.strip(), detail.strip(), priority
+
+
+def _task_create_date(body: dict[str, Any], field: str) -> str | None:
+    value = body.get(field)
+    if value is None:
+        return None
+    message = "{} must be null or YYYY-MM-DD".format(field)
+    if not isinstance(value, str):
+        raise DomainError(message, {"field": field})
+    try:
+        parsed = dt.date.fromisoformat(value)
+    except ValueError as error:
+        raise DomainError(message, {"field": field}) from error
+    if parsed.isoformat() != value:
+        raise DomainError(message, {"field": field})
+    return value
+
+
+def _task_create_estimate(body: dict[str, Any]) -> int | None:
+    value = body.get("estimate_minutes")
+    if value is not None and (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 1 <= value <= 1440
+    ):
+        raise DomainError(
+            "estimate_minutes must be null or an integer from 1 to 1440",
+            {"field": "estimate_minutes"},
+        )
+    return value
+
+
+def _task_create_string_list(
+    body: dict[str, Any], field: str, *, uppercase: bool = False
+) -> list[str]:
+    values = body.get(field, [])
+    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+        raise DomainError("{} must be an array of strings".format(field), {"field": field})
+    normalized = (value.strip() for value in values)
+    if uppercase:
+        normalized = (value.upper() for value in normalized)
+    return sorted(set(value for value in normalized if value))
+
+
+def _weekly_range(end: str | None, days: int) -> tuple[dt.date, dt.date]:
+    if days < 1 or days > 366:
+        raise ValueError("days must be between 1 and 366")
+    end_day = dt.date.fromisoformat(end) if end else dt.date.today()
+    return end_day - dt.timedelta(days=days - 1), end_day
+
+
+def _weekly_project_slot(
+    task_id: Any, entry: dict[str, Any], task: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "task": entry.get("task") or task.get("title", task_id),
+        "objective_ids": task.get("objective_ids", []),
+        "done": [],
+        "next": [],
+        "blockers": [],
+        "dates": [],
+        "duration_seconds": 0,
+    }
+
+
+def _merge_weekly_entry(
+    slot: dict[str, Any], entry: dict[str, Any], date: str
+) -> None:
+    duration_seconds = entry.get("duration_seconds", 0)
+    if type(duration_seconds) is not int or duration_seconds < 0:
+        raise StoreCorruptError("persisted worklog duration is invalid")
+    slot["duration_seconds"] += duration_seconds
+    for field in ("done", "next", "blockers"):
+        for value in entry.get(field, []):
+            if value not in slot[field]:
+                slot[field].append(value)
+    if date not in slot["dates"]:
+        slot["dates"].append(date)
+
+
+def _weekly_projects(
+    worklog: dict[str, Any],
+    tasks: dict[str, dict[str, Any]],
+    start_day: dt.date,
+    end_day: dt.date,
+) -> dict[str, dict[str, Any]]:
+    projects: dict[str, dict[str, Any]] = {}
+    for date in sorted(worklog):
+        parsed = dt.date.fromisoformat(date)
+        if not start_day <= parsed <= end_day:
+            continue
+        for entry in worklog[date].get("entries", []):
+            task_id = entry.get("task_id")
+            task = tasks.get(task_id, {})
+            slot = projects.setdefault(
+                task_id, _weekly_project_slot(task_id, entry, task)
+            )
+            _merge_weekly_entry(slot, entry, date)
+    return projects
+
+
+def _weekly_objectives(
+    projects: dict[str, dict[str, Any]],
+    objectives: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    used = {
+        objective_id
+        for project in projects.values()
+        for objective_id in project["objective_ids"]
+    }
+    return [
+        {"id": objective_id, "objective": objectives[objective_id].get("objective", "")}
+        for objective_id in sorted(used)
+        if objective_id in objectives
+    ]
+
+
+def _snapshot_objective_node(objective: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": objective["id"],
+        "kind": "objective",
+        "title": objective["objective"],
+        "status": objective.get("status", "active"),
+        "meta": objective.get("quarter", ""),
+        "quarter": objective.get("quarter", ""),
+        "key_results": objective.get("key_results", []),
+    }
+
+
+def _snapshot_task_node(task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": task["id"],
+        "uid": task["uid"],
+        "kind": "task",
+        "title": task["title"],
+        "status": task.get("status", "open"),
+        "revision": task["revision"],
+        "meta": "{} · {}".format(
+            task.get("priority", "P2"), task.get("due") or "no due date"
+        ),
+        "detail": task.get("detail", ""),
+        "tags": task.get("tags", []),
+        "priority": task.get("priority", "P2"),
+        "due": task.get("due"),
+        "objective_ids": task.get("objective_ids", []),
+        "parent_id": task.get("parent_id"),
+        "dependencies": task.get("dependencies", []),
+        "subtasks": task.get("subtasks", []),
+    }
+
+
+def _append_snapshot_task(
+    task: dict[str, Any],
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, str]],
+    known: set[str],
+) -> None:
+    node = _snapshot_task_node(task)
+    nodes.append(node)
+    known.add(node["id"])
+    if task.get("parent_id"):
+        edges.append(
+            {"source": task["id"], "target": task["parent_id"], "kind": "parent"}
+        )
+    for dependency in task.get("dependencies", []):
+        edges.append(
+            {"source": task["id"], "target": dependency, "kind": "dependency"}
+        )
+    for objective_id in task.get("objective_ids", []):
+        edges.append(
+            {"source": task["id"], "target": objective_id, "kind": "objective"}
+        )
+    for subtask in task.get("subtasks", []):
+        subtask_id = "{}-{}".format(task["id"], subtask["id"])
+        nodes.append({
+            "id": subtask_id,
+            "kind": "subtask",
+            "title": subtask["title"],
+            "status": subtask.get("status", "open"),
+            "meta": subtask.get("priority", "P2"),
+        })
+        known.add(subtask_id)
+        edges.append(
+            {"source": subtask_id, "target": task["id"], "kind": "parent"}
+        )
+
+
+def _append_snapshot_worklog(
+    worklog: dict[str, Any],
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, str]],
+    known: set[str],
+) -> None:
+    for date, day in sorted(worklog.items()):
+        day_id = "D-" + date
+        nodes.append({
+            "id": day_id,
+            "kind": "day",
+            "title": date,
+            "status": "recorded",
+            "meta": "{} entries".format(len(day.get("entries", []))),
+            "entry_count": len(day.get("entries", [])),
+        })
+        known.add(day_id)
+        for entry in day.get("entries", []):
+            if entry.get("task_id"):
+                edges.append(
+                    {"source": day_id, "target": entry["task_id"], "kind": "worklog"}
+                )
+
+
+def _append_snapshot_notes(
+    notes: list[dict[str, Any]],
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, str]],
+    known: set[str],
+) -> None:
+    for note in notes:
+        nodes.append({
+            "id": note["id"],
+            "kind": "note",
+            "title": note["text"],
+            "status": "recorded",
+            "meta": note.get("created", ""),
+            "links": note.get("links", []),
+        })
+        known.add(note["id"])
+        for link in note.get("links", []):
+            edges.append({"source": note["id"], "target": link, "kind": "note"})
+
+
 class WorkStack:
-    def __init__(self, store: Store | None = None, *, initialize: bool = True) -> None:
+    def __init__(
+        self,
+        store: Store | None = None,
+        *,
+        initialize: bool = True,
+        capture_reply_commands: CaptureReplyCommands | None = None,
+        intent_commands: IntentCommands | None = None,
+        objective_commands: ObjectiveCommands | None = None,
+        task_commands: TaskCommands | None = None,
+        relationship_commands: RelationshipCommands | None = None,
+        planning_commands: PlanningCommands | None = None,
+        work_session_commands: WorkSessionCommands | None = None,
+        query_commands: QueryCommands | None = None,
+        document_repository: DocumentRepository | None = None,
+    ) -> None:
         self.store = store or Store()
+        self.documents = document_repository or StoreDocumentRepository(self.store)
+        self.capture_reply_commands = capture_reply_commands
+        self.intent_commands = intent_commands
+        self.objective_commands = objective_commands
+        self.task_commands = task_commands
+        self.relationship_commands = relationship_commands
+        self.planning_commands = planning_commands
+        self.work_session_commands = work_session_commands
+        self.query_commands = query_commands
         self._search_index_generation = -1
         self._search_entries: list[dict[str, Any]] = []
         self.store_readiness = self.store.initialize() if initialize else None
@@ -402,54 +1521,26 @@ class WorkStack:
     ) -> dict[str, Any]:
         """Validate the normal Task fields and append a new Task to ``data``."""
 
-        if priority not in PRIORITIES:
-            raise ValueError("priority must be one of {}".format(", ".join(PRIORITIES)))
-        if due:
-            dt.date.fromisoformat(due)
-        if scheduled:
-            dt.date.fromisoformat(scheduled)
-        if estimate_minutes is not None and (
-            not isinstance(estimate_minutes, int)
-            or isinstance(estimate_minutes, bool)
-            or not 1 <= estimate_minutes <= 1440
-        ):
-            raise ValueError("estimate_minutes must be null or an integer from 1 to 1440")
-        known_tasks = {item["id"] for item in data["tasks"]}
-        normalized_parent = parent_id.strip().upper() if parent_id else None
-        normalized_dependencies = sorted(
-            set(str(item).strip().upper() for item in dependencies if str(item).strip())
+        _validate_new_task_schedule(priority, due, scheduled, estimate_minutes)
+        normalized_parent, normalized_dependencies = _normalize_new_task_relationships(
+            data["tasks"], parent_id, dependencies
         )
-        unknown_tasks = sorted(
-            ({normalized_parent} if normalized_parent else set())
-            | (set(normalized_dependencies) - known_tasks)
-        )
-        unknown_tasks = [item for item in unknown_tasks if item not in known_tasks]
-        if unknown_tasks:
-            raise ValueError("unknown task ids: {}".format(", ".join(unknown_tasks)))
         task_id = _next_id(data["tasks"], "T", 4)
-        workspace_id = self.store.load("workspace.json")["id"]
-        task = {
-            "id": task_id,
-            "uid": _task_uid(workspace_id, task_id),
-            "title": _required_text(title, "title"),
-            "detail": str(detail or "").strip(),
-            "status": "open",
-            "priority": priority,
-            "due": due or None,
-            "scheduled": scheduled or None,
-            "estimate_minutes": estimate_minutes,
-            "tags": sorted(set(str(tag).strip() for tag in tags if str(tag).strip())),
-            "objective_ids": sorted(
-                set(str(oid).strip().upper() for oid in objective_ids if str(oid).strip())
-            ),
-            "parent_id": normalized_parent,
-            "dependencies": normalized_dependencies,
-            "subtasks": [],
-            "notes": [],
-            "created": today(),
-            "updated_at": today(),
-            "revision": 0,
-        }
+        workspace_id = self.documents.load(WorkspaceDocument.WORKSPACE)["id"]
+        task = _new_task_record(
+            task_id=task_id,
+            workspace_id=workspace_id,
+            title=title,
+            detail=detail,
+            priority=priority,
+            due=due,
+            scheduled=scheduled,
+            estimate_minutes=estimate_minutes,
+            tags=tags,
+            objective_ids=objective_ids,
+            parent_id=normalized_parent,
+            dependencies=normalized_dependencies,
+        )
         known = {item["id"] for item in self.list_objectives(status="all")}
         unknown = sorted(set(task["objective_ids"]) - known)
         if unknown:
@@ -469,7 +1560,7 @@ class WorkStack:
         parent_id: str | None = None,
         dependencies: Iterable[str] = (),
     ) -> dict[str, Any]:
-        data = self.store.load("backlog.json")
+        data = self.documents.load(WorkspaceDocument.TASKS)
         task = self._append_task(
             data,
             title,
@@ -481,7 +1572,7 @@ class WorkStack:
             parent_id,
             dependencies,
         )
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         append_bootstrap(
             activity,
             task,
@@ -489,8 +1580,8 @@ class WorkStack:
             actor="local.user",
             provenance="cli",
         )
-        self.store.save_many(
-            {"backlog.json": data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.TASKS: data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="task-create-cli-{}".format(task["id"]),
         )
         return task
@@ -499,88 +1590,28 @@ class WorkStack:
     def _validate_task_create_v1(body: dict[str, Any]) -> dict[str, Any]:
         """Return the canonical, strict v1 task-create payload."""
 
-        if not isinstance(body, dict):
-            raise DomainError("request body must be a JSON object")
-        allowed = {
-            "title", "detail", "priority", "due", "scheduled", "estimate_minutes",
-            "tags", "objective_ids",
-        }
-        unknown = sorted(set(body) - allowed)
-        if unknown:
-            raise DomainError("task create has unknown fields", {"fields": unknown})
-
-        title = body.get("title")
-        if not isinstance(title, str) or not title.strip():
-            raise DomainError("title must be a non-empty string", {"field": "title"})
-        detail = body.get("detail", "")
-        if not isinstance(detail, str):
-            raise DomainError("detail must be a string", {"field": "detail"})
-        priority = body.get("priority", "P2")
-        if not isinstance(priority, str) or priority not in PRIORITIES:
-            raise DomainError(
-                "priority must be one of {}".format(", ".join(PRIORITIES)),
-                {"field": "priority"},
-            )
-
-        due = body.get("due")
-        if due is not None:
-            if not isinstance(due, str):
-                raise DomainError("due must be null or YYYY-MM-DD", {"field": "due"})
-            try:
-                parsed_due = dt.date.fromisoformat(due)
-            except ValueError as error:
-                raise DomainError("due must be null or YYYY-MM-DD", {"field": "due"}) from error
-            if parsed_due.isoformat() != due:
-                raise DomainError("due must be null or YYYY-MM-DD", {"field": "due"})
-
-        scheduled = body.get("scheduled")
-        if scheduled is not None:
-            if not isinstance(scheduled, str):
-                raise DomainError(
-                    "scheduled must be null or YYYY-MM-DD", {"field": "scheduled"}
-                )
-            try:
-                parsed_scheduled = dt.date.fromisoformat(scheduled)
-            except ValueError as error:
-                raise DomainError(
-                    "scheduled must be null or YYYY-MM-DD", {"field": "scheduled"}
-                ) from error
-            if parsed_scheduled.isoformat() != scheduled:
-                raise DomainError(
-                    "scheduled must be null or YYYY-MM-DD", {"field": "scheduled"}
-                )
-
-        estimate_minutes = body.get("estimate_minutes")
-        if estimate_minutes is not None and (
-            not isinstance(estimate_minutes, int)
-            or isinstance(estimate_minutes, bool)
-            or not 1 <= estimate_minutes <= 1440
-        ):
-            raise DomainError(
-                "estimate_minutes must be null or an integer from 1 to 1440",
-                {"field": "estimate_minutes"},
-            )
-
-        def string_list(field: str, *, uppercase: bool = False) -> list[str]:
-            values = body.get(field, [])
-            if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
-                raise DomainError("{} must be an array of strings".format(field), {"field": field})
-            normalized = (value.strip() for value in values)
-            if uppercase:
-                normalized = (value.upper() for value in normalized)
-            return sorted(set(value for value in normalized if value))
+        body = _validate_task_create_shape(body)
+        title, detail, priority = _task_create_text_fields(body)
+        due = _task_create_date(body, "due")
+        scheduled = _task_create_date(body, "scheduled")
+        estimate_minutes = _task_create_estimate(body)
 
         return {
-            "title": title.strip(),
-            "detail": detail.strip(),
+            "title": title,
+            "detail": detail,
             "priority": priority,
             "due": due,
             "scheduled": scheduled,
             "estimate_minutes": estimate_minutes,
-            "tags": string_list("tags"),
-            "objective_ids": string_list("objective_ids", uppercase=True),
+            "tags": _task_create_string_list(body, "tags"),
+            "objective_ids": _task_create_string_list(
+                body, "objective_ids", uppercase=True
+            ),
         }
 
+    @_optional_command_backend(
+        "task_commands", "create_task_v1", "task"
+    )
     @_transactional
     def create_task_v1(
         self,
@@ -594,7 +1625,7 @@ class WorkStack:
         self._validate_idempotency_key(idempotency_key)
         canonical_body = self._validate_task_create_v1(body)
         request_digest = self._request_digest(canonical_body)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity,
             idempotency_key,
@@ -605,7 +1636,7 @@ class WorkStack:
         if replay is not None:
             return replay
 
-        backlog = self.store.load("backlog.json")
+        backlog = self.documents.load(WorkspaceDocument.TASKS)
         task = self._append_task(backlog, **canonical_body)
         append_bootstrap(
             activity,
@@ -627,8 +1658,8 @@ class WorkStack:
             201,
             response_body,
         )
-        self.store.save_many(
-            {"backlog.json": backlog, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.TASKS: backlog, WorkspaceDocument.ACTIVITY: activity},
             operation_id="task-create-{}".format(idempotency_key),
         )
         return {"status": 201, "body": response_body}
@@ -646,14 +1677,14 @@ class WorkStack:
 
         self._validate_idempotency_key(idempotency_key)
         request_digest = self._request_digest(body)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay is not None:
             return replay
 
-        backlog = self.store.load("backlog.json")
+        backlog = self.documents.load(WorkspaceDocument.TASKS)
         task = _find(backlog["tasks"], task_id, "task")
         next_revision = _guard_revision(task, body["revision"])
         note = {"date": today(), "text": _required_text(body["text"], "text")}
@@ -668,8 +1699,8 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 200, response_body
         )
-        self.store.save_many(
-            {"backlog.json": backlog, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.TASKS: backlog, WorkspaceDocument.ACTIVITY: activity},
             operation_id="task-note-{}".format(idempotency_key),
         )
         return {"status": 200, "body": response_body}
@@ -687,7 +1718,7 @@ class WorkStack:
 
         self._validate_idempotency_key(idempotency_key)
         request_digest = self._request_digest(body)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
@@ -696,7 +1727,7 @@ class WorkStack:
         if body["priority"] not in PRIORITIES:
             raise ValueError("invalid priority")
 
-        backlog = self.store.load("backlog.json")
+        backlog = self.documents.load(WorkspaceDocument.TASKS)
         task = _find(backlog["tasks"], task_id, "task")
         next_revision = _guard_revision(task, body["revision"])
         subtask = {
@@ -716,8 +1747,8 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 200, response_body
         )
-        self.store.save_many(
-            {"backlog.json": backlog, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.TASKS: backlog, WorkspaceDocument.ACTIVITY: activity},
             operation_id="task-subtask-{}".format(idempotency_key),
         )
         return {"status": 200, "body": response_body}
@@ -732,7 +1763,7 @@ class WorkStack:
     ) -> dict[str, Any]:
         if priority not in PRIORITIES:
             raise ValueError("invalid priority")
-        data = self.store.load("backlog.json")
+        data = self.documents.load(WorkspaceDocument.TASKS)
         task = _find(data["tasks"], task_id, "task")
         next_revision = _guard_revision(task, expected_revision)
         subtask = {
@@ -744,7 +1775,7 @@ class WorkStack:
         task["subtasks"].append(subtask)
         task["updated_at"] = today()
         task["revision"] = next_revision
-        self.store.save("backlog.json", data)
+        self.documents.save(WorkspaceDocument.TASKS, data)
         return subtask
 
     @_transactional
@@ -757,19 +1788,19 @@ class WorkStack:
     ) -> dict[str, Any]:
         if status not in TASK_STATUSES:
             raise ValueError("invalid task status")
-        data = self.store.load("backlog.json")
+        data = self.documents.load(WorkspaceDocument.TASKS)
         task = _find(data["tasks"], task_id, "task")
         next_revision = _guard_revision(task, expected_revision)
         subtask = _find(task.setdefault("subtasks", []), subtask_id, "subtask")
         subtask["status"] = status
         task["updated_at"] = today()
         task["revision"] = next_revision
-        self.store.save("backlog.json", data)
+        self.documents.save(WorkspaceDocument.TASKS, data)
         return subtask
 
     def list_tasks(self, status: str = "active") -> list[dict[str, Any]]:
-        backlog = self.store.load("backlog.json")
-        projection = validate_and_project(backlog, self.store.load("activity.json"))
+        backlog = self.documents.load(WorkspaceDocument.TASKS)
+        projection = validate_and_project(backlog, self.documents.load(WorkspaceDocument.ACTIVITY))
         tasks = []
         for source in backlog.get("tasks", []):
             task = copy.deepcopy(source)
@@ -792,12 +1823,15 @@ class WorkStack:
         )
 
     def get_task(self, task_id: str) -> dict[str, Any]:
-        backlog = self.store.load("backlog.json")
+        backlog = self.documents.load(WorkspaceDocument.TASKS)
         task = copy.deepcopy(_find(backlog.get("tasks", []), task_id, "task"))
-        projection = validate_and_project(backlog, self.store.load("activity.json"))
+        projection = validate_and_project(backlog, self.documents.load(WorkspaceDocument.ACTIVITY))
         task["status"] = projection[task["id"]]
         return task
 
+    @_optional_command_backend(
+        "planning_commands", "set_task_status", "task"
+    )
     @_transactional
     def set_task_status(
         self,
@@ -811,8 +1845,8 @@ class WorkStack:
             raise ValueError("invalid task status")
         if provenance not in {"cli", "api.legacy"}:
             raise ValueError("invalid planning status provenance")
-        data = self.store.load("backlog.json")
-        activity = self.store.load("activity.json")
+        data = self.documents.load(WorkspaceDocument.TASKS)
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         task = _find(data["tasks"], task_id, "task")
         current_revision = _revision(task)
         if expected_revision is None:
@@ -841,8 +1875,8 @@ class WorkStack:
         )
         task["updated_at"] = today()
         task["revision"] = next_revision
-        self.store.save_many(
-            {"backlog.json": data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.TASKS: data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="task-status-{}-r{}".format(task["id"], next_revision),
         )
         return self._project_task(task, planning_status=status)
@@ -854,19 +1888,19 @@ class WorkStack:
         text: str,
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        data = self.store.load("backlog.json")
+        data = self.documents.load(WorkspaceDocument.TASKS)
         task = _find(data["tasks"], task_id, "task")
         next_revision = _guard_revision(task, expected_revision)
         note = {"date": today(), "text": _required_text(text, "text")}
         task.setdefault("notes", []).append(note)
         task["updated_at"] = today()
         task["revision"] = next_revision
-        self.store.save("backlog.json", data)
+        self.documents.save(WorkspaceDocument.TASKS, data)
         return note
 
     @_transactional
     def add_objective(self, text: str, quarter: str | None = None) -> dict[str, Any]:
-        data = self.store.load("okr.json")
+        data = self.documents.load(WorkspaceDocument.OBJECTIVES)
         objective = {
             "id": _next_id(data["objectives"], "O"),
             "quarter": quarter or current_quarter(),
@@ -877,9 +1911,12 @@ class WorkStack:
             "updated_at": today(),
         }
         data["objectives"].append(objective)
-        self.store.save("okr.json", data)
+        self.documents.save(WorkspaceDocument.OBJECTIVES, data)
         return objective
 
+    @_optional_command_backend(
+        "objective_commands", "create_objective", "intent"
+    )
     @_transactional
     def create_objective_v1(
         self,
@@ -892,14 +1929,14 @@ class WorkStack:
 
         self._validate_idempotency_key(idempotency_key)
         request_digest = self._request_digest(body)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay is not None:
             return replay
 
-        data = self.store.load("okr.json")
+        data = self.documents.load(WorkspaceDocument.OBJECTIVES)
         objective = {
             "id": _next_id(data["objectives"], "O"),
             "quarter": body["quarter"] or current_quarter(),
@@ -920,16 +1957,16 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 201, response_body
         )
-        self.store.save_many(
-            {"okr.json": data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.OBJECTIVES: data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="objective-create-{}".format(idempotency_key),
         )
         return {"status": 201, "body": response_body}
 
     @_transactional
     def add_key_result(self, objective_id: str, text: str, target: str = "") -> dict[str, Any]:
-        data = self.store.load("okr.json")
-        activity = self.store.load("activity.json")
+        data = self.documents.load(WorkspaceDocument.OBJECTIVES)
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         objective = _find(data["objectives"], objective_id, "objective")
         current_revision = objective.get("revision", 0)
         next_revision = self._objective_next_revision(objective, current_revision)
@@ -952,14 +1989,14 @@ class WorkStack:
                 "revision": next_revision,
             },
         )
-        self.store.save_many(
-            {"okr.json": data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.OBJECTIVES: data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="key-result-create-{}-r{}".format(key_result["id"], next_revision),
         )
         return key_result
 
     def list_objectives(self, status: str = "active") -> list[dict[str, Any]]:
-        objectives = list(self.store.load("okr.json").get("objectives", []))
+        objectives = list(self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", []))
         if status != "all":
             if status not in OBJECTIVE_STATUSES:
                 raise ValueError("invalid objective status")
@@ -1001,7 +2038,7 @@ class WorkStack:
     def objective_detail(self, objective_id: str) -> dict[str, Any]:
         with self.store.transaction():
             objective = _find(
-                self.store.load("okr.json").get("objectives", []), objective_id, "objective"
+                self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", []), objective_id, "objective"
             )
             normalized_id = objective["id"]
             tasks = [
@@ -1011,7 +2048,7 @@ class WorkStack:
             ]
             activity = [
                 copy.deepcopy(event)
-                for event in self.store.load("activity.json").get("activity", [])
+                for event in self.documents.load(WorkspaceDocument.ACTIVITY).get("activity", [])
                 if event.get("details", {}).get("objective_id") == normalized_id
             ]
             return {
@@ -1020,6 +2057,9 @@ class WorkStack:
                 "activity": activity,
             }
 
+    @_optional_command_backend(
+        "objective_commands", "add_key_result", "intent"
+    )
     @_transactional
     def add_key_result_v1(
         self,
@@ -1031,14 +2071,14 @@ class WorkStack:
     ) -> dict[str, Any]:
         self._validate_idempotency_key(idempotency_key)
         request_digest = self._request_digest(body)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay is not None:
             return replay
 
-        data = self.store.load("okr.json")
+        data = self.documents.load(WorkspaceDocument.OBJECTIVES)
         objective = _find(data["objectives"], objective_id, "objective")
         next_revision = self._objective_next_revision(objective, body["revision"])
         key_result = {
@@ -1067,8 +2107,8 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 201, response_body
         )
-        self.store.save_many(
-            {"okr.json": data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.OBJECTIVES: data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="key-result-create-{}".format(idempotency_key),
         )
         return {"status": 201, "body": response_body}
@@ -1080,8 +2120,8 @@ class WorkStack:
         key_result_id: str,
         body: dict[str, Any],
     ) -> dict[str, Any]:
-        data = self.store.load("okr.json")
-        activity = self.store.load("activity.json")
+        data = self.documents.load(WorkspaceDocument.OBJECTIVES)
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         objective = _find(data["objectives"], objective_id, "objective")
         next_revision = self._objective_next_revision(objective, body["revision"])
         key_result = _find(objective.get("key_results", []), key_result_id, "key result")
@@ -1112,16 +2152,16 @@ class WorkStack:
                 "revision": next_revision,
             },
         )
-        self.store.save_many(
-            {"okr.json": data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.OBJECTIVES: data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="key-result-update-{}-r{}".format(key_result["id"], next_revision),
         )
         return self._project_objective(objective)
 
     @_transactional
     def patch_objective_v1(self, objective_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        data = self.store.load("okr.json")
-        activity = self.store.load("activity.json")
+        data = self.documents.load(WorkspaceDocument.OBJECTIVES)
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         objective = _find(data["objectives"], objective_id, "objective")
         next_revision = self._objective_next_revision(objective, body["revision"])
         fields = sorted(set(body) - {"revision"})
@@ -1146,16 +2186,16 @@ class WorkStack:
             event_type = "objective.status_changed"
             details.update({"prior_status": prior_status, "status": body["status"]})
         self._event(activity, event_type, details=details)
-        self.store.save_many(
-            {"okr.json": data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.OBJECTIVES: data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="objective-update-{}-r{}".format(objective["id"], next_revision),
         )
         return self._project_objective(objective)
 
     @_transactional
     def link_task(self, objective_id: str, task_id: str) -> dict[str, Any]:
-        _find(self.store.load("okr.json").get("objectives", []), objective_id, "objective")
-        data = self.store.load("backlog.json")
+        _find(self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", []), objective_id, "objective")
+        data = self.documents.load(WorkspaceDocument.TASKS)
         task = _find(data["tasks"], task_id, "task")
         next_revision = _next_revision(task)
         links = set(task.setdefault("objective_ids", []))
@@ -1163,7 +2203,7 @@ class WorkStack:
         task["objective_ids"] = sorted(links)
         task["updated_at"] = today()
         task["revision"] = next_revision
-        self.store.save("backlog.json", data)
+        self.documents.save(WorkspaceDocument.TASKS, data)
         return task
 
     @_transactional
@@ -1174,8 +2214,8 @@ class WorkStack:
         progress: int,
     ) -> dict[str, Any]:
         progress = max(0, min(100, int(progress)))
-        data = self.store.load("okr.json")
-        activity = self.store.load("activity.json")
+        data = self.documents.load(WorkspaceDocument.OBJECTIVES)
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         objective = _find(data["objectives"], objective_id, "objective")
         current_revision = objective.get("revision", 0)
         next_revision = self._objective_next_revision(objective, current_revision)
@@ -1199,8 +2239,8 @@ class WorkStack:
                 "revision": next_revision,
             },
         )
-        self.store.save_many(
-            {"okr.json": data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.OBJECTIVES: data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="key-result-update-{}-r{}".format(key_result["id"], next_revision),
         )
         return key_result
@@ -1240,10 +2280,10 @@ class WorkStack:
             time = dt.datetime.now().strftime("%H:%M")
         if not re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", time):
             raise ValueError("time must use HH:MM")
-        data = self.store.load("worklog.json")
+        data = self.documents.load(WorkspaceDocument.WORKLOG)
         day = data.setdefault("days", {}).setdefault(date, {"entries": []})
         day["start_time"] = time
-        self.store.save("worklog.json", data)
+        self.documents.save(WorkspaceDocument.WORKLOG, data)
         return {"date": date, "start_time": time}
 
     @_transactional
@@ -1258,7 +2298,7 @@ class WorkStack:
         task = self.get_task(task_id)
         date = date or today()
         dt.date.fromisoformat(date)
-        data = self.store.load("worklog.json")
+        data = self.documents.load(WorkspaceDocument.WORKLOG)
         day = data.setdefault("days", {}).setdefault(date, {"entries": []})
         entry = {
             "task_id": task["id"],
@@ -1270,7 +2310,7 @@ class WorkStack:
         if not any(entry[key] for key in ("done", "next", "blockers")):
             raise ValueError("at least one worklog item is required")
         day["entries"].append(entry)
-        self.store.save("worklog.json", data)
+        self.documents.save(WorkspaceDocument.WORKLOG, data)
         return {"date": date, **entry}
 
     @staticmethod
@@ -1306,6 +2346,7 @@ class WorkStack:
                 output.append(normalized)
         return output
 
+    @_optional_command_backend("intent_commands", "checkin", "intent")
     @_transactional
     def checkin_v1(
         self,
@@ -1321,14 +2362,14 @@ class WorkStack:
             raise DomainError("time must use HH:MM", {"field": "time"})
         canonical = {"date": date, "time": time}
         request_digest = self._request_digest(canonical)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay is not None:
             return replay
 
-        worklog = self.store.load("worklog.json")
+        worklog = self.documents.load(WorkspaceDocument.WORKLOG)
         day = worklog.setdefault("days", {}).setdefault(date, {"entries": []})
         day["start_time"] = time
         response_body = {
@@ -1338,12 +2379,13 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 201, response_body
         )
-        self.store.save_many(
-            {"worklog.json": worklog, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.WORKLOG: worklog, WorkspaceDocument.ACTIVITY: activity},
             operation_id="review-checkin-{}".format(idempotency_key),
         )
         return {"status": 201, "body": response_body}
 
+    @_optional_command_backend("intent_commands", "add_worklog", "intent")
     @_transactional
     def add_worklog_v1(
         self,
@@ -1367,14 +2409,14 @@ class WorkStack:
         if not any(canonical[field] for field in ("done", "next", "blockers")):
             raise DomainError("at least one worklog item is required")
         request_digest = self._request_digest(canonical)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay is not None:
             return replay
 
-        worklog = self.store.load("worklog.json")
+        worklog = self.documents.load(WorkspaceDocument.WORKLOG)
         day = worklog.setdefault("days", {}).setdefault(canonical["date"], {"entries": []})
         entry = {
             "task_id": task["id"],
@@ -1391,8 +2433,8 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 201, response_body
         )
-        self.store.save_many(
-            {"worklog.json": worklog, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.WORKLOG: worklog, WorkspaceDocument.ACTIVITY: activity},
             operation_id="review-entry-{}".format(idempotency_key),
         )
         return {"status": 201, "body": response_body}
@@ -1433,6 +2475,104 @@ class WorkStack:
         return elapsed
 
     @classmethod
+    def _work_session_day(
+        cls, date: Any, day: Any
+    ) -> tuple[str, list[Any]]:
+        try:
+            valid_date = cls._review_date(date)
+        except DomainError as error:
+            raise StoreCorruptError("persisted worklog date is invalid") from error
+        if not isinstance(day, dict):
+            raise StoreCorruptError("persisted worklog day is invalid")
+        sessions = day.get("sessions", [])
+        if not isinstance(sessions, list):
+            raise StoreCorruptError("persisted work sessions are invalid")
+        return valid_date, sessions
+
+    @classmethod
+    def _work_session_header(
+        cls, candidate: Any, valid_date: str, seen: set[str]
+    ) -> tuple[dict[str, Any], str]:
+        if not isinstance(candidate, dict):
+            raise StoreCorruptError("persisted work session is invalid")
+        session_id = candidate.get("id")
+        if (
+            not isinstance(session_id, str)
+            or not re.fullmatch(r"WS-\d{6,}", session_id)
+            or session_id in seen
+        ):
+            raise StoreCorruptError("persisted work session id is invalid")
+        seen.add(session_id)
+        if candidate.get("date") != valid_date:
+            raise StoreCorruptError("persisted work session date is invalid")
+        task_id = candidate.get("task_id")
+        if not isinstance(task_id, str) or not re.fullmatch(r"T-\d+", task_id):
+            raise StoreCorruptError("persisted work session task id is invalid")
+        task_title = candidate.get("task")
+        if not isinstance(task_title, str) or not task_title.strip():
+            raise StoreCorruptError("persisted work session task title is invalid")
+        state = candidate.get("state")
+        if state not in {"running", "paused", "stopped"}:
+            raise StoreCorruptError("persisted work session state is invalid")
+        expected_worklog_states = (
+            {"not_ready"} if state in {"running", "paused"} else {"pending", "recorded"}
+        )
+        if candidate.get("worklog_state") not in expected_worklog_states:
+            raise StoreCorruptError("persisted work session worklog state is invalid")
+        cls._work_session_timestamp(candidate.get("started_at"), "started_at")
+        cls._work_session_timestamp(candidate.get("updated_at"), "updated_at")
+        return candidate, state
+
+    @classmethod
+    def _work_session_segment(
+        cls,
+        candidate: Any,
+        *,
+        index: int,
+        count: int,
+        previous_end: dt.datetime | None,
+    ) -> tuple[dt.datetime | None, bool]:
+        if not isinstance(candidate, dict) or set(candidate) != {"started_at", "ended_at"}:
+            raise StoreCorruptError("persisted work session segment is invalid")
+        segment_start = cls._work_session_timestamp(
+            candidate["started_at"], "segment.started_at"
+        )
+        if previous_end is not None and segment_start < previous_end:
+            raise StoreCorruptError("persisted work session segments overlap")
+        if candidate["ended_at"] is None:
+            if index != count - 1:
+                raise StoreCorruptError("persisted work session open segment is invalid")
+            return None, True
+        segment_end = cls._work_session_timestamp(
+            candidate["ended_at"], "segment.ended_at"
+        )
+        if segment_end < segment_start:
+            raise StoreCorruptError("persisted work session segment has negative duration")
+        return segment_end, False
+
+    @classmethod
+    def _validate_work_session_segments(
+        cls, session: dict[str, Any], state: str
+    ) -> None:
+        segments = session.get("segments")
+        if not isinstance(segments, list) or not segments:
+            raise StoreCorruptError("persisted work session segments are invalid")
+        previous_end: dt.datetime | None = None
+        open_segments = 0
+        for index, segment in enumerate(segments):
+            previous_end, is_open = cls._work_session_segment(
+                segment,
+                index=index,
+                count=len(segments),
+                previous_end=previous_end,
+            )
+            open_segments += int(is_open)
+        if (state == "running") != (open_segments == 1):
+            raise StoreCorruptError("persisted work session open segment is inconsistent")
+        if state in {"paused", "stopped"} and open_segments:
+            raise StoreCorruptError("persisted work session open segment is inconsistent")
+
+    @classmethod
     def _work_session_records(cls, worklog: dict[str, Any]) -> list[dict[str, Any]]:
         days = worklog.get("days")
         if not isinstance(days, dict):
@@ -1441,78 +2581,11 @@ class WorkStack:
         seen: set[str] = set()
         active_count = 0
         for date, day in days.items():
-            try:
-                valid_date = cls._review_date(date)
-            except DomainError as error:
-                raise StoreCorruptError("persisted worklog date is invalid") from error
-            if not isinstance(day, dict):
-                raise StoreCorruptError("persisted worklog day is invalid")
-            day_sessions = day.get("sessions", [])
-            if not isinstance(day_sessions, list):
-                raise StoreCorruptError("persisted work sessions are invalid")
-            for session in day_sessions:
-                if not isinstance(session, dict):
-                    raise StoreCorruptError("persisted work session is invalid")
-                session_id = session.get("id")
-                if (
-                    not isinstance(session_id, str)
-                    or not re.fullmatch(r"WS-\d{6,}", session_id)
-                    or session_id in seen
-                ):
-                    raise StoreCorruptError("persisted work session id is invalid")
-                seen.add(session_id)
-                if session.get("date") != valid_date:
-                    raise StoreCorruptError("persisted work session date is invalid")
-                if not isinstance(session.get("task_id"), str) or not re.fullmatch(
-                    r"T-\d+", session["task_id"]
-                ):
-                    raise StoreCorruptError("persisted work session task id is invalid")
-                if not isinstance(session.get("task"), str) or not session["task"].strip():
-                    raise StoreCorruptError("persisted work session task title is invalid")
-                state = session.get("state")
-                worklog_state = session.get("worklog_state")
-                if state not in {"running", "paused", "stopped"}:
-                    raise StoreCorruptError("persisted work session state is invalid")
-                expected_worklog_states = (
-                    {"not_ready"} if state in {"running", "paused"} else {"pending", "recorded"}
-                )
-                if worklog_state not in expected_worklog_states:
-                    raise StoreCorruptError("persisted work session worklog state is invalid")
-                cls._work_session_timestamp(session.get("started_at"), "started_at")
-                cls._work_session_timestamp(session.get("updated_at"), "updated_at")
-                segments = session.get("segments")
-                if not isinstance(segments, list) or not segments:
-                    raise StoreCorruptError("persisted work session segments are invalid")
-                open_segments = 0
-                previous_end: dt.datetime | None = None
-                for index, segment in enumerate(segments):
-                    if not isinstance(segment, dict) or set(segment) != {"started_at", "ended_at"}:
-                        raise StoreCorruptError("persisted work session segment is invalid")
-                    segment_start = cls._work_session_timestamp(
-                        segment["started_at"], "segment.started_at"
-                    )
-                    if previous_end is not None and segment_start < previous_end:
-                        raise StoreCorruptError("persisted work session segments overlap")
-                    if segment["ended_at"] is None:
-                        open_segments += 1
-                        if index != len(segments) - 1:
-                            raise StoreCorruptError("persisted work session open segment is invalid")
-                        previous_end = None
-                    else:
-                        segment_end = cls._work_session_timestamp(
-                            segment["ended_at"], "segment.ended_at"
-                        )
-                        if segment_end < segment_start:
-                            raise StoreCorruptError(
-                                "persisted work session segment has negative duration"
-                            )
-                        previous_end = segment_end
-                if (state == "running") != (open_segments == 1):
-                    raise StoreCorruptError("persisted work session open segment is inconsistent")
-                if state in {"paused", "stopped"} and open_segments:
-                    raise StoreCorruptError("persisted work session open segment is inconsistent")
-                if state in {"running", "paused"}:
-                    active_count += 1
+            valid_date, candidates = cls._work_session_day(date, day)
+            for candidate in candidates:
+                session, state = cls._work_session_header(candidate, valid_date, seen)
+                cls._validate_work_session_segments(session, state)
+                active_count += int(state in {"running", "paused"})
                 sessions.append(session)
         if active_count > 1:
             raise StoreCorruptError("multiple active work sessions are persisted")
@@ -1536,9 +2609,12 @@ class WorkStack:
             "worklog_state": session["worklog_state"],
         }
 
+    @_optional_command_backend(
+        "work_session_commands", "projection", "intent"
+    )
     @_transactional
     def work_sessions_projection(self) -> dict[str, Any]:
-        worklog = self.store.load("worklog.json")
+        worklog = self.documents.load(WorkspaceDocument.WORKLOG)
         sessions = self._work_session_records(worklog)
         current_time = utc_now()
         current = next(
@@ -1563,6 +2639,9 @@ class WorkStack:
             "pending": [self._project_work_session(session) for session in pending],
         }
 
+    @_optional_command_backend(
+        "work_session_commands", "start", "intent"
+    )
     @_transactional
     def start_work_session_v1(
         self,
@@ -1578,14 +2657,14 @@ class WorkStack:
         task = self.get_task(task_id.strip().upper())
         canonical = {"task_id": task["id"]}
         request_digest = self._request_digest(canonical)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay is not None:
             return replay
 
-        worklog = self.store.load("worklog.json")
+        worklog = self.documents.load(WorkspaceDocument.WORKLOG)
         sessions = self._work_session_records(worklog)
         if any(session["state"] in {"running", "paused"} for session in sessions):
             raise WorkSessionConflictError("another work session is already active")
@@ -1612,12 +2691,15 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 201, response_body
         )
-        self.store.save_many(
-            {"worklog.json": worklog, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.WORKLOG: worklog, WorkspaceDocument.ACTIVITY: activity},
             operation_id="work-session-start-{}".format(idempotency_key),
         )
         return {"status": 201, "body": response_body}
 
+    @_optional_command_backend(
+        "work_session_commands", "transition", "intent"
+    )
     @_transactional
     def transition_work_session_v1(
         self,
@@ -1635,14 +2717,14 @@ class WorkStack:
         canonical: dict[str, Any] = {}
         request_digest = self._request_digest(canonical)
         path = path or "/api/v1/work-sessions/{}/{}".format(wanted_id, action)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay is not None:
             return replay
 
-        worklog = self.store.load("worklog.json")
+        worklog = self.documents.load(WorkspaceDocument.WORKLOG)
         sessions = self._work_session_records(worklog)
         session = _find(sessions, wanted_id, "work session")
         expected_state = {"pause": "running", "resume": "paused"}.get(action)
@@ -1673,12 +2755,15 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 200, response_body
         )
-        self.store.save_many(
-            {"worklog.json": worklog, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.WORKLOG: worklog, WorkspaceDocument.ACTIVITY: activity},
             operation_id="work-session-{}-{}".format(action, idempotency_key),
         )
         return {"status": 200, "body": response_body}
 
+    @_optional_command_backend(
+        "work_session_commands", "record_worklog", "intent"
+    )
     @_transactional
     def record_work_session_v1(
         self,
@@ -1699,14 +2784,14 @@ class WorkStack:
             raise DomainError("at least one worklog item is required")
         request_digest = self._request_digest(canonical)
         path = path or "/api/v1/work-sessions/{}/worklog".format(wanted_id)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay is not None:
             return replay
 
-        worklog = self.store.load("worklog.json")
+        worklog = self.documents.load(WorkspaceDocument.WORKLOG)
         sessions = self._work_session_records(worklog)
         session = _find(sessions, wanted_id, "work session")
         if session["state"] != "stopped" or session["worklog_state"] != "pending":
@@ -1733,8 +2818,8 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 201, response_body
         )
-        self.store.save_many(
-            {"worklog.json": worklog, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.WORKLOG: worklog, WorkspaceDocument.ACTIVITY: activity},
             operation_id="work-session-worklog-{}".format(idempotency_key),
         )
         return {"status": 201, "body": response_body}
@@ -1744,7 +2829,7 @@ class WorkStack:
         date = self._review_date(date)
         if type(days) is not int or days < 1 or days > 31:
             raise DomainError("days must be between 1 and 31", {"field": "days"})
-        worklog = self.store.load("worklog.json")
+        worklog = self.documents.load(WorkspaceDocument.WORKLOG)
         day = worklog.get("days", {}).get(date, {})
         return {
             "day": {
@@ -1756,7 +2841,7 @@ class WorkStack:
         }
 
     def list_worklog(self, date: str | None = None) -> dict[str, Any]:
-        data = self.store.load("worklog.json")
+        data = self.documents.load(WorkspaceDocument.WORKLOG)
         if date:
             dt.date.fromisoformat(date)
             return {"date": date, "entries": data.get("days", {}).get(date, {}).get("entries", [])}
@@ -1764,7 +2849,7 @@ class WorkStack:
 
     @_transactional
     def add_note(self, text: str, links: Iterable[str] = ()) -> dict[str, Any]:
-        data = self.store.load("notes.json")
+        data = self.documents.load(WorkspaceDocument.NOTES)
         note = {
             "id": _next_id(data["notes"], "N", 4),
             "text": _required_text(text, "text"),
@@ -1772,9 +2857,10 @@ class WorkStack:
             "created": today(),
         }
         data["notes"].append(note)
-        self.store.save("notes.json", data)
+        self.documents.save(WorkspaceDocument.NOTES, data)
         return note
 
+    @_optional_command_backend("intent_commands", "create_note", "intent")
     @_transactional
     def create_note_v1(
         self,
@@ -1787,14 +2873,14 @@ class WorkStack:
 
         self._validate_idempotency_key(idempotency_key)
         request_digest = self._request_digest(body)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay is not None:
             return replay
 
-        data = self.store.load("notes.json")
+        data = self.documents.load(WorkspaceDocument.NOTES)
         note = {
             "id": _next_id(data["notes"], "N", 4),
             "text": _required_text(body["text"], "text"),
@@ -1808,8 +2894,8 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 201, response_body
         )
-        self.store.save_many(
-            {"notes.json": data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.NOTES: data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="graph-note-create-{}".format(idempotency_key),
         )
         return {"status": 201, "body": response_body}
@@ -1938,7 +3024,7 @@ class WorkStack:
                 ):
                     raise DomainError("stored idempotency response reference is invalid")
                 reply = _find(
-                    self.store.load("replies.json").get("replies", []),
+                    self.documents.load(WorkspaceDocument.REPLIES).get("replies", []),
                     response_ref["id"],
                     "reply",
                 )
@@ -1987,12 +3073,13 @@ class WorkStack:
         """Return content-free readiness metadata for the local planning store."""
 
         with self.store.consistent_read() as readiness:
-            total_bytes = sum(self.store.path(name).stat().st_size for name in DEFAULTS)
+            total_bytes = self.documents.total_bytes()
             return {
                 "workspace_id": readiness.workspace_uid,
                 "store_schema_version": readiness.schema_version,
                 "product_version": __version__,
-                "file_count": len(DEFAULTS),
+                "remote_protocol_version": REMOTE_PROTOCOL_VERSION,
+                "file_count": len(WorkspaceDocument),
                 "total_bytes": total_bytes,
                 "backup_format": "workstack-backup-v1",
                 "restore_requires_shutdown": True,
@@ -2003,10 +3090,11 @@ class WorkStack:
 
         return create_backup_download(self.store)
 
+    @_query_graph_backend
     def workspace_projection(self) -> dict[str, Any]:
         with self.store.transaction():
-            workspace = self.store.load("workspace.json")
-            captures = self.store.load("captures.json").get("captures", [])
+            workspace = self.documents.load(WorkspaceDocument.WORKSPACE)
+            captures = self.documents.load(WorkspaceDocument.CAPTURES).get("captures", [])
             counts: dict[str, int] = {}
             for capture in captures:
                 for task_id in set(capture.get("linked_task_ids", [])) | set(capture.get("converted_task_ids", [])):
@@ -2022,16 +3110,30 @@ class WorkStack:
                 "tasks": tasks,
                 "objectives": [
                     self._project_objective(objective)
-                    for objective in self.store.load("okr.json").get("objectives", [])
+                    for objective in self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", [])
                 ],
-                "notes": copy.deepcopy(self.store.load("notes.json").get("notes", [])),
+                "notes": copy.deepcopy(self.documents.load(WorkspaceDocument.NOTES).get("notes", [])),
                 "edges": snapshot["edges"],
                 "inbox_count": sum(1 for capture in captures if capture.get("status") == "inbox"),
             }
 
+    @_query_search_backend
     def search_projection(self, query: str, limit: int = 30) -> dict[str, Any]:
         """Search allowlisted local projections without exposing source or reply payloads."""
 
+        query, limit = self._validate_search_request(query, limit)
+        needle = query.casefold()
+        entries = self._cached_search_entries()
+        candidates = [
+            candidate
+            for entry in entries
+            if (candidate := self._search_candidate(entry, needle)) is not None
+        ]
+        candidates.sort(key=lambda candidate: candidate[:4])
+        return {"query": query, "items": [candidate[4] for candidate in candidates[:limit]]}
+
+    @staticmethod
+    def _validate_search_request(query: str, limit: int) -> tuple[str, int]:
         if not isinstance(query, str):
             raise DomainError("search query must be a string")
         query = _reject_controls(query.strip(), "query", multiline=False)
@@ -2039,169 +3141,193 @@ class WorkStack:
             raise DomainError("search query must be between 2 and 100 characters")
         if type(limit) is not int or not 1 <= limit <= 50:
             raise DomainError("search limit must be between 1 and 50")
-        needle = query.casefold()
-        candidates: list[tuple[int, int, str, str, dict[str, Any]]] = []
-        kind_order = {"task": 0, "objective": 1, "note": 2, "capture": 3, "activity": 4}
+        return query, limit
 
-        def index_item(
-            kind: str,
-            item_id: str,
-            title: str,
-            subtitle: str,
-            searchable: Iterable[str],
-            target_kind: str,
-            target_id: str | None,
-        ) -> None:
-            values = [str(value) for value in searchable if value is not None]
-            self._search_entries.append({
-                "kind": kind,
-                "id": item_id,
-                "title": title,
-                "subtitle": subtitle,
-                "target_kind": target_kind,
-                "target_id": target_id,
-                "folded_title": title.casefold(),
-                "folded_id": item_id.casefold(),
-                "folded_values": tuple(value.casefold() for value in values),
-            })
+    @staticmethod
+    def _search_entry(
+        kind: str,
+        item_id: str,
+        title: str,
+        subtitle: str,
+        searchable: Iterable[str],
+        target_kind: str,
+        target_id: str | None,
+    ) -> dict[str, Any]:
+        values = [str(value) for value in searchable if value is not None]
+        return {
+            "kind": kind,
+            "id": item_id,
+            "title": title,
+            "subtitle": subtitle,
+            "target_kind": target_kind,
+            "target_id": target_id,
+            "folded_title": title.casefold(),
+            "folded_id": item_id.casefold(),
+            "folded_values": tuple(value.casefold() for value in values),
+        }
 
+    def _task_search_entries(self) -> list[dict[str, Any]]:
+        entries = []
+        for task in self.list_tasks(status="all"):
+            due = " · due {}".format(task["due"]) if task.get("due") else ""
+            searchable = [task.get("detail", ""), *task.get("tags", []), *task.get("objective_ids", [])]
+            searchable.extend(note.get("text", "") for note in task.get("notes", []))
+            searchable.extend(subtask.get("title", "") for subtask in task.get("subtasks", []))
+            entries.append(self._search_entry(
+                "task",
+                task["id"],
+                task["title"],
+                "{} · {}{}".format(task.get("status", "open"), task.get("priority", "P2"), due),
+                searchable,
+                "task",
+                task["id"],
+            ))
+        return entries
+
+    def _objective_search_entries(self) -> list[dict[str, Any]]:
+        entries = []
+        for objective in self.list_objectives(status="all"):
+            key_results = objective.get("key_results", [])
+            searchable = [result.get("text", "") for result in key_results]
+            searchable.extend(result.get("target", "") for result in key_results)
+            entries.append(self._search_entry(
+                "objective",
+                objective["id"],
+                objective["objective"],
+                "{} · {}".format(
+                    objective.get("quarter", "No quarter"),
+                    objective.get("status", "active"),
+                ),
+                searchable,
+                "objective",
+                objective["id"],
+            ))
+        return entries
+
+    def _note_search_entries(self) -> list[dict[str, Any]]:
+        entries = []
+        for note in self.documents.load(WorkspaceDocument.NOTES).get("notes", []):
+            text = str(note.get("text", ""))
+            item_id = str(note.get("id", ""))
+            entries.append(self._search_entry(
+                "note",
+                item_id,
+                text[:100] or str(note.get("id", "Note")),
+                "Graph note · {} links".format(len(note.get("links", []))),
+                [text, *note.get("links", [])],
+                "workspace",
+                None,
+            ))
+        return entries
+
+    def _capture_search_entries(self) -> list[dict[str, Any]]:
+        entries = []
+        for capture in self.documents.load(WorkspaceDocument.CAPTURES).get("captures", []):
+            projected = self._project_capture(capture)
+            source = projected.get("source", {})
+            normalized = projected.get("normalized", {})
+            searchable = [normalized.get("summary", ""), normalized.get("context", "")]
+            searchable.extend(
+                action.get("title", "") for action in normalized.get("action_items", [])
+            )
+            entries.append(self._search_entry(
+                "capture",
+                projected["id"],
+                source.get("display_title", projected["id"]),
+                "{} · {}".format(
+                    source.get("provider", "manual"), projected.get("status", "inbox")
+                ),
+                searchable,
+                "capture",
+                projected["id"],
+            ))
+        return entries
+
+    @staticmethod
+    def _activity_target(event: dict[str, Any]) -> tuple[str, str | None]:
+        if event.get("task_id"):
+            return "task", event["task_id"]
+        if event.get("capture_id"):
+            return "capture", event["capture_id"]
+        return "workspace", None
+
+    def _activity_search_entries(self) -> list[dict[str, Any]]:
+        entries = []
+        for event in self.documents.load(WorkspaceDocument.ACTIVITY).get("activity", []):
+            event_type = str(event.get("type", ""))
+            details = event.get("details", {})
+            details = details if isinstance(details, dict) else {}
+            target_kind, target_id = self._activity_target(event)
+            entries.append(self._search_entry(
+                "activity",
+                str(event.get("id", "")),
+                event_type.replace(".", " ").strip().title() or "Activity",
+                str(event.get("created_at", "")),
+                [event_type, details.get("provider", ""), details.get("state", "")],
+                target_kind,
+                target_id if isinstance(target_id, str) else None,
+            ))
+        return entries
+
+    def _build_search_entries(self) -> list[dict[str, Any]]:
+        entries = self._task_search_entries()
+        entries.extend(self._objective_search_entries())
+        entries.extend(self._note_search_entries())
+        entries.extend(self._capture_search_entries())
+        entries.extend(self._activity_search_entries())
+        return entries
+
+    def _cached_search_entries(self) -> list[dict[str, Any]]:
         with self.store.transaction():
             generation = self.store.generation
             if self._search_index_generation != generation:
-                self._search_entries = []
-                for task in self.list_tasks(status="all"):
-                    index_item(
-                        "task",
-                        task["id"],
-                        task["title"],
-                        "{} · {}{}".format(
-                            task.get("status", "open"),
-                            task.get("priority", "P2"),
-                            " · due {}".format(task["due"]) if task.get("due") else "",
-                        ),
-                        [
-                            task.get("detail", ""),
-                            *task.get("tags", []),
-                            *task.get("objective_ids", []),
-                            *(note.get("text", "") for note in task.get("notes", [])),
-                            *(subtask.get("title", "") for subtask in task.get("subtasks", [])),
-                        ],
-                        "task",
-                        task["id"],
-                    )
-
-                for objective in self.list_objectives(status="all"):
-                    index_item(
-                        "objective",
-                        objective["id"],
-                        objective["objective"],
-                        "{} · {}".format(
-                            objective.get("quarter", "No quarter"),
-                            objective.get("status", "active"),
-                        ),
-                        [
-                            *(result.get("text", "") for result in objective.get("key_results", [])),
-                            *(result.get("target", "") for result in objective.get("key_results", [])),
-                        ],
-                        "objective",
-                        objective["id"],
-                    )
-
-                for note in self.store.load("notes.json").get("notes", []):
-                    text = str(note.get("text", ""))
-                    index_item(
-                        "note",
-                        str(note.get("id", "")),
-                        text[:100] or str(note.get("id", "Note")),
-                        "Graph note · {} links".format(len(note.get("links", []))),
-                        [text, *note.get("links", [])],
-                        "workspace",
-                        None,
-                    )
-
-                captures = self.store.load("captures.json").get("captures", [])
-                for capture in captures:
-                    projected = self._project_capture(capture)
-                    source = projected.get("source", {})
-                    normalized = projected.get("normalized", {})
-                    index_item(
-                        "capture",
-                        projected["id"],
-                        source.get("display_title", projected["id"]),
-                        "{} · {}".format(
-                            source.get("provider", "manual"), projected.get("status", "inbox")
-                        ),
-                        [
-                            normalized.get("summary", ""),
-                            normalized.get("context", ""),
-                            *(action.get("title", "") for action in normalized.get("action_items", [])),
-                        ],
-                        "capture",
-                        projected["id"],
-                    )
-
-                for event in self.store.load("activity.json").get("activity", []):
-                    event_type = str(event.get("type", ""))
-                    details = event.get("details", {}) if isinstance(event.get("details"), dict) else {}
-                    safe_terms = [event_type, details.get("provider", ""), details.get("state", "")]
-                    target_kind = "task" if event.get("task_id") else "capture" if event.get("capture_id") else "workspace"
-                    target_id = event.get("task_id") or event.get("capture_id")
-                    index_item(
-                        "activity",
-                        str(event.get("id", "")),
-                        event_type.replace(".", " ").strip().title() or "Activity",
-                        str(event.get("created_at", "")),
-                        safe_terms,
-                        target_kind,
-                        target_id if isinstance(target_id, str) else None,
-                    )
+                self._search_entries = self._build_search_entries()
                 self._search_index_generation = generation
+            return self._search_entries
 
-            entries = self._search_entries
+    @staticmethod
+    def _search_score(entry: dict[str, Any], needle: str) -> int | None:
+        if needle == entry["folded_id"]:
+            return 0
+        if entry["folded_title"].startswith(needle):
+            return 1
+        if needle in entry["folded_title"] or needle in entry["folded_id"]:
+            return 2
+        if any(needle in value for value in entry["folded_values"]):
+            return 3
+        return None
 
-        for entry in entries:
-            if needle == entry["folded_id"]:
-                score = 0
-            elif entry["folded_title"].startswith(needle):
-                score = 1
-            elif needle in entry["folded_title"] or needle in entry["folded_id"]:
-                score = 2
-            elif any(needle in value for value in entry["folded_values"]):
-                score = 3
-            else:
-                continue
-            item = {
-                field: entry[field]
-                for field in ("kind", "id", "title", "subtitle", "target_kind", "target_id")
-            }
-            candidates.append((
-                kind_order[entry["kind"]],
-                score,
-                entry["folded_title"],
-                entry["id"],
-                item,
-            ))
-
-        candidates.sort(key=lambda candidate: candidate[:4])
-        return {"query": query, "items": [candidate[4] for candidate in candidates[:limit]]}
+    @classmethod
+    def _search_candidate(
+        cls, entry: dict[str, Any], needle: str
+    ) -> tuple[int, int, str, str, dict[str, Any]] | None:
+        score = cls._search_score(entry, needle)
+        if score is None:
+            return None
+        kind_order = {"task": 0, "objective": 1, "note": 2, "capture": 3, "activity": 4}
+        item = {
+            field: entry[field]
+            for field in ("kind", "id", "title", "subtitle", "target_kind", "target_id")
+        }
+        return kind_order[entry["kind"]], score, entry["folded_title"], entry["id"], item
 
     def task_detail(self, task_id: str) -> dict[str, Any]:
         with self.store.transaction():
-            task = _find(self.store.load("backlog.json").get("tasks", []), task_id, "task")
+            task = _find(self.documents.load(WorkspaceDocument.TASKS).get("tasks", []), task_id, "task")
             normalized_id = task["id"]
             captures = [
                 capture
-                for capture in self.store.load("captures.json").get("captures", [])
+                for capture in self.documents.load(WorkspaceDocument.CAPTURES).get("captures", [])
                 if normalized_id in capture.get("linked_task_ids", [])
                 or normalized_id in capture.get("converted_task_ids", [])
             ]
             capture_ids = {capture["id"] for capture in captures}
             replies = [
                 reply
-                for reply in self.store.load("replies.json").get("replies", [])
+                for reply in self.documents.load(WorkspaceDocument.REPLIES).get("replies", [])
                 if reply.get("task_id") == normalized_id
             ]
-            activity_data = self.store.load("activity.json")
+            activity_data = self.documents.load(WorkspaceDocument.ACTIVITY)
             activity = [
                 copy.deepcopy(event)
                 for event in activity_data.get("activity", [])
@@ -2213,7 +3339,7 @@ class WorkStack:
             ]
             activity.extend(task_facts(activity_data, normalized_id))
             projected_status = validate_and_project(
-                self.store.load("backlog.json"), activity_data
+                self.documents.load(WorkspaceDocument.TASKS), activity_data
             )[normalized_id]
             return {
                 "task": self._project_task(
@@ -2232,9 +3358,9 @@ class WorkStack:
 
         try:
             with self.store.consistent_read():
-                workspace = self.store.load("workspace.json")
-                backlog = self.store.load("backlog.json")
-                activity = self.store.load("activity.json")
+                workspace = self.documents.load(WorkspaceDocument.WORKSPACE)
+                backlog = self.documents.load(WorkspaceDocument.TASKS)
+                activity = self.documents.load(WorkspaceDocument.ACTIVITY)
                 task = copy.deepcopy(_find(backlog.get("tasks", []), task_id, "task"))
                 planning_status = validate_and_project(backlog, activity)[task["id"]]
                 return create_snapshot_artifact(
@@ -2280,22 +3406,18 @@ class WorkStack:
             )
         return artifact
 
+    @_task_patch_backends
     @_transactional
     def patch_task(self, task_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(patch, dict):
             raise DomainError("task patch must be an object")
-        allowed = {
-            "title", "detail", "status", "priority", "due", "scheduled",
-            "estimate_minutes", "tags", "objective_ids",
-            "parent_id", "dependencies", "revision",
-        }
-        unknown = sorted(set(patch) - allowed)
+        unknown = sorted(set(patch) - TASK_PATCH_FIELDS)
         if unknown:
             raise DomainError("unknown task fields", {"fields": unknown})
         expected_revision = patch.get("revision")
         if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 0:
             raise DomainError("revision is required and must be a non-negative integer")
-        backlog = self.store.load("backlog.json")
+        backlog = self.documents.load(WorkspaceDocument.TASKS)
         task = _find(backlog.get("tasks", []), task_id, "task")
         current_revision = _revision(task)
         if expected_revision != current_revision:
@@ -2304,104 +3426,15 @@ class WorkStack:
                 {"expected": current_revision, "received": expected_revision},
             )
         tasks_by_id = {item["id"]: item for item in backlog.get("tasks", [])}
-        objectives = {item["id"] for item in self.store.load("okr.json").get("objectives", [])}
-        changes = {key: value for key, value in patch.items() if key != "revision"}
-        if "title" in changes:
-            if not isinstance(changes["title"], str):
-                raise DomainError("title must be a string")
-            changes["title"] = _required_text(changes["title"], "title")
-        if "detail" in changes:
-            if not isinstance(changes["detail"], str):
-                raise DomainError("detail must be a string")
-            changes["detail"] = changes["detail"].strip()
-        if "status" in changes and changes["status"] not in TASK_STATUSES:
-            raise DomainError("invalid task status")
-        if "priority" in changes and changes["priority"] not in PRIORITIES:
-            raise DomainError("invalid task priority")
-        if "due" in changes and changes["due"] is not None:
-            if not isinstance(changes["due"], str):
-                raise DomainError("due must be an ISO date or null")
-            try:
-                parsed_due = dt.date.fromisoformat(changes["due"])
-            except ValueError as error:
-                raise DomainError("due must be an ISO date or null") from error
-            if parsed_due.isoformat() != changes["due"]:
-                raise DomainError("due must be an ISO date or null")
-        if "scheduled" in changes and changes["scheduled"] is not None:
-            if not isinstance(changes["scheduled"], str):
-                raise DomainError("scheduled must be an ISO date or null")
-            try:
-                parsed_scheduled = dt.date.fromisoformat(changes["scheduled"])
-            except ValueError as error:
-                raise DomainError("scheduled must be an ISO date or null") from error
-            if parsed_scheduled.isoformat() != changes["scheduled"]:
-                raise DomainError("scheduled must be an ISO date or null")
-        if "estimate_minutes" in changes and changes["estimate_minutes"] is not None:
-            estimate = changes["estimate_minutes"]
-            if (
-                not isinstance(estimate, int)
-                or isinstance(estimate, bool)
-                or not 1 <= estimate <= 1440
-            ):
-                raise DomainError(
-                    "estimate_minutes must be null or an integer from 1 to 1440"
-                )
-        for field in ("tags", "objective_ids", "dependencies"):
-            if field in changes and not isinstance(changes[field], list):
-                raise DomainError("{} must be an array".format(field))
-        if "tags" in changes:
-            if any(not isinstance(item, str) for item in changes["tags"]):
-                raise DomainError("tags entries must be strings")
-            changes["tags"] = sorted({item.strip() for item in changes["tags"] if item.strip()})
-        if "objective_ids" in changes:
-            if any(not isinstance(item, str) for item in changes["objective_ids"]):
-                raise DomainError("objective_ids entries must be strings")
-            changes["objective_ids"] = sorted({item.strip().upper() for item in changes["objective_ids"] if item.strip()})
-            missing = sorted(set(changes["objective_ids"]) - objectives)
-            if missing:
-                raise DomainError("unknown objective ids", {"ids": missing})
-        if "dependencies" in changes:
-            if any(not isinstance(item, str) for item in changes["dependencies"]):
-                raise DomainError("dependencies entries must be strings")
-            changes["dependencies"] = sorted({item.strip().upper() for item in changes["dependencies"] if item.strip()})
-            missing = sorted(set(changes["dependencies"]) - set(tasks_by_id))
-            if missing or task["id"] in changes["dependencies"]:
-                raise DomainError("invalid dependency ids", {"ids": missing})
-            cyclic_dependencies = [
-                dependency
-                for dependency in changes["dependencies"]
-                if _relationship_reaches(
-                    tasks_by_id, [dependency], task["id"], "dependencies"
-                )
-            ]
-            if cyclic_dependencies:
-                raise DomainError(
-                    "dependency relationship would create a cycle",
-                    {"ids": cyclic_dependencies},
-                )
-        if "parent_id" in changes:
-            parent = changes["parent_id"]
-            if parent is not None and not isinstance(parent, str):
-                raise DomainError("parent_id must be a task ID or null")
-            parent = parent.strip().upper() if parent else None
-            if parent == task["id"] or (parent and parent not in tasks_by_id):
-                raise DomainError("invalid parent task")
-            if parent and _relationship_reaches(
-                tasks_by_id, [parent], task["id"], "parent_id"
-            ):
-                raise DomainError(
-                    "parent relationship would create a cycle",
-                    {"id": parent},
-                )
-            changes["parent_id"] = parent
-        activity = self.store.load("activity.json")
+        objectives = {item["id"] for item in self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", [])}
+        changes, requested_status = _patch_change_set(
+            patch, task, tasks_by_id, objectives
+        )
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         current_status = validate_and_project(backlog, activity)[task["id"]]
-        requested_status = changes.pop("status", None)
-        changed_fields = sorted(changes)
-        if requested_status is not None:
-            changed_fields.append("status")
-        if requested_status == current_status:
-            changed_fields.remove("status")
+        changed_fields = _patch_changed_fields(
+            changes, requested_status, current_status
+        )
         if not changed_fields:
             return self._project_task(task, planning_status=current_status)
 
@@ -2429,8 +3462,8 @@ class WorkStack:
             task_id=task["id"],
             details={"fields": changed_fields},
         )
-        self.store.save_many(
-            {"backlog.json": backlog, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.TASKS: backlog, WorkspaceDocument.ACTIVITY: activity},
             operation_id="task-patch-{}-r{}".format(task["id"], task["revision"]),
         )
         return self._project_task(task, planning_status=projected_status)
@@ -2438,11 +3471,12 @@ class WorkStack:
     def list_captures(self, status: str = "inbox") -> list[dict[str, Any]]:
         if status != "all" and status not in CAPTURE_STATUSES:
             raise DomainError("invalid capture status")
-        captures = self.store.load("captures.json").get("captures", [])
+        captures = self.documents.load(WorkspaceDocument.CAPTURES).get("captures", [])
         if status != "all":
             captures = [capture for capture in captures if capture.get("status") == status]
         return [self._project_capture(capture) for capture in sorted(captures, key=lambda item: item["id"])]
 
+    @_capture_reply_backend
     @_transactional
     def ingest_capture(
         self,
@@ -2454,12 +3488,12 @@ class WorkStack:
         path: str = "/api/v1/captures",
     ) -> dict[str, Any]:
         request_digest = request_digest or self._request_digest(packet)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(activity, idempotency_key, method, path, request_digest)
         if replay:
             return replay
         sanitized = validate_capture_packet(packet)
-        captures_data = self.store.load("captures.json")
+        captures_data = self.documents.load(WorkspaceDocument.CAPTURES)
         captures = captures_data.setdefault("captures", [])
         existing = next(
             (item for item in captures if item.get("source_key") == sanitized["source_key"]),
@@ -2483,6 +3517,7 @@ class WorkStack:
             response_status = 201
             self._event(activity, "capture.ingested", capture_id=capture["id"])
         elif existing["source"].get("fingerprint") == sanitized["source"]["fingerprint"]:
+            _require_matching_capture_review(existing, sanitized)
             capture = existing
             duplicate = True
             response_status = 200
@@ -2530,12 +3565,13 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, method, path, request_digest, response_status, body
         )
-        self.store.save_many(
-            {"captures.json": captures_data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.CAPTURES: captures_data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="capture-ingest-{}".format(idempotency_key),
         )
         return {"status": response_status, "body": body}
 
+    @_capture_reply_backend
     @_transactional
     def link_capture(
         self,
@@ -2549,12 +3585,12 @@ class WorkStack:
         body_input = {"task_id": task_id}
         request_digest = request_digest or self._request_digest(body_input)
         path = path or "/api/v1/captures/{}/link".format(capture_id)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(activity, idempotency_key, "POST", path, request_digest)
         if replay:
             return replay
-        task = _find(self.store.load("backlog.json").get("tasks", []), task_id, "task")
-        captures_data = self.store.load("captures.json")
+        task = _find(self.documents.load(WorkspaceDocument.TASKS).get("tasks", []), task_id, "task")
+        captures_data = self.documents.load(WorkspaceDocument.CAPTURES)
         capture = _find(captures_data.get("captures", []), capture_id, "capture")
         duplicate = task["id"] in capture.setdefault("linked_task_ids", [])
         if not duplicate:
@@ -2569,9 +3605,87 @@ class WorkStack:
         if duplicate:
             body["meta"] = {"duplicate": True}
         self._record_idempotency(activity, idempotency_key, "POST", path, request_digest, 200, body)
-        self.store.save_many(
-            {"captures.json": captures_data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.CAPTURES: captures_data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="capture-link-{}".format(idempotency_key),
+        )
+        return {"status": 200, "body": body}
+
+    @staticmethod
+    def _capture_action_matches_task(
+        action: dict[str, Any], task: dict[str, Any]
+    ) -> bool:
+        return all(
+            action.get(field, default) == task.get(field, default)
+            for field, default in (
+                ("title", ""),
+                ("detail", ""),
+                ("priority", "P2"),
+                ("due", None),
+            )
+        )
+
+    @classmethod
+    def _link_unique_matching_capture_action(
+        cls, capture: dict[str, Any], task: dict[str, Any]
+    ) -> None:
+        matches = [
+            action
+            for action in capture.get("normalized", {}).get("action_items", [])
+            if not action.get("task_id") and cls._capture_action_matches_task(action, task)
+        ]
+        if len(matches) == 1:
+            matches[0]["task_id"] = task["id"]
+
+    def _capture_task_intent_replay(
+        self,
+        activity: dict[str, Any],
+        backlog: dict[str, Any],
+        capture: dict[str, Any],
+        intent_id: str | None,
+        request_digest: str,
+        idempotency_key: str,
+        path: str,
+    ) -> dict[str, Any] | None:
+        if intent_id is None:
+            return None
+        event = next(
+            (
+                item
+                for item in activity.get("activity", [])
+                if item.get("type") == "capture.task_created"
+                and item.get("capture_id") == capture["id"]
+                and item.get("details", {}).get("intent_id") == intent_id
+            ),
+            None,
+        )
+        if event is None:
+            return None
+        if event.get("details", {}).get("request_digest") != request_digest:
+            raise IdempotencyConflictError(
+                "intent_id was already used for different Task fields",
+                {"intent_id": intent_id},
+            )
+        task = _find(backlog.get("tasks", []), event.get("task_id"), "task")
+        if task["id"] not in capture.get("converted_task_ids", []):
+            raise StoreCorruptError("capture task intent link is incomplete")
+        planning_status = validate_and_project(backlog, activity)[task["id"]]
+        body = {
+            "data": self._project_task(task, 1, planning_status=planning_status),
+            "meta": {"intent_replayed": True},
+        }
+        self._record_idempotency(
+            activity,
+            idempotency_key,
+            "POST",
+            path,
+            request_digest,
+            200,
+            body,
+        )
+        self.documents.save_many(
+            {WorkspaceDocument.ACTIVITY: activity},
+            operation_id="capture-task-intent-replay-{}".format(idempotency_key),
         )
         return {"status": 200, "body": body}
 
@@ -2585,56 +3699,41 @@ class WorkStack:
         *,
         path: str | None = None,
     ) -> dict[str, Any]:
-        allowed = {
-            "title",
-            "detail",
-            "priority",
-            "due",
-            "tags",
-            "objective_ids",
-            "parent_id",
-            "dependencies",
-        }
-        unknown = sorted(set(task_fields) - allowed)
-        if unknown:
-            raise DomainError("unknown task fields", {"fields": unknown})
-        if "title" not in task_fields or not isinstance(task_fields["title"], str):
-            raise DomainError("title is required and must be a string", {"field": "title"})
-        for field in ("detail", "priority"):
-            if field in task_fields and not isinstance(task_fields[field], str):
-                raise DomainError("{} must be a string".format(field), {"field": field})
-        if "due" in task_fields and task_fields["due"] is not None and not isinstance(task_fields["due"], str):
-            raise DomainError("due must be an ISO date or null", {"field": "due"})
-        if "parent_id" in task_fields and task_fields["parent_id"] is not None and not isinstance(task_fields["parent_id"], str):
-            raise DomainError("parent_id must be a task ID or null", {"field": "parent_id"})
-        for field in ("tags", "objective_ids", "dependencies"):
-            if field in task_fields:
-                value = task_fields[field]
-                if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-                    raise DomainError("{} must be an array of strings".format(field), {"field": field})
+        intent_id, task_input = _validate_capture_task_fields(task_fields)
 
         request_digest = request_digest or self._request_digest(task_fields)
         path = path or "/api/v1/captures/{}/task".format(capture_id)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay:
             return replay
 
-        captures_data = self.store.load("captures.json")
+        captures_data = self.documents.load(WorkspaceDocument.CAPTURES)
         capture = _find(captures_data.get("captures", []), capture_id, "capture")
-        backlog = self.store.load("backlog.json")
+        backlog = self.documents.load(WorkspaceDocument.TASKS)
+        intent_replay = self._capture_task_intent_replay(
+            activity,
+            backlog,
+            capture,
+            intent_id,
+            request_digest,
+            idempotency_key,
+            path,
+        )
+        if intent_replay is not None:
+            return intent_replay
         task = self._append_task(
             backlog,
-            task_fields["title"],
-            task_fields.get("detail", ""),
-            task_fields.get("priority", "P2"),
-            task_fields.get("due"),
-            task_fields.get("tags", ()),
-            task_fields.get("objective_ids", ()),
-            task_fields.get("parent_id"),
-            task_fields.get("dependencies", ()),
+            task_input["title"],
+            task_input.get("detail", ""),
+            task_input.get("priority", "P2"),
+            task_input.get("due"),
+            task_input.get("tags", ()),
+            task_input.get("objective_ids", ()),
+            task_input.get("parent_id"),
+            task_input.get("dependencies", ()),
         )
         append_bootstrap(
             activity,
@@ -2647,6 +3746,7 @@ class WorkStack:
         converted = set(capture.setdefault("converted_task_ids", []))
         converted.add(task["id"])
         capture["converted_task_ids"] = sorted(converted)
+        self._link_unique_matching_capture_action(capture, task)
         capture["status"] = "converted"
         capture["revision"] = _next_revision(capture)
         capture["updated_at"] = utc_now()
@@ -2655,6 +3755,11 @@ class WorkStack:
             "capture.task_created",
             capture_id=capture["id"],
             task_id=task["id"],
+            details=(
+                {"intent_id": intent_id, "request_digest": request_digest}
+                if intent_id is not None
+                else None
+            ),
         )
         response_body = {
             "data": self._project_task(task, 1, planning_status="open")
@@ -2668,11 +3773,11 @@ class WorkStack:
             201,
             response_body,
         )
-        self.store.save_many(
+        self.documents.save_many(
             {
-                "backlog.json": backlog,
-                "captures.json": captures_data,
-                "activity.json": activity,
+                WorkspaceDocument.TASKS: backlog,
+                WorkspaceDocument.CAPTURES: captures_data,
+                WorkspaceDocument.ACTIVITY: activity,
             },
             operation_id="capture-task-{}".format(idempotency_key),
         )
@@ -2689,11 +3794,11 @@ class WorkStack:
     ) -> dict[str, Any]:
         request_digest = request_digest or self._request_digest({})
         path = path or "/api/v1/captures/{}/dismiss".format(capture_id)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(activity, idempotency_key, "POST", path, request_digest)
         if replay:
             return replay
-        captures_data = self.store.load("captures.json")
+        captures_data = self.documents.load(WorkspaceDocument.CAPTURES)
         capture = _find(captures_data.get("captures", []), capture_id, "capture")
         duplicate = capture.get("status") == "dismissed"
         if not duplicate:
@@ -2705,8 +3810,8 @@ class WorkStack:
         if duplicate:
             body["meta"] = {"duplicate": True}
         self._record_idempotency(activity, idempotency_key, "POST", path, request_digest, 200, body)
-        self.store.save_many(
-            {"captures.json": captures_data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.CAPTURES: captures_data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="capture-dismiss-{}".format(idempotency_key),
         )
         return {"status": 200, "body": body}
@@ -2729,25 +3834,25 @@ class WorkStack:
         body_input = {"objective_ids": normalized_objectives}
         request_digest = request_digest or self._request_digest(body_input)
         path = path or "/api/v1/captures/{}/actions/{}/task".format(capture_id, action_id)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(activity, idempotency_key, "POST", path, request_digest)
         if replay:
             return replay
-        objectives = {item["id"] for item in self.store.load("okr.json").get("objectives", [])}
+        objectives = {item["id"] for item in self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", [])}
         missing = sorted(set(normalized_objectives) - objectives)
         if missing:
             raise DomainError("unknown objective ids", {"ids": missing})
-        captures_data = self.store.load("captures.json")
+        captures_data = self.documents.load(WorkspaceDocument.CAPTURES)
         capture = _find(captures_data.get("captures", []), capture_id, "capture")
         action = _find(capture.get("normalized", {}).get("action_items", []), action_id, "capture action")
-        backlog = self.store.load("backlog.json")
+        backlog = self.documents.load(WorkspaceDocument.TASKS)
         if action.get("task_id"):
             task = _find(backlog.get("tasks", []), action["task_id"], "task")
             response_status = 200
             duplicate = True
         else:
             task_id = _next_id(backlog.setdefault("tasks", []), "T", 4)
-            workspace_id = self.store.load("workspace.json")["id"]
+            workspace_id = self.documents.load(WorkspaceDocument.WORKSPACE)["id"]
             task = {
                 "id": task_id,
                 "uid": _task_uid(workspace_id, task_id),
@@ -2799,16 +3904,17 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, response_status, body
         )
-        self.store.save_many(
+        self.documents.save_many(
             {
-                "backlog.json": backlog,
-                "captures.json": captures_data,
-                "activity.json": activity,
+                WorkspaceDocument.TASKS: backlog,
+                WorkspaceDocument.CAPTURES: captures_data,
+                WorkspaceDocument.ACTIVITY: activity,
             },
             operation_id="capture-convert-{}".format(idempotency_key),
         )
         return {"status": response_status, "body": body}
 
+    @_capture_reply_backend
     @_transactional
     def approve_reply(
         self,
@@ -2836,16 +3942,16 @@ class WorkStack:
         body = _approved_plain_text(request["body"])
 
         request_digest = request_digest or self._request_digest(request)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
         if replay:
             return replay
 
-        backlog = self.store.load("backlog.json")
+        backlog = self.documents.load(WorkspaceDocument.TASKS)
         task = _find(backlog.get("tasks", []), request["task_id"], "task")
-        captures_data = self.store.load("captures.json")
+        captures_data = self.documents.load(WorkspaceDocument.CAPTURES)
         capture = _find(captures_data.get("captures", []), request["capture_id"], "capture")
         task_links = set(capture.get("linked_task_ids", [])) | set(
             capture.get("converted_task_ids", [])
@@ -2871,7 +3977,7 @@ class WorkStack:
             for field in REPLY_TARGET_FIELDS
         }
         now = utc_now()
-        replies_data = self.store.load("replies.json")
+        replies_data = self.documents.load(WorkspaceDocument.REPLIES)
         replies = replies_data.setdefault("replies", [])
         reply = {
             "id": _next_id(replies, "R", 4),
@@ -2910,61 +4016,22 @@ class WorkStack:
             None,
             response_ref={"kind": "reply", "id": reply["id"]},
         )
-        self.store.save_many(
-            {"replies.json": replies_data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.REPLIES: replies_data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="reply-approve-{}".format(idempotency_key),
         )
         return {"status": 201, "body": response_body}
 
     @staticmethod
     def _validate_reply_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
-        required = {
-            "schema_version",
-            "reply_id",
-            "provider",
-            "outcome",
-            "occurred_at",
-            "body_digest",
-            "target_digest",
-        }
-        optional = {"remote_message_ref", "web_url", "error_code"}
-        unknown = sorted(set(receipt) - required - optional)
-        missing = sorted(required - set(receipt))
-        if unknown or missing:
-            raise DomainError(
-                "reply receipt has unknown or missing fields",
-                {"missing": missing, "unknown": unknown},
-            )
+        _validate_reply_receipt_shape(receipt)
         if receipt["schema_version"] != "1.0":
             raise DomainError("schema_version must be 1.0", {"field": "schema_version"})
         reply_id = _opaque_reference(receipt["reply_id"], "reply_id", 64)
-        provider = receipt["provider"]
-        if not isinstance(provider, str) or provider not in REPLY_CAPABILITIES:
-            raise DomainError("provider is not supported", {"field": "provider"})
-        outcome = receipt["outcome"]
-        if outcome not in REPLY_OUTCOMES:
-            raise DomainError(
-                "outcome must be sent, failed, or unknown", {"field": "outcome"}
-            )
-        occurred_at = receipt["occurred_at"]
-        if not isinstance(occurred_at, str):
-            raise DomainError("occurred_at must be a string", {"field": "occurred_at"})
-        try:
-            parse_rfc3339(occurred_at, "occurred_at")
-        except ValueError as error:
-            raise DomainError(
-                "occurred_at must be strict RFC3339", {"field": "occurred_at"}
-            ) from error
-
-        digests: dict[str, str] = {}
-        for field in ("body_digest", "target_digest"):
-            value = receipt[field]
-            if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
-                raise DomainError(
-                    "{} must be canonical SHA-256".format(field), {"field": field}
-                )
-            digests[field] = value
-
+        provider = _reply_receipt_provider(receipt)
+        outcome = _reply_receipt_outcome(receipt)
+        occurred_at = _reply_receipt_occurred_at(receipt)
+        digests = _reply_receipt_digests(receipt)
         projected: dict[str, Any] = {
             "schema_version": "1.0",
             "reply_id": reply_id,
@@ -2973,22 +4040,10 @@ class WorkStack:
             "occurred_at": occurred_at,
             **digests,
         }
-        if "remote_message_ref" in receipt:
-            projected["remote_message_ref"] = _remote_message_reference(
-                receipt["remote_message_ref"]
-            )
-        if "web_url" in receipt:
-            projected["web_url"] = _microsoft_web_url(receipt["web_url"])
-        if "error_code" in receipt:
-            error_code = receipt["error_code"]
-            if not isinstance(error_code, str) or not ERROR_CODE_RE.fullmatch(error_code):
-                raise DomainError(
-                    "error_code must be a bounded symbolic code",
-                    {"field": "error_code"},
-                )
-            projected["error_code"] = error_code
+        _project_reply_receipt_optional_fields(receipt, projected)
         return projected
 
+    @_capture_reply_backend
     @_transactional
     def apply_reply_receipt(
         self,
@@ -3001,7 +4056,7 @@ class WorkStack:
     ) -> dict[str, Any]:
         request_digest = request_digest or self._request_digest(receipt_input)
         path = path or "/api/v1/replies/{}/receipt".format(reply_id)
-        activity = self.store.load("activity.json")
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         replay = self._idempotency_replay(
             activity, idempotency_key, "POST", path, request_digest
         )
@@ -3009,44 +4064,17 @@ class WorkStack:
             return replay
 
         receipt = self._validate_reply_receipt(receipt_input)
-        replies_data = self.store.load("replies.json")
+        replies_data = self.documents.load(WorkspaceDocument.REPLIES)
         reply = _find(replies_data.get("replies", []), reply_id, "reply")
-        mismatched: list[str] = []
-        if receipt["reply_id"] != reply["id"]:
-            mismatched.append("reply_id")
-        if receipt["provider"] != reply["provider"]:
-            mismatched.append("provider")
-        for field in ("body_digest", "target_digest"):
-            if not secrets.compare_digest(receipt[field], reply[field]):
-                mismatched.append(field)
+        mismatched = _reply_receipt_mismatches(receipt, reply)
         if mismatched:
             raise ReplyReceiptConflictError(
                 "reply receipt does not match the approved command",
                 {"fields": mismatched},
             )
 
-        stored_receipt = reply.get("receipt")
-        duplicate = stored_receipt is not None
-        if duplicate and stored_receipt != receipt:
-            raise ReplyReceiptConflictError(
-                "reply already has a different terminal receipt",
-                {"reply_id": reply["id"], "state": reply.get("state")},
-            )
-        if not duplicate:
-            if reply.get("state") != "approved":
-                raise ReplyReceiptConflictError(
-                    "reply is already terminal",
-                    {"reply_id": reply["id"], "state": reply.get("state")},
-                )
-            reply["state"] = receipt["outcome"]
-            reply["receipt"] = receipt
-            reply["updated_at"] = utc_now()
-            event_details: dict[str, Any] = {
-                "provider": reply["provider"],
-                "state": reply["state"],
-            }
-            if "error_code" in receipt:
-                event_details["error_code"] = receipt["error_code"]
+        duplicate, event_details = _apply_terminal_reply_state(reply, receipt)
+        if event_details is not None:
             self._event(
                 activity,
                 "reply.{}".format(reply["state"]),
@@ -3070,60 +4098,22 @@ class WorkStack:
             response_ref={"kind": "reply", "id": reply["id"]},
             response_meta={"duplicate": True} if duplicate else None,
         )
-        self.store.save_many(
-            {"replies.json": replies_data, "activity.json": activity},
+        self.documents.save_many(
+            {WorkspaceDocument.REPLIES: replies_data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="reply-receipt-{}".format(idempotency_key),
         )
         return {"status": 200, "body": response_body}
 
     @_transactional
     def weekly_report(self, end: str | None = None, days: int = 7) -> dict[str, Any]:
-        if days < 1 or days > 366:
-            raise ValueError("days must be between 1 and 366")
-        end_day = dt.date.fromisoformat(end) if end else dt.date.today()
-        start_day = end_day - dt.timedelta(days=days - 1)
+        start_day, end_day = _weekly_range(end, days)
         tasks = {task["id"]: task for task in self.list_tasks(status="all")}
         objectives = {item["id"]: item for item in self.list_objectives(status="all")}
-        worklog = self.store.load("worklog.json").get("days", {})
-        projects: dict[str, dict[str, Any]] = {}
-        for date in sorted(worklog):
-            parsed = dt.date.fromisoformat(date)
-            if not start_day <= parsed <= end_day:
-                continue
-            for entry in worklog[date].get("entries", []):
-                task_id = entry.get("task_id")
-                task = tasks.get(task_id, {})
-                slot = projects.setdefault(
-                    task_id,
-                    {
-                        "task_id": task_id,
-                        "task": entry.get("task") or task.get("title", task_id),
-                        "objective_ids": task.get("objective_ids", []),
-                        "done": [],
-                        "next": [],
-                        "blockers": [],
-                        "dates": [],
-                        "duration_seconds": 0,
-                    },
-                )
-                duration_seconds = entry.get("duration_seconds", 0)
-                if type(duration_seconds) is not int or duration_seconds < 0:
-                    raise StoreCorruptError("persisted worklog duration is invalid")
-                slot["duration_seconds"] += duration_seconds
-                for field in ("done", "next", "blockers"):
-                    for value in entry.get(field, []):
-                        if value not in slot[field]:
-                            slot[field].append(value)
-                if date not in slot["dates"]:
-                    slot["dates"].append(date)
-        used = {oid for project in projects.values() for oid in project["objective_ids"]}
+        worklog = self.documents.load(WorkspaceDocument.WORKLOG).get("days", {})
+        projects = _weekly_projects(worklog, tasks, start_day, end_day)
         return {
             "range": {"start": start_day.isoformat(), "end": end_day.isoformat(), "days": days},
-            "objectives": [
-                {"id": oid, "objective": objectives[oid].get("objective", "")}
-                for oid in sorted(used)
-                if oid in objectives
-            ],
+            "objectives": _weekly_objectives(projects, objectives),
             "projects": list(projects.values()),
         }
 
@@ -3131,87 +4121,20 @@ class WorkStack:
     def snapshot(self) -> dict[str, Any]:
         objectives = self.list_objectives(status="all")
         tasks = self.list_tasks(status="all")
-        worklog = self.store.load("worklog.json").get("days", {})
-        notes = self.store.load("notes.json").get("notes", [])
+        worklog = self.documents.load(WorkspaceDocument.WORKLOG).get("days", {})
+        notes = self.documents.load(WorkspaceDocument.NOTES).get("notes", [])
         nodes: list[dict[str, Any]] = []
         edges: list[dict[str, str]] = []
         known: set[str] = set()
 
         for objective in objectives:
-            node = {
-                "id": objective["id"],
-                "kind": "objective",
-                "title": objective["objective"],
-                "status": objective.get("status", "active"),
-                "meta": objective.get("quarter", ""),
-                "quarter": objective.get("quarter", ""),
-                "key_results": objective.get("key_results", []),
-            }
+            node = _snapshot_objective_node(objective)
             nodes.append(node)
             known.add(node["id"])
         for task in tasks:
-            node = {
-                "id": task["id"],
-                "uid": task["uid"],
-                "kind": "task",
-                "title": task["title"],
-                "status": task.get("status", "open"),
-                "revision": task["revision"],
-                "meta": "{} · {}".format(task.get("priority", "P2"), task.get("due") or "no due date"),
-                "detail": task.get("detail", ""),
-                "tags": task.get("tags", []),
-                "priority": task.get("priority", "P2"),
-                "due": task.get("due"),
-                "objective_ids": task.get("objective_ids", []),
-                "parent_id": task.get("parent_id"),
-                "dependencies": task.get("dependencies", []),
-                "subtasks": task.get("subtasks", []),
-            }
-            nodes.append(node)
-            known.add(node["id"])
-            if task.get("parent_id"):
-                edges.append({"source": task["id"], "target": task["parent_id"], "kind": "parent"})
-            for dependency in task.get("dependencies", []):
-                edges.append({"source": task["id"], "target": dependency, "kind": "dependency"})
-            for objective_id in task.get("objective_ids", []):
-                edges.append({"source": task["id"], "target": objective_id, "kind": "objective"})
-            for subtask in task.get("subtasks", []):
-                subtask_id = "{}-{}".format(task["id"], subtask["id"])
-                nodes.append({
-                    "id": subtask_id,
-                    "kind": "subtask",
-                    "title": subtask["title"],
-                    "status": subtask.get("status", "open"),
-                    "meta": subtask.get("priority", "P2"),
-                })
-                known.add(subtask_id)
-                edges.append({"source": subtask_id, "target": task["id"], "kind": "parent"})
-        for date, day in sorted(worklog.items()):
-            day_id = "D-" + date
-            nodes.append({
-                "id": day_id,
-                "kind": "day",
-                "title": date,
-                "status": "recorded",
-                "meta": "{} entries".format(len(day.get("entries", []))),
-                "entry_count": len(day.get("entries", [])),
-            })
-            known.add(day_id)
-            for entry in day.get("entries", []):
-                if entry.get("task_id"):
-                    edges.append({"source": day_id, "target": entry["task_id"], "kind": "worklog"})
-        for note in notes:
-            nodes.append({
-                "id": note["id"],
-                "kind": "note",
-                "title": note["text"],
-                "status": "recorded",
-                "meta": note.get("created", ""),
-                "links": note.get("links", []),
-            })
-            known.add(note["id"])
-            for link in note.get("links", []):
-                edges.append({"source": note["id"], "target": link, "kind": "note"})
+            _append_snapshot_task(task, nodes, edges, known)
+        _append_snapshot_worklog(worklog, nodes, edges, known)
+        _append_snapshot_notes(notes, nodes, edges, known)
         edges = [edge for edge in edges if edge["source"] in known and edge["target"] in known]
         return {
             "generated_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),

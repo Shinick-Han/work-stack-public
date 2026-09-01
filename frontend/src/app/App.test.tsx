@@ -10,6 +10,7 @@ import { capture, jsonResponse, task, workspace } from '../test/fixtures'
 beforeEach(() => {
   window.localStorage.clear()
   document.documentElement.dataset.theme = 'dark'
+  Object.defineProperty(window, 'chrome', { configurable: true, value: undefined })
   vi.spyOn(api, 'getSyncStatus').mockRejectedValue(new ApiError(404, 'not_found', 'Optional legacy endpoint'))
 })
 
@@ -51,11 +52,11 @@ function stubWorkspaceFetch() {
   }))
 }
 
-function renderApp() {
+function renderApp(props: Parameters<typeof App>[0] = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return {
     client,
-    ...render(<QueryClientProvider client={client}><App /></QueryClientProvider>),
+    ...render(<QueryClientProvider client={client}><App {...props} /></QueryClientProvider>),
   }
 }
 
@@ -63,7 +64,11 @@ test('switches between dark and light product themes and remembers the choice', 
   stubWorkspaceFetch()
   renderApp()
 
-  await screen.findByRole('heading', { name: /keep execution connected/i })
+  await screen.findByRole(
+    'heading',
+    { name: /keep execution connected/i },
+    { timeout: 5_000 },
+  )
   expect(document.documentElement.dataset.theme).toBe('dark')
 
   await userEvent.click(screen.getByRole('button', { name: 'Use light theme' }))
@@ -129,6 +134,7 @@ test('moves between the Workspace and Context Inbox product surfaces', async () 
   )).toBeInTheDocument()
   expect(screen.getByText('Local workspace')).toBeInTheDocument()
   expect(screen.getByText('On this device · no background sync')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Configure SSOT connection' })).not.toBeInTheDocument()
   expect(screen.queryByText('Healthy')).not.toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: /context inbox/i }))
   expect(await screen.findByRole('heading', { name: /turn signal into useful work/i })).toBeInTheDocument()
@@ -137,6 +143,50 @@ test('moves between the Workspace and Context Inbox product surfaces', async () 
   expect(screen.getByRole('button', { name: 'Import packet' })).toBeEnabled()
   expect(screen.queryByText(/Microsoft 365 guided handoff unavailable/i)).not.toBeInTheDocument()
   expect(window.location.search).toContain('surface=inbox')
+})
+
+test('replaces the passive sidebar status with one SSOT configuration entry in the desktop host', async () => {
+  stubWorkspaceFetch()
+  Object.defineProperty(window, 'chrome', {
+    configurable: true,
+    value: {
+      webview: {
+        addEventListener: vi.fn(),
+        postMessage: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+    },
+  })
+  renderApp()
+
+  await screen.findByRole('heading', { name: /keep execution connected/i })
+  expect(screen.getAllByRole('button', { name: 'Configure SSOT connection' })).toHaveLength(1)
+  expect(screen.queryByText('On this device · no background sync')).not.toBeInTheDocument()
+})
+
+test('routes both SSOT entry points to one multi-profile center only when its gate is enabled', async () => {
+  stubWorkspaceFetch()
+  const postMessage = vi.fn()
+  Object.defineProperty(window, 'chrome', {
+    configurable: true,
+    value: { webview: { addEventListener: vi.fn(), postMessage, removeEventListener: vi.fn() } },
+  })
+  renderApp({ connectionCenterGates: { registry: true, activation: false } })
+
+  await screen.findByRole('heading', { name: /keep execution connected/i })
+  const entryPoints = screen.getAllByRole('button', { name: /Configure SSOT connections/ })
+  expect(entryPoints).toHaveLength(2)
+  expect(screen.queryByRole('button', { name: 'Configure SSOT connection' })).not.toBeInTheDocument()
+
+  await userEvent.click(entryPoints[0])
+  expect(screen.getAllByRole('dialog', { name: 'SSOT connections' })).toHaveLength(1)
+  expect(screen.getByRole('button', { name: 'Save and activate after restart' })).toBeDisabled()
+  await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+  expect(screen.queryByRole('dialog', { name: 'SSOT connections' })).not.toBeInTheDocument()
+
+  await userEvent.click(entryPoints[1])
+  expect(screen.getAllByRole('dialog', { name: 'SSOT connections' })).toHaveLength(1)
+  expect(postMessage).toHaveBeenCalled()
 })
 
 test('keeps a searchable Task navigator collapsed until requested and opens its Task in Workspace', async () => {
@@ -170,6 +220,7 @@ test('opens workspace actions and creates a Context card through the versioned A
       workspace_id: workspace.workspace.id,
       store_schema_version: 3,
       product_version: '1.0.0',
+      remote_protocol_version: 1,
       file_count: 9,
       total_bytes: 4096,
       backup_format: 'workstack-backup-v1',

@@ -120,68 +120,101 @@ def append_transition(
     return fact
 
 
-def validate_and_project(
-    backlog: dict[str, Any], activity: dict[str, Any]
-) -> dict[str, str]:
+def _task_index(backlog: dict[str, Any]) -> dict[str, dict[str, Any]]:
     tasks = backlog.get("tasks")
-    facts = activity.get("planning_status")
-    if not isinstance(tasks, list) or not isinstance(facts, list):
+    if not isinstance(tasks, list):
         raise PlanningStatusValidationError("planning status store shape is invalid")
-    task_by_id: dict[str, dict[str, Any]] = {}
+    indexed: dict[str, dict[str, Any]] = {}
     for task in tasks:
         if not isinstance(task, dict) or not isinstance(task.get("id"), str):
             raise PlanningStatusValidationError("planning status task reference is invalid")
-        task_by_id[task["id"]] = task
+        indexed[task["id"]] = task
+    return indexed
 
-    heads: dict[str, dict[str, Any]] = {}
-    for index, fact in enumerate(facts, start=1):
-        if not isinstance(fact, dict) or set(fact) != FACT_FIELDS:
-            raise PlanningStatusValidationError("planning status fact schema is invalid")
-        match = FACT_ID_RE.fullmatch(str(fact.get("id", "")))
-        if match is None or int(match.group(1)) != index:
-            raise PlanningStatusValidationError("planning status fact order is invalid")
-        if fact.get("type") != FACT_TYPE:
-            raise PlanningStatusValidationError("planning status fact type is invalid")
-        task_id = fact.get("task_id")
-        task = task_by_id.get(task_id) if isinstance(task_id, str) else None
-        if task is None or fact.get("task_uid") != task.get("uid"):
-            raise PlanningStatusValidationError("planning status task identity is invalid")
-        status = fact.get("status")
-        if status not in TASK_STATUSES:
-            raise PlanningStatusValidationError("planning status value is invalid")
-        _timestamp(fact.get("created_at"))
-        actor = fact.get("actor")
-        provenance = fact.get("provenance")
-        if not isinstance(actor, str) or provenance not in ALLOWED_PROVENANCE.get(actor, set()):
-            raise PlanningStatusValidationError("planning status provenance is invalid")
 
-        previous = heads.get(task_id)
-        if previous is None:
-            if (
-                fact.get("previous_fact_id") is not None
-                or fact.get("prior_revision") is not None
-                or fact.get("prior_status") is not None
-            ):
-                raise PlanningStatusValidationError("planning status bootstrap is invalid")
-            new_revision = _revision(fact.get("new_revision"), "bootstrap new_revision")
-            if status != task.get("status"):
-                raise PlanningStatusValidationError("planning status baseline does not match source")
-        else:
-            if fact.get("previous_fact_id") != previous["id"]:
-                raise PlanningStatusValidationError("planning status predecessor is invalid")
-            prior_revision = _revision(fact.get("prior_revision"), "prior_revision")
-            new_revision = _revision(fact.get("new_revision"), "new_revision")
-            if (
-                new_revision != prior_revision + 1
-                or prior_revision < previous["new_revision"]
-                or fact.get("prior_status") != previous["status"]
-                or status == previous["status"]
-            ):
-                raise PlanningStatusValidationError("planning status transition is invalid")
-        if new_revision > task.get("revision", -1):
-            raise PlanningStatusValidationError("planning status fact exceeds task revision")
-        heads[task_id] = fact
+def _validate_fact_envelope(fact: Any, index: int) -> dict[str, Any]:
+    if not isinstance(fact, dict) or set(fact) != FACT_FIELDS:
+        raise PlanningStatusValidationError("planning status fact schema is invalid")
+    match = FACT_ID_RE.fullmatch(str(fact.get("id", "")))
+    if match is None or int(match.group(1)) != index:
+        raise PlanningStatusValidationError("planning status fact order is invalid")
+    if fact.get("type") != FACT_TYPE:
+        raise PlanningStatusValidationError("planning status fact type is invalid")
+    return fact
 
+
+def _fact_task_and_status(
+    fact: dict[str, Any], task_by_id: dict[str, dict[str, Any]]
+) -> tuple[str, dict[str, Any], str]:
+    task_id = fact.get("task_id")
+    task = task_by_id.get(task_id) if isinstance(task_id, str) else None
+    if task is None or fact.get("task_uid") != task.get("uid"):
+        raise PlanningStatusValidationError("planning status task identity is invalid")
+    status = fact.get("status")
+    if status not in TASK_STATUSES:
+        raise PlanningStatusValidationError("planning status value is invalid")
+    return task_id, task, status
+
+
+def _validate_fact_provenance(fact: dict[str, Any]) -> None:
+    _timestamp(fact.get("created_at"))
+    actor = fact.get("actor")
+    provenance = fact.get("provenance")
+    if not isinstance(actor, str) or provenance not in ALLOWED_PROVENANCE.get(actor, set()):
+        raise PlanningStatusValidationError("planning status provenance is invalid")
+
+
+def _validate_bootstrap(
+    fact: dict[str, Any], task: dict[str, Any], status: str
+) -> int:
+    if (
+        fact.get("previous_fact_id") is not None
+        or fact.get("prior_revision") is not None
+        or fact.get("prior_status") is not None
+    ):
+        raise PlanningStatusValidationError("planning status bootstrap is invalid")
+    new_revision = _revision(fact.get("new_revision"), "bootstrap new_revision")
+    if status != task.get("status"):
+        raise PlanningStatusValidationError("planning status baseline does not match source")
+    return new_revision
+
+
+def _validate_transition(
+    fact: dict[str, Any], previous: dict[str, Any], status: str
+) -> int:
+    if fact.get("previous_fact_id") != previous["id"]:
+        raise PlanningStatusValidationError("planning status predecessor is invalid")
+    prior_revision = _revision(fact.get("prior_revision"), "prior_revision")
+    new_revision = _revision(fact.get("new_revision"), "new_revision")
+    if (
+        new_revision != prior_revision + 1
+        or prior_revision < previous["new_revision"]
+        or fact.get("prior_status") != previous["status"]
+        or status == previous["status"]
+    ):
+        raise PlanningStatusValidationError("planning status transition is invalid")
+    return new_revision
+
+
+def _validate_fact_chain(
+    fact: dict[str, Any],
+    previous: dict[str, Any] | None,
+    task: dict[str, Any],
+    status: str,
+) -> int:
+    new_revision = (
+        _validate_bootstrap(fact, task, status)
+        if previous is None
+        else _validate_transition(fact, previous, status)
+    )
+    if new_revision > task.get("revision", -1):
+        raise PlanningStatusValidationError("planning status fact exceeds task revision")
+    return new_revision
+
+
+def _project_heads(
+    task_by_id: dict[str, dict[str, Any]], heads: dict[str, dict[str, Any]]
+) -> dict[str, str]:
     projection: dict[str, str] = {}
     for task_id, task in task_by_id.items():
         head = heads.get(task_id)
@@ -189,6 +222,24 @@ def validate_and_project(
             raise PlanningStatusValidationError("planning status head is missing or stale")
         projection[task_id] = head["status"]
     return projection
+
+
+def validate_and_project(
+    backlog: dict[str, Any], activity: dict[str, Any]
+) -> dict[str, str]:
+    facts = activity.get("planning_status")
+    if not isinstance(facts, list):
+        raise PlanningStatusValidationError("planning status store shape is invalid")
+    task_by_id = _task_index(backlog)
+    heads: dict[str, dict[str, Any]] = {}
+    for index, candidate in enumerate(facts, start=1):
+        fact = _validate_fact_envelope(candidate, index)
+        task_id, task, status = _fact_task_and_status(fact, task_by_id)
+        _validate_fact_provenance(fact)
+        previous = heads.get(task_id)
+        _validate_fact_chain(fact, previous, task, status)
+        heads[task_id] = fact
+    return _project_heads(task_by_id, heads)
 
 
 def task_facts(activity: dict[str, Any], task_id: str) -> list[dict[str, Any]]:

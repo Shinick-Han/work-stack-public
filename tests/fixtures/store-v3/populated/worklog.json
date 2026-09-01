@@ -1,0 +1,47 @@
+{
+  "days": {
+    "2026-09-01": {
+      "entries": [
+        {
+          "blockers": [
+            "None"
+          ],
+          "done": [
+            "Captured the field inventory"
+          ],
+          "duration_seconds": 1800,
+          "next": [
+            "Compare the v4 projection"
+          ],
+          "session_id": "WS-000001",
+          "task": "Normalize the SSOT",
+          "task_id": "T-0001"
+        }
+      ],
+      "sessions": [
+        {
+          "date": "2026-09-01",
+          "id": "WS-000001",
+          "segments": [
+            {
+              "ended_at": "2026-09-01T01:15:00Z",
+              "started_at": "2026-09-01T01:00:00Z"
+            },
+            {
+              "ended_at": "2026-09-01T01:30:00Z",
+              "started_at": "2026-09-01T01:15:00Z"
+            }
+          ],
+          "started_at": "2026-09-01T01:00:00Z",
+          "state": "stopped",
+          "task": "Normalize the SSOT",
+          "task_id": "T-0001",
+          "updated_at": "2026-09-01T01:31:00Z",
+          "worklog_state": "recorded"
+        }
+      ],
+      "start_time": "09:00"
+    }
+  },
+  "version": 1
+}

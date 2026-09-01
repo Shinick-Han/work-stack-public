@@ -7,6 +7,7 @@ export const EXTERNAL_CAPTURE_ACK = 'workstack.source-capture.ack.v1'
 export const MAX_EXTERNAL_CAPTURE_TEXT = 4000
 
 export interface SourceCaptureDraft {
+  intentId: string
   provider: SourceProviderKey
   captureTitle: string
   text: string
@@ -43,11 +44,61 @@ const allowedExactMicrosoftHosts = new Set([
   'onedrive.live.com',
   'outlook.live.com',
   'teams.live.com',
+  'www.onenote.com',
+])
+
+const sensitiveUrlParameters = new Set([
+  'accesstoken', 'refreshtoken', 'idtoken', 'oauthtoken', 'oauthcode',
+  'authorization', 'authorizationcode', 'bearer', 'token', 'clientsecret',
+  'password', 'passwd', 'apikey', 'secret', 'code', 'to', 'cc', 'bcc',
+  'recipient', 'recipients',
 ])
 
 function hasAllowedMicrosoftHost(hostname: string) {
   const normalized = hostname.toLowerCase()
   return allowedExactMicrosoftHosts.has(normalized) || allowedMicrosoftHosts.some((suffix) => normalized.endsWith(suffix))
+}
+
+function isSensitiveUrlParameter(value: string) {
+  return sensitiveUrlParameters.has(value.toLowerCase().replace(/[^a-z0-9]/g, ''))
+}
+
+function fragmentContainsSensitiveParameter(fragment: string) {
+  try {
+    return decodeURIComponent(fragment).split(/[?&#]/).some((part) => {
+      const separator = part.indexOf('=')
+      return separator >= 0 && isSensitiveUrlParameter(part.slice(0, separator))
+    })
+  } catch {
+    return true
+  }
+}
+
+function providerForMicrosoftHost(hostname: string): SourceProviderKey | null {
+  const normalized = hostname.toLowerCase()
+  if (normalized === 'outlook.live.com' || normalized.startsWith('outlook.')) return 'outlook'
+  if (normalized === 'teams.live.com' || normalized.startsWith('teams.')) return 'teams'
+  if (normalized === 'www.onenote.com') return 'onenote'
+  return null
+}
+
+export function createSourceCaptureIntentId() {
+  const webCrypto = globalThis.crypto as Crypto | undefined
+  if (webCrypto?.randomUUID) return webCrypto.randomUUID()
+  const bytes = new Uint8Array(16)
+  if (webCrypto) webCrypto.getRandomValues(bytes)
+  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+export function sanitizeMicrosoftSourceUrlForProvider(provider: SourceProviderKey, value: string) {
+  const safeUrl = sanitizeMicrosoftSourceUrl(value)
+  if (!safeUrl) return null
+  const detectedProvider = providerForMicrosoftHost(new URL(safeUrl).hostname)
+  return detectedProvider && detectedProvider !== provider ? null : safeUrl
 }
 
 export function sanitizeMicrosoftSourceUrl(value: string): string | null {
@@ -56,10 +107,8 @@ export function sanitizeMicrosoftSourceUrl(value: string): string | null {
     if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null
     if (parsed.port && parsed.port !== '443') return null
     if (!hasAllowedMicrosoftHost(parsed.hostname)) return null
-    for (const key of [...parsed.searchParams.keys()]) {
-      const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '')
-      if (['accesstoken', 'refreshtoken', 'idtoken', 'oauthtoken', 'oauthcode', 'authorization', 'authorizationcode', 'bearer', 'token', 'clientsecret', 'password', 'passwd', 'apikey', 'secret', 'code', 'to', 'cc', 'bcc', 'recipient', 'recipients'].includes(normalized)) return null
-    }
+    if ([...parsed.searchParams.keys()].some(isSensitiveUrlParameter)) return null
+    if (fragmentContainsSensitiveParameter(parsed.hash.slice(1))) return null
     return parsed.href
   } catch {
     return null
@@ -67,7 +116,7 @@ export function sanitizeMicrosoftSourceUrl(value: string): string | null {
 }
 
 export function classifyMicrosoftSourceUrl(provider: SourceProviderKey, value: string): MicrosoftSourceLinkKind {
-  const safeUrl = sanitizeMicrosoftSourceUrl(value)
+  const safeUrl = sanitizeMicrosoftSourceUrlForProvider(provider, value)
   if (!safeUrl) return 'missing'
   const parsed = new URL(safeUrl)
   const host = parsed.hostname.toLowerCase()
@@ -104,7 +153,7 @@ async function sha256Text(value: string) {
 
 export async function buildManualWebCapturePacket(draft: SourceCaptureDraft): Promise<CapturePacket> {
   const capturedAt = new Date(draft.capturedAt).toISOString()
-  const safeUrl = sanitizeMicrosoftSourceUrl(draft.sourceUrl)
+  const safeUrl = sanitizeMicrosoftSourceUrlForProvider(draft.provider, draft.sourceUrl)
   const locatorSeed = `${draft.provider}\n${safeUrl ?? ''}\n${capturedAt}\n${draft.captureTitle}`
   const locatorDigest = (await sha256Text(locatorSeed)).slice('sha256:'.length)
   const source = {

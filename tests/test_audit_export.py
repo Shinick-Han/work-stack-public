@@ -83,6 +83,25 @@ class ExportAuditTest(unittest.TestCase):
             )
             self.assertEqual(AUDIT_EXPORT.audit(root, []), [])
 
+    def test_package_lock_allows_public_dependency_contact_metadata_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "workstack").mkdir()
+            (root / "frontend" / "src").mkdir(parents=True)
+            (root / "frontend" / "package-lock.json").write_text(
+                json.dumps({"packages": {"node_modules/example": {"deprecated": "contact maintainer@example.invalid"}}}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(AUDIT_EXPORT.audit(root, []), [])
+
+            (root / "frontend" / "package-lock.json").write_text(
+                json.dumps({"packages": {"node_modules/example": {"token": "access_token=abcdefghijklmnop"}}}),
+                encoding="utf-8",
+            )
+            findings = AUDIT_EXPORT.audit(root, [])
+            self.assertTrue(any("credential" in finding for finding in findings))
+
     def test_tree_mode_catches_runtime_json_leakage(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

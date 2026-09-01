@@ -1,0 +1,17 @@
+{
+  "config_digest": "684fc73ed8e104d0eb9b4e33ac5d4c68602b45982ac9342a039a34b8348aaea4",
+  "coverage_floors": {},
+  "critical_complexity_debt": {},
+  "critical_typescript_complexity_debt": {},
+  "measurement_commit": "3d94b82e32b82e469a76d45055c7b957c137beb4",
+  "measurement_source_digest": "25928b44fe9b9000f00fff49172544ec709d0ab96035941b52c33f2c9e604b4f",
+  "schema_version": 1,
+  "source_populations": {
+    "frontend_production": 84,
+    "python_core": 55,
+    "python_desktop": 19,
+    "python_entrypoint": 1,
+    "quality_tooling": 5
+  },
+  "temporary_exceptions": []
+}

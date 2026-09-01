@@ -33,4 +33,23 @@ describe('explicit Quick Add shorthand', () => {
   ])('%s refuses without returning a partial parse', (_label, value) => {
     expect(() => parseQuickTaskSyntax(value, ['O-4'])).toThrow(QuickTaskSyntaxError)
   })
+
+  test.each([
+    ['Do it !P1 !P2', 'Priority may appear only once.'],
+    ['Do it @O-4 @O-4', 'Objective may appear only once.'],
+    ['Do it /plan 2026-09-02 /plan invalid', '/plan may appear only once.'],
+    ['Do it /due 2026-09-04 /due invalid', '/due may appear only once.'],
+    ['Do it /estimate 90m /estimate invalid', '/estimate may appear only once.'],
+    ['Do it /later', '/later requires a value.'],
+    ['Do it !urgent', 'Malformed shorthand token: !urgent.'],
+  ])('preserves validation precedence for %s', (value, message) => {
+    expect(() => parseQuickTaskSyntax(value, ['O-4'])).toThrow(message)
+  })
+
+  test('deduplicates tags in first-seen order', () => {
+    expect(parseQuickTaskSyntax('Review #alpha #beta #alpha', [])).toMatchObject({
+      title: 'Review',
+      tags: ['alpha', 'beta'],
+    })
+  })
 })

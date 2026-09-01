@@ -90,6 +90,8 @@ class ApiTest(unittest.TestCase):
         )
         self.assertEqual(storage["data"]["backup_format"], "workstack-backup-v1")
         self.assertTrue(storage["data"]["restore_requires_shutdown"])
+        self.assertEqual(storage["data"]["remote_protocol_version"], 1)
+        self.assertRegex(storage["data"]["product_version"], r"^\d+\.\d+\.\d+")
 
         before = {
             path.name: path.read_bytes()
@@ -876,6 +878,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(status, 201)
         path = "/api/v1/captures/{}/task".format(created["data"]["id"])
         task_input = {
+            "intent_id": "11111111-1111-4111-8111-111111111111",
             "title": "Task directly from the source",
             "detail": "The capture is the task basis.",
             "priority": "P1",
@@ -897,11 +900,28 @@ class ApiTest(unittest.TestCase):
         status, replay, _ = self.request("POST", path, task_input, headers)
         self.assertEqual(status, 200)
         self.assertTrue(replay["meta"]["replayed"])
+
+        fresh_headers = self.browser_headers()
+        fresh_headers["Idempotency-Key"] = "api.capture.task.fresh-retry"
+        status, recovered, _ = self.request("POST", path, task_input, fresh_headers)
+        self.assertEqual(status, 200)
+        self.assertTrue(recovered["meta"]["intent_replayed"])
+        self.assertEqual(recovered["data"]["uid"], task["data"]["uid"])
+        self.assertEqual(len(self.stack.list_tasks(status="all")), 2)
+
         status, conflict, _ = self.request(
             "POST", path, {**task_input, "title": "Different task"}, headers
         )
         self.assertEqual(status, 409)
         self.assertEqual(conflict["error"]["code"], "idempotency_conflict")
+
+        intent_conflict_headers = self.browser_headers()
+        intent_conflict_headers["Idempotency-Key"] = "api.capture.task.intent-conflict"
+        status, intent_conflict, _ = self.request(
+            "POST", path, {**task_input, "title": "Different task"}, intent_conflict_headers
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(intent_conflict["error"]["code"], "idempotency_conflict")
 
         invalid_headers = self.browser_headers()
         invalid_headers["Idempotency-Key"] = "api.capture.task.invalid"
@@ -1155,6 +1175,51 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(error["error"]["code"], "invalid_host")
         with self.assertRaises(StoreLockedError):
             WorkStack(Store(self.store.root))
+
+    def test_explicit_ssh_forward_port_preserves_loopback_host_and_origin_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            forwarded_stack = WorkStack(Store(Path(directory)))
+            forwarded = create_server(
+                forwarded_stack, "127.0.0.1", 0, public_port=18765
+            )
+            thread = threading.Thread(target=forwarded.serve_forever, daemon=True)
+            thread.start()
+            try:
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", forwarded.actual_port, timeout=5
+                )
+                connection.request(
+                    "GET", "/api/v1/session", headers={"Host": "127.0.0.1:18765"}
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+                connection.close()
+                self.assertEqual(response.status, 200)
+
+                body = json.dumps({"title": "Forwarded intent"}).encode("utf-8")
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", forwarded.actual_port, timeout=5
+                )
+                connection.request(
+                    "POST",
+                    "/api/v1/tasks",
+                    body=body,
+                    headers={
+                        "Host": "127.0.0.1:18765",
+                        "Origin": "http://127.0.0.1:18765",
+                        "X-WorkStack-CSRF": payload["data"]["csrf_token"],
+                        "Idempotency-Key": "api.ssh-forward.0001",
+                        "Content-Type": "application/json",
+                    },
+                )
+                response = connection.getresponse()
+                response.read()
+                connection.close()
+                self.assertEqual(response.status, 201)
+            finally:
+                forwarded.shutdown()
+                forwarded.server_close()
+                thread.join(timeout=5)
 
     def test_cli_capture_forwards_and_direct_writer_fails_while_server_runs(self):
         packet_path = CONTRACTS / "capture-packet-v1.manual.fixture.json"

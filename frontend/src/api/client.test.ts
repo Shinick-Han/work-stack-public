@@ -2,7 +2,7 @@ import { expect, test, vi } from 'vitest'
 import { ApiError, CommitUnknownError, api } from './client'
 import type { CapturePacket, ReplyCommand, ReplyReceipt } from '../domain/types'
 import { capture, jsonResponse, task, workspace } from '../test/fixtures'
-import { CROSS_TAB_STORAGE_KEY } from '../app/crossTabSync'
+import { CROSS_TAB_STORAGE_KEY } from '../integration/planningChangeBus'
 
 test('publishes cross-tab refresh only after a confirmed mutation, never after a read', async () => {
   window.localStorage.removeItem(CROSS_TAB_STORAGE_KEY)
@@ -101,7 +101,13 @@ test('uses protected idempotent browser routes for source tasks, approved replie
   })
   vi.stubGlobal('fetch', fetchMock)
 
-  await expect(api.createTaskFromCapture(capture.id, { title: 'Task from source' })).resolves.toMatchObject({ id: task.id })
+  const sourceTaskIntentId = '11111111-1111-4111-8111-111111111111'
+  const sourceTaskOperationId = `workstack:${sourceTaskIntentId}`
+  await expect(api.createTaskFromCapture(
+    capture.id,
+    { title: 'Task from source', intent_id: sourceTaskIntentId },
+    sourceTaskOperationId,
+  )).resolves.toMatchObject({ id: task.id })
   await expect(api.createReply({ task_id: task.id, capture_id: capture.id, body: command.body, approved: true })).resolves.toMatchObject({ id: command.id, state: 'approved' })
   await expect(api.importReplyReceipt(command.id, receipt)).resolves.toMatchObject({ id: command.id, state: 'sent' })
 
@@ -111,6 +117,11 @@ test('uses protected idempotent browser routes for source tasks, approved replie
     expect((init?.headers as Record<string, string>)['Idempotency-Key']).toMatch(/^workstack:/)
     expect((init?.headers as Record<string, string>)['X-WorkStack-CSRF']).toBe('csrf-token-for-test')
   }
+  expect((mutationCalls[0][1]?.headers as Record<string, string>)['Idempotency-Key']).toBe(sourceTaskOperationId)
+  expect(JSON.parse(String(mutationCalls[0][1]?.body))).toEqual({
+    title: 'Task from source',
+    intent_id: sourceTaskIntentId,
+  })
   expect(JSON.parse(String(mutationCalls[1][1]?.body))).toEqual({
     task_id: task.id,
     capture_id: capture.id,
@@ -199,15 +210,17 @@ test('preserves an HTTP API failure from v1 task creation', async () => {
   }
 })
 
-test('adopts validated external SSOT changes only against the reviewed generation and manifest', async () => {
+test('adopts validated external SSOT changes only against the reviewed coordinate and stable operation key', async () => {
   const digest = `sha256:${'e'.repeat(64)}`
   const status = {
     state: 'in-sync',
     workspace_id: 'workspace-test',
+    candidate_workspace_id: 'workspace-test',
     generation: 8,
     manifest_digest: digest,
     changed_files: [],
     reason: null,
+    rebind_available: false,
   }
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -217,10 +230,12 @@ test('adopts validated external SSOT changes only against the reviewed generatio
   })
   vi.stubGlobal('fetch', fetchMock)
 
-  await expect(api.adoptSyncChanges(7, digest)).resolves.toEqual(status)
+  const operationKey = 'workstack:sync-review-operation'
+  await expect(api.adoptSyncChanges(7, digest, operationKey)).resolves.toEqual(status)
   const [, init] = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/api/v1/sync/adopt'))!
   expect(init?.method).toBe('POST')
   expect((init?.headers as Record<string, string>)['X-WorkStack-CSRF']).toBe('csrf-token-for-test')
+  expect((init?.headers as Record<string, string>)['Idempotency-Key']).toBe(operationKey)
   expect(JSON.parse(String(init?.body))).toEqual({
     expected_generation: 7,
     expected_manifest_digest: digest,

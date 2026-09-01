@@ -3,7 +3,7 @@ import {
   blockingDependenciesFromIndex,
   indexDependencyTasks,
   type TaskBlocker,
-} from '../tasks/taskRelationships'
+} from '../../domain/taskRelationships'
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000
 const CANONICAL_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/

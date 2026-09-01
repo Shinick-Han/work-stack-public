@@ -25,6 +25,19 @@ export default defineConfig({
     },
   },
   test: {
+    coverage: {
+      all: true,
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/*.test.tsx',
+        'src/**/*.d.ts',
+        'src/test/**',
+      ],
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      provider: 'v8',
+      reporter: ['text', 'json-summary', 'json'],
+      reportsDirectory: '../.artifacts/quality/frontend-coverage',
+    },
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test/setup.ts',

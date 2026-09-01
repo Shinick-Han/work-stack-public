@@ -23,10 +23,27 @@ MAX_MANIFEST_BYTES = 64 * 1024
 MAX_INSTALLER_BYTES = 100 * 1024 * 1024
 SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+MANIFEST_FIELDS = {
+    "schema_version",
+    "channel",
+    "version",
+    "published_at",
+    "release_url",
+    "minimum_remote_protocol",
+    "installer",
+    "checksum",
+}
 
 
 class UpdateValidationError(RuntimeError):
     pass
+
+
+class OlderUpdateManifest(UpdateValidationError):
+    def __init__(self, version: str, installed_version: str) -> None:
+        self.version = version
+        self.installed_version = installed_version
+        super().__init__("update version must not be older than the installed version")
 
 
 @dataclass(frozen=True)
@@ -101,41 +118,47 @@ def _asset(value: object, *, kind: str, version: str) -> UpdateAsset:
     return UpdateAsset(expected_name, expected_url, digest, size)
 
 
-def parse_update_manifest(body: bytes, *, current_version: str) -> UpdateManifest:
+def _decode_manifest(body: bytes) -> dict[str, object]:
     if not isinstance(body, bytes) or not body or len(body) > MAX_MANIFEST_BYTES:
         raise UpdateValidationError("update manifest size is invalid")
     try:
         raw = json.loads(body.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as error:
         raise UpdateValidationError("update manifest is not valid UTF-8 JSON") from error
-    raw = _exact_object(
-        raw,
-        {
-            "schema_version",
-            "channel",
-            "version",
-            "published_at",
-            "release_url",
-            "minimum_remote_protocol",
-            "installer",
-            "checksum",
-        },
-        "manifest",
-    )
-    if raw["schema_version"] != 1 or raw["channel"] != "stable":
-        raise UpdateValidationError("only stable update manifest schema 1 is supported")
-    version = raw["version"]
+    return _exact_object(raw, MANIFEST_FIELDS, "manifest")
+
+
+def _manifest_remote_protocol(raw: dict[str, object]) -> int:
     remote = raw["minimum_remote_protocol"]
     if isinstance(remote, bool) or not isinstance(remote, int) or not 1 <= remote <= 65535:
         raise UpdateValidationError("minimum_remote_protocol is invalid")
+    return remote
+
+
+def _manifest_version(
+    raw: dict[str, object], current_version: str
+) -> tuple[str, tuple[int, int, int], tuple[int, int, int]]:
+    version = raw["version"]
     comparison = _version_tuple(version)
     installed = _version_tuple(current_version, "current_version")
-    if comparison < installed:
-        raise UpdateValidationError("update version must not be older than the installed version")
     assert isinstance(version, str)
-    release_url = f"https://github.com/Shinick-Han/work-stack-public/releases/tag/v{version}"
+    if comparison < installed:
+        raise OlderUpdateManifest(version, current_version)
+    return version, comparison, installed
+
+
+def _manifest_release_url(raw: dict[str, object], version: str) -> str:
+    release_url = (
+        f"https://github.com/Shinick-Han/work-stack-public/releases/tag/v{version}"
+    )
     if raw["release_url"] != release_url:
-        raise UpdateValidationError("release_url must identify the exact Work Stack GitHub release")
+        raise UpdateValidationError(
+            "release_url must identify the exact Work Stack GitHub release"
+        )
+    return release_url
+
+
+def _manifest_published_at(raw: dict[str, object]) -> str:
     published_at = raw["published_at"]
     if not isinstance(published_at, str) or len(published_at) > 40:
         raise UpdateValidationError("published_at is invalid")
@@ -144,6 +167,17 @@ def parse_update_manifest(body: bytes, *, current_version: str) -> UpdateManifes
             raise ValueError
     except ValueError as error:
         raise UpdateValidationError("published_at must be an offset timestamp") from error
+    return published_at
+
+
+def parse_update_manifest(body: bytes, *, current_version: str) -> UpdateManifest:
+    raw = _decode_manifest(body)
+    if raw["schema_version"] != 1 or raw["channel"] != "stable":
+        raise UpdateValidationError("only stable update manifest schema 1 is supported")
+    remote = _manifest_remote_protocol(raw)
+    version, comparison, installed = _manifest_version(raw, current_version)
+    release_url = _manifest_release_url(raw, version)
+    published_at = _manifest_published_at(raw)
     return UpdateManifest(
         version=version,
         published_at=published_at,

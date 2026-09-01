@@ -114,3 +114,43 @@ test('verifies a committed subtask status after its response is lost', async () 
   expect(onClose).toHaveBeenCalledTimes(1)
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 })
+
+test('requires the exact Task ID before deleting active work while preserving a dropped projection', async () => {
+  const deleted = { ...task, revision: task.revision + 1, status: 'dropped' as const }
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url === '/api/v1/session') return Promise.resolve(jsonResponse({ data: { csrf_token: 'csrf-token-1234' } }))
+    if (url.endsWith(`/api/v1/tasks/${task.id}`) && init?.method === 'PATCH') {
+      return Promise.resolve(jsonResponse({ data: deleted }))
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const onClose = vi.fn()
+  const onDeleted = vi.fn()
+  const onNotice = vi.fn()
+  const onSaved = vi.fn()
+
+  render(<TaskActionsDialog onClose={onClose} onDeleted={onDeleted} onNotice={onNotice} onSaved={onSaved} open task={task} />)
+  const dangerZone = screen.getByRole('region', { name: 'Delete Task' })
+  await userEvent.click(within(dangerZone).getByRole('button', { name: 'Delete Task…' }))
+
+  const confirmation = within(dangerZone).getByLabelText(`Type ${task.id} to confirm`)
+  const submit = within(dangerZone).getByRole('button', { name: 'Delete Task' })
+  expect(submit).toBeDisabled()
+  await userEvent.type(confirmation, 'wrong-task')
+  expect(submit).toBeDisabled()
+  expect(fetchMock).not.toHaveBeenCalled()
+
+  await userEvent.clear(confirmation)
+  await userEvent.type(confirmation, task.id)
+  expect(submit).toBeEnabled()
+  await userEvent.click(submit)
+
+  await waitFor(() => expect(onSaved).toHaveBeenCalledWith(deleted))
+  const mutation = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')
+  expect(JSON.parse(String(mutation?.[1]?.body))).toEqual({ status: 'dropped', revision: task.revision })
+  expect(onNotice).toHaveBeenCalledWith(`${task.id} deleted from active work; immutable history preserved`)
+  expect(onClose).toHaveBeenCalledTimes(1)
+  expect(onDeleted).toHaveBeenCalledTimes(1)
+})

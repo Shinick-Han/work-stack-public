@@ -1,0 +1,16 @@
+{
+  "migrations": {
+    "identity": {
+      "id": "workstack.store.v2",
+      "origin": "fresh",
+      "source_sha256": null
+    },
+    "planning_status": {
+      "id": "workstack.planning-status.v1",
+      "origin": "fresh",
+      "source_sha256": null
+    }
+  },
+  "store_schema_version": 3,
+  "version": 2
+}

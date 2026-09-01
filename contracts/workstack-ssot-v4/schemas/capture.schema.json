@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/capture.schema.json",
+  "title": "Work Stack SSOT v4 capture record",
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "resource_type", "connection_ref", "container_ref", "object_ref", "version_ref", "display_title", "web_url", "retrieved_at", "fingerprint"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "resource_type": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "connection_ref": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "container_ref": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "object_ref": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "version_ref": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "display_title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "web_url": {
+          "oneOf": [
+            { "type": "string", "format": "uri", "maxLength": 4096 },
+            { "type": "null" }
+          ]
+        },
+        "retrieved_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "fingerprint": { "$ref": "common.schema.json#/$defs/sha256" }
+      }
+    },
+    "normalized": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "context", "action_items", "tags"],
+      "properties": {
+        "summary": { "type": "string", "maxLength": 2000 },
+        "context": { "$ref": "common.schema.json#/$defs/boundedString" },
+        "action_items": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/actionItem" }
+        },
+        "tags": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+        }
+      }
+    },
+    "actionItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "detail", "priority", "due", "task_display_id", "task_uid"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "detail": { "$ref": "common.schema.json#/$defs/boundedString" },
+        "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+        "due": { "$ref": "common.schema.json#/$defs/dateOrNull" },
+        "task_display_id": {
+          "oneOf": [
+            { "type": "string", "pattern": "^T-[0-9]{4,}$" },
+            { "type": "null" }
+          ]
+        },
+        "task_uid": { "$ref": "common.schema.json#/$defs/uuidOrNull" }
+      }
+    },
+    "recentRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "version_ref", "retrieved_at", "provenance_digest", "redaction_policy_version"],
+      "properties": {
+        "fingerprint": { "$ref": "common.schema.json#/$defs/sha256" },
+        "version_ref": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "retrieved_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "provenance_digest": { "$ref": "common.schema.json#/$defs/sha256" },
+        "redaction_policy_version": { "type": "string", "minLength": 1, "maxLength": 160 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capture_mode", "adapter", "adapter_version", "redaction_policy_version", "raw_retained", "created_at"],
+      "properties": {
+        "capture_mode": { "enum": ["manual", "oob_verified"] },
+        "adapter": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "adapter_version": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "redaction_policy_version": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "raw_retained": { "const": false },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "model": { "type": "string", "maxLength": 160 },
+        "prompt_version": { "type": "string", "maxLength": 160 },
+        "tool_trace_digest": { "$ref": "common.schema.json#/$defs/sha256" },
+        "allowed_tools": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+        }
+      }
+    }
+  },
+  "allOf": [
+    { "$ref": "common.schema.json#/$defs/recordEnvelope" },
+    {
+      "type": "object",
+      "required": ["display_id", "capture_packet_schema_version", "status", "source_key", "source", "normalized", "task_hints", "provenance", "linked_task_uids", "converted_task_uids", "recent_revisions"],
+      "properties": {
+        "format": { "const": "workstack.capture" },
+        "schema_version": { "const": 1 },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "display_id": { "type": "string", "pattern": "^C-[0-9]{4,}$" },
+        "capture_packet_schema_version": { "const": "1.0" },
+        "status": { "enum": ["inbox", "linked", "converted", "dismissed"] },
+        "source_key": { "$ref": "common.schema.json#/$defs/sha256" },
+        "source": { "$ref": "#/$defs/source" },
+        "normalized": { "$ref": "#/$defs/normalized" },
+        "task_hints": {
+          "type": "array", "maxItems": 256,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "linked_task_uids": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/uuid" }
+        },
+        "converted_task_uids": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/uuid" }
+        },
+        "recent_revisions": {
+          "type": "array", "maxItems": 10,
+          "items": { "$ref": "#/$defs/recentRevision" }
+        }
+      }
+    }
+  ],
+  "unevaluatedProperties": false
+}

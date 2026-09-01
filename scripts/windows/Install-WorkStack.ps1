@@ -4,6 +4,7 @@ param(
     [string]$InstallRoot = "$env:LOCALAPPDATA\Programs\WorkStack",
     [string]$StateRoot = "$env:LOCALAPPDATA\WorkStack",
     [string]$DataDir = "$env:LOCALAPPDATA\WorkStack\data",
+    [string]$BackupDir = '',
     [int]$Port = 8765,
     [int]$BackupRetention = 14,
     [switch]$NoShortcut
@@ -16,7 +17,77 @@ $sourcePath = [IO.Path]::GetFullPath($SourceRoot)
 $installPath = [IO.Path]::GetFullPath($InstallRoot)
 $statePath = [IO.Path]::GetFullPath($StateRoot)
 $dataPath = [IO.Path]::GetFullPath($DataDir)
-$backupRoot = [IO.Path]::GetFullPath((Join-Path $statePath 'backups'))
+$configPath = Join-Path $statePath 'config.json'
+$originalConfigBytes = $null
+$originalConfigAttributes = $null
+$existingConfig = $null
+$configWasMutated = $false
+if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+    $originalConfigBytes = [IO.File]::ReadAllBytes($configPath)
+    $originalConfigAttributes = [IO.File]::GetAttributes($configPath)
+    try {
+        $existingConfig = [Text.Encoding]::UTF8.GetString($originalConfigBytes) | ConvertFrom-Json
+    } catch {
+        throw "Existing Work Stack configuration is invalid: $configPath"
+    }
+    if (-not $PSBoundParameters.ContainsKey('DataDir')) {
+        $existingDataDir = [string]$existingConfig.data_dir
+        if ([string]::IsNullOrWhiteSpace($existingDataDir) -or -not [IO.Path]::IsPathRooted($existingDataDir)) {
+            throw "Existing Work Stack data directory is invalid: $configPath"
+        }
+        $dataPath = [IO.Path]::GetFullPath($existingDataDir)
+    }
+    if (-not $PSBoundParameters.ContainsKey('Port') -and $null -ne $existingConfig.port) {
+        $Port = [int]$existingConfig.port
+    }
+    if (-not $PSBoundParameters.ContainsKey('BackupRetention') -and $null -ne $existingConfig.backup_retention) {
+        $BackupRetention = [int]$existingConfig.backup_retention
+    }
+    if ((-not $PSBoundParameters.ContainsKey('BackupDir') -or [string]::IsNullOrWhiteSpace($BackupDir)) -and
+        -not [string]::IsNullOrWhiteSpace([string]$existingConfig.backup_dir)) {
+        $BackupDir = [string]$existingConfig.backup_dir
+    }
+}
+if ([string]::IsNullOrWhiteSpace($BackupDir)) { $BackupDir = Join-Path $statePath 'backups' }
+if (-not [IO.Path]::IsPathRooted($BackupDir)) { throw 'BackupDir must be an absolute path.' }
+$backupRoot = [IO.Path]::GetFullPath($BackupDir)
+
+function Write-BytesAtomic {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes
+    )
+    $target = [IO.Path]::GetFullPath($Path)
+    $temporary = "$target.tmp-$PID-$([guid]::NewGuid().ToString('N'))"
+    try {
+        [IO.File]::WriteAllBytes($temporary, $Bytes)
+        Move-Item -LiteralPath $temporary -Destination $target -Force
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Write-Utf8NoBomAtomic {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+    Write-BytesAtomic -Path $Path -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($Value))
+}
+
+function Restore-OriginalConfig {
+    if ($null -ne $originalConfigBytes) {
+        if (Test-Path -LiteralPath $configPath) {
+            [IO.File]::SetAttributes($configPath, [IO.FileAttributes]::Normal)
+        }
+        Write-BytesAtomic -Path $configPath -Bytes $originalConfigBytes
+        if ($null -ne $originalConfigAttributes) {
+            [IO.File]::SetAttributes($configPath, $originalConfigAttributes)
+        }
+    } elseif ($configWasMutated -and (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        Remove-Item -LiteralPath $configPath -Force
+    }
+}
 
 function Assert-PathsDisjoint {
     param(
@@ -127,7 +198,7 @@ try {
     }
 
     $stagedPython = Join-Path $staging 'runtime\python.exe'
-    $pythonTarget = & $stagedPython -c "import struct,sys,unicodedata2,workstack,webview; from webview.platforms.edgechromium import WebView2; assert unicodedata2.unidata_version == '17.0.0'; print(f'{sys.version_info.major}.{sys.version_info.minor}:{struct.calcsize(chr(80))*8}')" 2>$null
+    $pythonTarget = & $stagedPython -c "import jsonschema,struct,sys,unicodedata2,workstack,webview; from webview.platforms.edgechromium import WebView2; assert unicodedata2.unidata_version == '17.0.0'; print(f'{sys.version_info.major}.{sys.version_info.minor}:{struct.calcsize(chr(80))*8}')" 2>$null
     if ($LASTEXITCODE -ne 0 -or $pythonTarget.Trim() -ne '3.12:64') {
         throw 'Bundled 64-bit Python 3.12 runtime smoke test failed.'
     }
@@ -155,20 +226,44 @@ try {
     Move-Item -LiteralPath $staging -Destination $installPath
 
     New-Item -ItemType Directory -Force -Path $statePath, $dataPath, $backupRoot | Out-Null
-    $configJson = @{
-        version = 1
-        install_dir = $installPath
-        data_dir = $dataPath
-        backup_dir = $backupRoot
-        backup_retention = [Math]::Max(1, $BackupRetention)
-        port = $resolvedPort
-    } | ConvertTo-Json
-    [IO.File]::WriteAllText((Join-Path $statePath 'config.json'), $configJson, [Text.UTF8Encoding]::new($false))
+    $configValues = [ordered]@{}
+    if ($null -ne $existingConfig) {
+        foreach ($property in $existingConfig.PSObject.Properties) {
+            $configValues[$property.Name] = $property.Value
+        }
+    }
+    $configValues['version'] = 1
+    $configValues['install_dir'] = $installPath
+    $configValues['data_dir'] = $dataPath
+    $configValues['backup_dir'] = $backupRoot
+    $configValues['backup_retention'] = [Math]::Max(1, $BackupRetention)
+    $configValues['port'] = $resolvedPort
+    $configJson = $configValues | ConvertTo-Json
+    $preserveExistingConfig = $false
+    if ($null -ne $existingConfig) {
+        $preserveExistingConfig =
+            ([IO.Path]::GetFullPath([string]$existingConfig.install_dir) -eq $installPath) -and
+            ([IO.Path]::GetFullPath([string]$existingConfig.data_dir) -eq $dataPath) -and
+            ([IO.Path]::GetFullPath([string]$existingConfig.backup_dir) -eq $backupRoot) -and
+            ([int]$existingConfig.backup_retention -eq [Math]::Max(1, $BackupRetention)) -and
+            ([int]$existingConfig.port -eq $resolvedPort)
+    }
+    if ($preserveExistingConfig) {
+        $configBytes = $originalConfigBytes
+    } else {
+        Write-Utf8NoBomAtomic -Path $configPath -Value $configJson
+        $configWasMutated = $true
+        $configBytes = [Text.UTF8Encoding]::new($false).GetBytes($configJson)
+    }
+    Write-BytesAtomic -Path (Join-Path $installPath 'runtime-config.json') -Bytes $configBytes
+    if ([Environment]::GetEnvironmentVariable('WORKSTACK_INSTALL_TEST_FAIL_AFTER_CONFIG_WRITE', 'Process') -ceq '1') {
+        throw 'Injected upgrade failure after configuration write.'
+    }
 
     if (-not $NoShortcut) {
         $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
         $shell = New-Object -ComObject WScript.Shell
-        $desktopPython = Join-Path $installPath 'runtime\pythonw.exe'
+        $windowLauncher = Join-Path $installPath 'runtime\pythonw.exe'
         $desktopEntry = Join-Path $installPath 'desktop\python-webview-shell\workstack_desktop.py'
         $iconPath = Join-Path $installPath 'WorkStack.ico'
         New-WorkStackIcon -Path $iconPath
@@ -178,7 +273,7 @@ try {
             (Join-Path $desktopFolder 'Work Stack.lnk')
         )) {
             $shortcut = $shell.CreateShortcut($shortcutPath)
-            $shortcut.TargetPath = $desktopPython
+            $shortcut.TargetPath = $windowLauncher
             $shortcut.Arguments = "`"$desktopEntry`" --install-root `"$installPath`" --state-root `"$statePath`""
             $shortcut.WorkingDirectory = $installPath
             $shortcut.IconLocation = "$iconPath,0"
@@ -197,13 +292,19 @@ try {
     Write-Host "Planning data remains at $dataPath"
     Write-Host "Local endpoint: http://127.0.0.1:$resolvedPort/"
 } catch {
+    $installError = $_
     if (Test-Path -LiteralPath $rollback) {
         if (Test-Path -LiteralPath $installPath) {
             Remove-Item -LiteralPath $installPath -Recurse -Force
         }
         Move-Item -LiteralPath $rollback -Destination $installPath
     }
-    throw
+    try {
+        Restore-OriginalConfig
+    } catch {
+        throw "Installation failed and the original configuration could not be restored: $($_.Exception.Message)"
+    }
+    throw $installError
 } finally {
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
 }

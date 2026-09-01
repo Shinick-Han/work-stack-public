@@ -13,19 +13,17 @@ objectives → planning tasks → daily records → weekly roll-up
 
 ## Download the Windows installer
 
-Download the immutable v1.0.5 release assets:
+The current signed-off installer remains the immutable v1.0.5 release:
 
 - [`WorkStack-Setup-1.0.5.ps1`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.5/WorkStack-Setup-1.0.5.ps1)
 - [`WorkStack-Setup-1.0.5.ps1.sha256`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.5/WorkStack-Setup-1.0.5.ps1.sha256)
 - [`workstack-update.json`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.5/workstack-update.json)
 
-The same installer, checksum, and stable-channel manifest are committed under
-[`installer/`](installer/). Verify the adjacent SHA-256 sidecar before running the
-installer. The target machine needs neither Python nor Node.js. This build is not
-code-signed, so the checksum proves transfer integrity rather than publisher identity.
-
-v1.0.5 is the first auto-updating desktop release. Install it once manually; subsequent
-versions can be checked, downloaded, and applied from Work Stack after the app closes.
+The same verified assets are committed under [`installer/`](installer/). The source
+snapshot on `main` is newer and currently targets v1.0.6; it does not replace the
+published installer until the v1.0.6 release gate and immutable artifact build finish.
+The target machine needs neither Python nor Node.js. This build is not code-signed, so
+the checksum proves transfer integrity rather than publisher identity.
 
 This prototype is intentionally a thin local product shell. Activepieces and the
 Conduit runtime are not embedded. Work Stack owns `PlanningTask`; a future Conduit
@@ -81,7 +79,7 @@ Snapshot export pins Unicode Standard 17.0.0 through the hash-locked
 
 The current prototype installer bundles the official 64-bit Python 3.12.10 embeddable
 runtime, the hash-locked Unicode wheel, and a pinned pywebview/pythonnet desktop host.
-The Start-menu shortcut runs the PSF-signed `pythonw.exe`; the Work Stack UI owns the
+The Start-menu shortcut launches the bundled PSF-signed `pythonw.exe` directly; the Work Stack UI owns the
 window and Context Inbox owns the embedded Outlook, Teams, or OneNote viewport. Build the React UI, then create one
 self-contained PowerShell setup file:
 
@@ -90,20 +88,20 @@ npm --prefix frontend run build
 powershell -ExecutionPolicy Bypass -File scripts\windows\Build-WindowsInstaller.ps1
 ```
 
-Run the generated `.artifacts\WorkStack-Setup-1.0.5.ps1`. The target machine needs neither
+Run the generated `.artifacts\WorkStack-Setup-1.0.6.ps1`. The target machine needs neither
 Python nor Node.js, and installation does not contact the network. It installs the bundled
 runtime under `%LOCALAPPDATA%\Programs\WorkStack`, keeps planning data and versioned backups
 under `%LOCALAPPDATA%\WorkStack`, and adds a Start menu shortcut. Re-running a new setup
 artifact stops only the matching installed Work Stack process, writes a verified pre-upgrade
 backup, and replaces the application while preserving data.
 
-The builder also writes `WorkStack-Setup-1.0.5.ps1.sha256` and `workstack-update.json`. Keep the
+The builder also writes `WorkStack-Setup-1.0.6.ps1.sha256` and `workstack-update.json`. Keep the
 checksum beside the setup artifact
 and verify both the filename and digest before execution:
 
 ```powershell
 .\scripts\windows\Test-WorkStackSetup.ps1 `
-  -SetupPath .\.artifacts\WorkStack-Setup-1.0.5.ps1
+  -SetupPath .\.artifacts\WorkStack-Setup-1.0.6.ps1
 ```
 
 This is transfer-integrity evidence, not publisher authentication. The prototype remains unsigned

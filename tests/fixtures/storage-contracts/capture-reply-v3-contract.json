@@ -1,0 +1,55 @@
+{
+  "activity_types": [
+    "capture.ingested",
+    "capture.linked",
+    "reply.approved",
+    "reply.sent"
+  ],
+  "capture_fields": [
+    "converted_task_ids",
+    "created_at",
+    "id",
+    "linked_task_ids",
+    "normalized",
+    "provenance",
+    "revision",
+    "schema_version",
+    "source",
+    "source_key",
+    "status",
+    "task_hints",
+    "updated_at"
+  ],
+  "reply_fields": [
+    "approved_at",
+    "body",
+    "body_digest",
+    "capability",
+    "capture_id",
+    "capture_revision",
+    "created_at",
+    "id",
+    "provider",
+    "receipt",
+    "state",
+    "target",
+    "target_digest",
+    "task_id",
+    "updated_at"
+  ],
+  "response_envelope_fields": [
+    "body",
+    "status"
+  ],
+  "revision_contract": {
+    "created": 0,
+    "linked": 1,
+    "source_updated": 1
+  },
+  "states": {
+    "capture_created": "inbox",
+    "capture_linked": "linked",
+    "reply_approved": "approved",
+    "reply_terminal": "sent"
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/worklog-event.schema.json",
+  "title": "Work Stack SSOT v4 worklog stream event",
+  "$comment": "The variants preserve v3 day check-ins, review entries, and complete work-session state without flattening sessions into duration summaries.",
+  "$defs": {
+    "taskIdentity": {
+      "type": "object",
+      "required": ["task_uid", "task_display_id", "task_title"],
+      "properties": {
+        "task_uid": { "$ref": "common.schema.json#/$defs/uuid" },
+        "task_display_id": { "type": "string", "pattern": "^T-[0-9]{4,}$" },
+        "task_title": { "type": "string", "minLength": 1, "maxLength": 240 }
+      }
+    },
+    "checkIn": {
+      "type": "object",
+      "required": ["kind", "work_date", "start_time"],
+      "properties": {
+        "kind": { "const": "check-in" },
+        "work_date": { "$ref": "common.schema.json#/$defs/date" },
+        "start_time": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" }
+      }
+    },
+    "entry": {
+      "allOf": [
+        { "$ref": "#/$defs/taskIdentity" },
+        {
+          "type": "object",
+          "required": ["kind", "work_date", "done", "next", "blockers"],
+          "properties": {
+            "kind": { "const": "entry" },
+            "work_date": { "$ref": "common.schema.json#/$defs/date" },
+            "done": { "$ref": "#/$defs/textList" },
+            "next": { "$ref": "#/$defs/textList" },
+            "blockers": { "$ref": "#/$defs/textList" },
+            "session_id": {
+              "oneOf": [
+                { "type": "string", "pattern": "^WS-[0-9]{6,}$" },
+                { "type": "null" }
+              ]
+            },
+            "duration_seconds": {
+              "oneOf": [
+                { "type": "integer", "minimum": 0 },
+                { "type": "null" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "session": {
+      "allOf": [
+        { "$ref": "#/$defs/taskIdentity" },
+        {
+          "type": "object",
+          "required": ["kind", "session_id", "work_date", "state", "started_at", "updated_at", "segments", "worklog_state"],
+          "properties": {
+            "kind": { "const": "session" },
+            "session_id": { "type": "string", "pattern": "^WS-[0-9]{6,}$" },
+            "work_date": { "$ref": "common.schema.json#/$defs/date" },
+            "state": { "enum": ["running", "paused", "stopped"] },
+            "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+            "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+            "segments": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/segment" }
+            },
+            "worklog_state": { "enum": ["not_ready", "pending", "recorded"] }
+          }
+        }
+      ]
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "ended_at"],
+      "properties": {
+        "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "ended_at": {
+          "oneOf": [
+            { "$ref": "common.schema.json#/$defs/timestamp" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "textList": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "type": "string" }
+    }
+  },
+  "allOf": [
+    { "$ref": "common.schema.json#/$defs/eventEnvelope" },
+    {
+      "type": "object",
+      "properties": {
+        "format": { "const": "workstack.worklog-event" },
+        "schema_version": { "const": 1 }
+      }
+    },
+    {
+      "oneOf": [
+        { "$ref": "#/$defs/checkIn" },
+        { "$ref": "#/$defs/entry" },
+        { "$ref": "#/$defs/session" }
+      ]
+    }
+  ],
+  "unevaluatedProperties": false
+}

@@ -1,0 +1,14 @@
+{
+  "notes": [
+    {
+      "created": "2026-09-01",
+      "id": "N-0001",
+      "links": [
+        "O-1",
+        "T-0001"
+      ],
+      "text": "Readable canonical data is part of the recovery contract."
+    }
+  ],
+  "version": 1
+}

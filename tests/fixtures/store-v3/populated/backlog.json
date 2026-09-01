@@ -1,0 +1,66 @@
+{
+  "tasks": [
+    {
+      "created": "2026-09-01",
+      "dependencies": [],
+      "detail": "Preserve every authoritative field while normalizing storage.",
+      "due": "2026-09-05",
+      "estimate_minutes": 90,
+      "id": "T-0001",
+      "notes": [
+        {
+          "date": "2026-09-01",
+          "text": "Keep the v3 source bytes unchanged."
+        }
+      ],
+      "objective_ids": [
+        "O-1"
+      ],
+      "parent_id": null,
+      "priority": "P1",
+      "revision": 2,
+      "scheduled": "2026-09-02",
+      "status": "open",
+      "status_fact_id": "PS-000003",
+      "subtasks": [
+        {
+          "id": "S-1",
+          "priority": "P2",
+          "status": "done",
+          "title": "Inventory v3 fields"
+        }
+      ],
+      "tags": [
+        "storage",
+        "unicode-테스트"
+      ],
+      "title": "Normalize the SSOT",
+      "uid": "9aaaf471-bf4f-59c7-9087-2be28e899cac",
+      "updated_at": "2026-09-01"
+    },
+    {
+      "created": "2026-09-01",
+      "dependencies": [
+        "T-0001"
+      ],
+      "detail": "Exercise parent and dependency references.",
+      "due": null,
+      "estimate_minutes": null,
+      "id": "T-0002",
+      "notes": [],
+      "objective_ids": [],
+      "parent_id": "T-0001",
+      "priority": "P3",
+      "revision": 0,
+      "scheduled": null,
+      "status": "open",
+      "status_fact_id": "PS-000002",
+      "subtasks": [],
+      "tags": [],
+      "title": "Verify relationships",
+      "uid": "a9f5b858-7c21-5a9e-8370-b508f97b6095",
+      "updated_at": "2026-09-01"
+    }
+  ],
+  "version": 3
+}

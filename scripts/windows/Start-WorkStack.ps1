@@ -2,6 +2,7 @@
 param(
     [string]$InstallRoot = "$env:LOCALAPPDATA\Programs\WorkStack",
     [string]$StateRoot = "$env:LOCALAPPDATA\WorkStack",
+    [string]$ConfigPath = '',
     [switch]$NoBrowser,
     [switch]$SkipBackup,
     [string]$StatusPath = ''
@@ -10,7 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $installPath = [IO.Path]::GetFullPath($InstallRoot)
 $stateRoot = [IO.Path]::GetFullPath($StateRoot)
-$configPath = Join-Path $stateRoot 'config.json'
+$configPath = if ($ConfigPath) { [IO.Path]::GetFullPath($ConfigPath) } else { Join-Path $stateRoot 'config.json' }
 if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
     throw "Work Stack is not configured. Run Install-WorkStack.ps1 first."
 }

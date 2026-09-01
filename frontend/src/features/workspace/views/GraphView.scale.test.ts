@@ -11,7 +11,11 @@ test('maps each planning node to a visible semantic minimap mark', () => {
     'T-0001',
   )
 
-  expect(nodes.map(miniMapNodeColor)).toEqual(['#8b7cf6', '#4ea8de', '#d7a94d'])
+  expect(nodes.map(miniMapNodeColor)).toEqual([
+    'var(--wsv-minimap-node-objective)',
+    'var(--wsv-minimap-node-task)',
+    'var(--wsv-minimap-node-note)',
+  ])
   expect(nodes.map(miniMapNodeClassName)).toEqual([
     'wsv-minimap-node wsv-minimap-node--objective',
     'wsv-minimap-node wsv-minimap-node--task is-selected',

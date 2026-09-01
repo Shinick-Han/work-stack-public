@@ -1,0 +1,466 @@
+{
+  "schema_version": 1,
+  "source_sets": [
+    {
+      "name": "python_core",
+      "roots": [
+        "workstack"
+      ],
+      "extensions": [
+        ".py"
+      ],
+      "exclude_globs": []
+    },
+    {
+      "name": "python_entrypoint",
+      "roots": [
+        "run_work_stack.py"
+      ],
+      "extensions": [
+        ".py"
+      ],
+      "exclude_globs": []
+    },
+    {
+      "name": "python_desktop",
+      "roots": [
+        "desktop/python-webview-shell"
+      ],
+      "extensions": [
+        ".py"
+      ],
+      "exclude_globs": []
+    },
+    {
+      "name": "quality_tooling",
+      "roots": [
+        "scripts/check_coverage.py",
+        "scripts/quality_gate.py",
+        "scripts/release_gate.py",
+        "scripts/run_ssh_regression.py",
+        "scripts/run_mutation_sentinels.py"
+      ],
+      "extensions": [
+        ".py"
+      ],
+      "exclude_globs": []
+    },
+    {
+      "name": "frontend_production",
+      "roots": [
+        "frontend/src"
+      ],
+      "extensions": [
+        ".ts",
+        ".tsx"
+      ],
+      "exclude_globs": [
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "frontend/src/test/**",
+        "**/*.d.ts"
+      ]
+    }
+  ],
+  "config_inputs": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/quality-reusable.yml",
+    ".github/workflows/release.yml",
+    ".coveragerc",
+    "frontend/package-lock.json",
+    "frontend/package.json",
+    "frontend/eslint.config.js",
+    "frontend/vite.config.ts",
+    "quality/coverage-floors.json",
+    "quality/quality-config.json",
+    "quality/release-path-policy.json",
+    "requirements-dev.txt",
+    "requirements.txt",
+    "scripts/check_coverage.py",
+    "scripts/quality_gate.py",
+    "scripts/release_gate.py",
+    "scripts/run_ssh_regression.py",
+    "scripts/run_mutation_sentinels.py",
+    "scripts/windows/Test-WorkStackReleaseBundle.ps1"
+  ],
+  "frontend_complexity": {
+    "command": [
+      "npm",
+      "--prefix",
+      "frontend",
+      "run",
+      "--silent",
+      "lint:complexity"
+    ],
+    "critical_globs": [
+      "frontend/src/api/**",
+      "frontend/src/app/**",
+      "frontend/src/features/inbox/**",
+      "frontend/src/features/integrations/**",
+      "frontend/src/features/tasks/**",
+      "frontend/src/integration/**"
+    ]
+  },
+  "critical_python_globs": [
+    "workstack/capture.py",
+    "workstack/planning_status.py",
+    "workstack/service.py",
+    "workstack/snapshot*.py",
+    "workstack/storage/**",
+    "workstack/store.py",
+    "desktop/python-webview-shell/workstack_update.py"
+  ],
+  "python_layers": [
+    {
+      "name": "py_foundation",
+      "globs": [
+        "workstack/__init__.py",
+        "workstack/capture.py",
+        "workstack/planning_status.py",
+        "workstack/snapshot_safety.py",
+        "workstack/unicode17.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_snapshot",
+      "globs": [
+        "workstack/snapshot.py"
+      ],
+      "may_import": [
+        "py_foundation"
+      ]
+    },
+    {
+      "name": "py_snapshot_conformance",
+      "globs": [
+        "workstack/snapshot_conformance.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_snapshot"
+      ]
+    },
+    {
+      "name": "py_snapshot_export",
+      "globs": [
+        "workstack/snapshot_export.py"
+      ],
+      "may_import": [
+        "py_snapshot"
+      ]
+    },
+    {
+      "name": "py_storage",
+      "globs": [
+        "workstack/maintenance.py",
+        "workstack/store.py",
+        "workstack/storage/**"
+      ],
+      "may_import": [
+        "py_foundation"
+      ]
+    },
+    {
+      "name": "py_application",
+      "globs": [
+        "workstack/service.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_snapshot",
+        "py_snapshot_export",
+        "py_storage"
+      ]
+    },
+    {
+      "name": "py_transport",
+      "globs": [
+        "workstack/server.py"
+      ],
+      "may_import": [
+        "py_application",
+        "py_foundation",
+        "py_storage"
+      ]
+    },
+    {
+      "name": "py_composition",
+      "globs": [
+        "run_work_stack.py",
+        "workstack/cli.py"
+      ],
+      "may_import": [
+        "py_application",
+        "py_foundation",
+        "py_snapshot_export",
+        "py_storage",
+        "py_transport"
+      ]
+    },
+    {
+      "name": "py_desktop",
+      "globs": [
+        "desktop/python-webview-shell/**"
+      ],
+      "may_import": [
+        "py_foundation"
+      ]
+    },
+    {
+      "name": "py_quality_tooling",
+      "globs": [
+        "scripts/check_coverage.py",
+        "scripts/quality_gate.py",
+        "scripts/release_gate.py",
+        "scripts/run_ssh_regression.py",
+        "scripts/run_mutation_sentinels.py"
+      ],
+      "may_import": []
+    }
+  ],
+  "frontend_layers": [
+    {
+      "name": "fe_domain",
+      "globs": [
+        "frontend/src/domain/**"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "fe_config",
+      "globs": [
+        "frontend/src/config/**"
+      ],
+      "may_import": [
+        "fe_domain"
+      ]
+    },
+    {
+      "name": "fe_utils",
+      "globs": [
+        "frontend/src/utils/**"
+      ],
+      "may_import": [
+        "fe_domain"
+      ]
+    },
+    {
+      "name": "fe_integration",
+      "globs": [
+        "frontend/src/integration/**"
+      ],
+      "may_import": [
+        "fe_config",
+        "fe_domain",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_api",
+      "globs": [
+        "frontend/src/api/**"
+      ],
+      "may_import": [
+        "fe_config",
+        "fe_domain",
+        "fe_integration",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_components",
+      "globs": [
+        "frontend/src/components/**"
+      ],
+      "may_import": [
+        "fe_config",
+        "fe_domain",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_feature_commands",
+      "globs": [
+        "frontend/src/features/commands/**"
+      ],
+      "may_import": [
+        "fe_api",
+        "fe_components",
+        "fe_config",
+        "fe_domain",
+        "fe_integration",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_feature_focus",
+      "globs": [
+        "frontend/src/features/focus/**"
+      ],
+      "may_import": [
+        "fe_api",
+        "fe_components",
+        "fe_config",
+        "fe_domain",
+        "fe_integration",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_feature_inbox",
+      "globs": [
+        "frontend/src/features/inbox/**"
+      ],
+      "may_import": [
+        "fe_api",
+        "fe_components",
+        "fe_config",
+        "fe_domain",
+        "fe_integration",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_feature_integrations",
+      "globs": [
+        "frontend/src/features/integrations/**"
+      ],
+      "may_import": [
+        "fe_api",
+        "fe_components",
+        "fe_config",
+        "fe_domain",
+        "fe_integration",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_feature_objectives",
+      "globs": [
+        "frontend/src/features/objectives/**"
+      ],
+      "may_import": [
+        "fe_api",
+        "fe_components",
+        "fe_config",
+        "fe_domain",
+        "fe_integration",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_feature_review",
+      "globs": [
+        "frontend/src/features/review/**"
+      ],
+      "may_import": [
+        "fe_api",
+        "fe_components",
+        "fe_config",
+        "fe_domain",
+        "fe_integration",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_feature_tasks",
+      "globs": [
+        "frontend/src/features/tasks/**"
+      ],
+      "may_import": [
+        "fe_api",
+        "fe_components",
+        "fe_config",
+        "fe_domain",
+        "fe_integration",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_feature_workspace",
+      "globs": [
+        "frontend/src/features/workspace/**"
+      ],
+      "may_import": [
+        "fe_api",
+        "fe_components",
+        "fe_config",
+        "fe_domain",
+        "fe_integration",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_app",
+      "globs": [
+        "frontend/src/app/**"
+      ],
+      "may_import": [
+        "fe_api",
+        "fe_components",
+        "fe_config",
+        "fe_domain",
+        "fe_feature_commands",
+        "fe_feature_focus",
+        "fe_feature_inbox",
+        "fe_feature_integrations",
+        "fe_feature_objectives",
+        "fe_feature_review",
+        "fe_feature_tasks",
+        "fe_feature_workspace",
+        "fe_integration",
+        "fe_utils"
+      ]
+    },
+    {
+      "name": "fe_composition",
+      "globs": [
+        "frontend/src/main.tsx"
+      ],
+      "may_import": [
+        "fe_app",
+        "fe_components",
+        "fe_feature_inbox"
+      ]
+    }
+  ],
+  "architecture_exceptions": [
+    {
+      "from": "frontend/src/features/integrations/MicrosoftOobDialog.tsx",
+      "to": "frontend/src/features/inbox/CaptureImportDialog.tsx",
+      "rationale": "The read-only Microsoft handoff composes the established sanitized packet review dialog until the shared capture-review contract is extracted.",
+      "expires": "2026-12-31"
+    },
+    {
+      "from": "frontend/src/features/workspace/WorkspacePage.tsx",
+      "to": "frontend/src/features/focus/useLocalToday.ts",
+      "rationale": "Workspace reuses the tested local-midnight clock until the neutral calendar hook is extracted.",
+      "expires": "2026-12-31"
+    },
+    {
+      "from": "frontend/src/features/workspace/views/BoardView.tsx",
+      "to": "frontend/src/features/focus/useLocalToday.ts",
+      "rationale": "The board uses the tested local-midnight clock until the neutral calendar hook is extracted.",
+      "expires": "2026-12-31"
+    },
+    {
+      "from": "frontend/src/features/workspace/views/TableView.tsx",
+      "to": "frontend/src/features/focus/useLocalToday.ts",
+      "rationale": "The table uses the tested local-midnight clock until the neutral calendar hook is extracted.",
+      "expires": "2026-12-31"
+    },
+    {
+      "from": "frontend/src/features/workspace/views/TaskDueTiming.tsx",
+      "to": "frontend/src/features/focus/focusModel.ts",
+      "rationale": "The due-date label reuses the deterministic Focus civil-date projection until calendar projection is neutralized.",
+      "expires": "2026-12-31"
+    },
+    {
+      "from": "frontend/src/features/workspace/views/viewModels.ts",
+      "to": "frontend/src/features/focus/focusModel.ts",
+      "rationale": "Workspace view projection reuses deterministic Focus civil-date semantics until calendar projection is neutralized.",
+      "expires": "2026-12-31"
+    }
+  ]
+}

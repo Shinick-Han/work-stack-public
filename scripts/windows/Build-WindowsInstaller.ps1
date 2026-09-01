@@ -118,9 +118,14 @@ try {
     if (-not (Test-Path -LiteralPath $bundledPackage -PathType Leaf)) {
         throw "Bundled Work Stack package is missing: $bundledPackage"
     }
-    & $runtimePython -c "import sys; sys.path.insert(0, sys.argv[1]); import struct,unicodedata2,workstack,webview; from pathlib import Path; from webview.platforms.edgechromium import WebView2; assert Path(workstack.__file__).resolve() == (Path(sys.argv[1]) / 'workstack' / '__init__.py').resolve(); assert f'{sys.version_info.major}.{sys.version_info.minor}:{struct.calcsize(chr(80))*8}' == '3.12:64'; assert unicodedata2.unidata_version == '17.0.0'; print(workstack.__version__)" $payload
+    & $runtimePython -c "import sys; sys.path.insert(0, sys.argv[1]); import jsonschema,struct,unicodedata2,workstack,webview; from pathlib import Path; from webview.platforms.edgechromium import WebView2; assert Path(workstack.__file__).resolve() == (Path(sys.argv[1]) / 'workstack' / '__init__.py').resolve(); assert f'{sys.version_info.major}.{sys.version_info.minor}:{struct.calcsize(chr(80))*8}' == '3.12:64'; assert unicodedata2.unidata_version == '17.0.0'; print(workstack.__version__)" $payload
     if ($LASTEXITCODE -ne 0) {
         throw 'Bundled Python runtime smoke test failed.'
+    }
+    $registrySmoke = Join-Path $payload 'scripts\windows\Test-WorkStackConnectionRegistrySmoke.py'
+    & $runtimePython $registrySmoke --install-root $payload
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Bundled connection registry startup smoke test failed.'
     }
     $dependencyBin = Join-Path $sitePackages 'bin'
     if (Test-Path -LiteralPath $dependencyBin -PathType Container) {
@@ -137,7 +142,9 @@ param(
     [string]$InstallRoot = "$env:LOCALAPPDATA\Programs\WorkStack",
     [string]$StateRoot = "$env:LOCALAPPDATA\WorkStack",
     [string]$DataDir = "$env:LOCALAPPDATA\WorkStack\data",
+    [string]$BackupDir = '',
     [int]$Port = 8765,
+    [int]$BackupRetention = 14,
     [switch]$NoShortcut
 )
 $ErrorActionPreference = 'Stop'
@@ -150,7 +157,18 @@ try {
     [IO.File]::WriteAllBytes($archive, [Convert]::FromBase64String($bundle))
     Expand-Archive -LiteralPath $archive -DestinationPath $payload
     $installer = Join-Path $payload 'scripts\windows\Install-WorkStack.ps1'
-    & $installer -SourceRoot $payload -InstallRoot $InstallRoot -StateRoot $StateRoot -DataDir $DataDir -Port $Port -NoShortcut:$NoShortcut
+    $installerArguments = @{
+        SourceRoot = $payload
+        InstallRoot = $InstallRoot
+        StateRoot = $StateRoot
+        NoShortcut = $NoShortcut
+    }
+    foreach ($optionalName in @('DataDir', 'BackupDir', 'Port', 'BackupRetention')) {
+        if ($PSBoundParameters.ContainsKey($optionalName)) {
+            $installerArguments[$optionalName] = $PSBoundParameters[$optionalName]
+        }
+    }
+    & $installer @installerArguments
 } finally {
     if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
 }

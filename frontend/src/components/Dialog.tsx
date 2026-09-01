@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, type PropsWithChildren, type ReactNode } from 'react'
-import { resumeEmbeddedSource, suspendEmbeddedSource } from '../features/inbox/sourceHostBridge'
+import { useDialogLifecycle } from './DialogLifecycle'
 import { IconButton } from './Primitives'
 
 interface DialogProps {
@@ -22,11 +22,12 @@ export function Dialog({
 }: PropsWithChildren<DialogProps>) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const titleId = useId()
+  const lifecycle = useDialogLifecycle()
 
   useEffect(() => {
-    if (!open || !suspendEmbeddedSource()) return
-    return () => { resumeEmbeddedSource() }
-  }, [open])
+    if (!open || !lifecycle.suspend()) return
+    return () => { lifecycle.resume() }
+  }, [lifecycle, open])
 
   useEffect(() => {
     const dialog = dialogRef.current

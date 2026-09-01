@@ -1,7 +1,34 @@
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
-import { UpdateStatusControl } from './UpdateStatusControl'
+import { UpdateStatusControl, updateStatusPresentation } from './UpdateStatusControl'
+import type { UpdateHostStatus, UpdateState } from './updateHostBridge'
+
+function status(state: UpdateState, overrides: Partial<UpdateHostStatus> = {}): UpdateHostStatus {
+  return {
+    type: 'workstack-update-status',
+    state,
+    current_version: '1.0.4',
+    latest_version: '1.0.5',
+    release_url: '',
+    message: 'Status message',
+    preferences: { auto_check: true, auto_download: true, install_on_exit: true },
+    ...overrides,
+  }
+}
+
+test.each([
+  ['ready', 'Update 1.0.5 ready', false, true],
+  ['available', 'Update 1.0.5 available', false, true],
+  ['downloading', 'Downloading 1.0.5', true, false],
+  ['error', 'Update check failed', false, true],
+  ['blocked', 'Work Stack updates · 1.0.4', false, true],
+  ['checking', 'Work Stack updates · 1.0.4', true, false],
+  ['installing', 'Work Stack updates · 1.0.4', true, false],
+  ['current', 'Work Stack updates · 1.0.4', false, false],
+] as const)('projects %s update presentation', (state, label, busy, attention) => {
+  expect(updateStatusPresentation(status(state))).toEqual({ attention, busy, label })
+})
 
 test('requests native status and installs one verified ready update', async () => {
   let listener: ((event: Event & { data?: unknown }) => void) | undefined

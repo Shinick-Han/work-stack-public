@@ -31,7 +31,9 @@ class BrowserGateContractTest(unittest.TestCase):
         self.assertIn("width: 640, height: 480", spec)
 
     def test_ci_installs_and_runs_the_bounded_compatibility_gate(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "quality-reusable.yml").read_text(
+            encoding="utf-8"
+        )
         package = (FRONTEND / "package.json").read_text(encoding="utf-8")
 
         self.assertIn("playwright install chromium firefox webkit", workflow)
@@ -39,7 +41,9 @@ class BrowserGateContractTest(unittest.TestCase):
         self.assertIn('"test:e2e:compat"', package)
 
     def test_ci_cannot_mask_an_earlier_command_failure_with_a_later_success(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "quality-reusable.yml").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("name: Install locked Python dependencies\n", workflow)
         self.assertIn("name: Install locked frontend dependencies\n", workflow)

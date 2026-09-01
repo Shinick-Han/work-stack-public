@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { TaskStatus, WorkspaceTask } from './types'
 import { STATUS_LABELS, taskSubtaskProgress } from './viewModels'
-import { blockingDependencies } from '../../tasks/taskRelationships'
+import { blockingDependencies } from '../../../domain/taskRelationships'
 import { useLocalToday } from '../../focus/useLocalToday'
 import { TaskDueTiming } from './TaskDueTiming'
 import { readTablePreferences, writeTablePreferences, type TableDensity, type TableSortField } from './tablePreferences'

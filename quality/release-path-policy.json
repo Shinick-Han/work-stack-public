@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "always_gates": [
+    "quality",
+    "chromium_smoke",
+    "windows_first_launch",
+    "windows_extended"
+  ],
+  "optional_gates": [
+    "browser_compat",
+    "targeted_mutation"
+  ],
+  "rules": [
+    {
+      "patterns": [".github/**", "quality/**", "scripts/release_gate.py"],
+      "gates": ["browser_compat", "targeted_mutation", "windows_extended"]
+    },
+    {
+      "patterns": ["desktop/**", "scripts/windows/**", "requirements-windows-desktop.txt"],
+      "gates": ["browser_compat", "targeted_mutation", "windows_extended"]
+    },
+    {
+      "patterns": ["frontend/**", "web/**"],
+      "gates": ["browser_compat"]
+    },
+    {
+      "patterns": ["workstack/**", "contracts/**", "integrations/**", "run_work_stack.py"],
+      "gates": ["targeted_mutation"]
+    },
+    {
+      "patterns": ["scripts/**", "tests/**", "docs/**", "licenses/**"],
+      "gates": []
+    },
+    {
+      "patterns": [
+        ".coveragerc",
+        ".gitattributes",
+        ".gitignore",
+        "AGENTS.md",
+        "LICENSE",
+        "README.md",
+        "SECURITY.md",
+        "THIRD_PARTY_NOTICES.md",
+        "requirements*.txt"
+      ],
+      "gates": []
+    }
+  ]
+}

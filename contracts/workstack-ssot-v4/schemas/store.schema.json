@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/store.schema.json",
+  "title": "Work Stack SSOT v4 Store metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "schema_version", "schema_set", "workspace_uid", "created_at"],
+  "properties": {
+    "format": { "const": "workstack.ssot" },
+    "schema_version": { "const": 4 },
+    "schema_set": { "const": "workstack.ssot.v4" },
+    "workspace_uid": { "$ref": "common.schema.json#/$defs/uuid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+  }
+}

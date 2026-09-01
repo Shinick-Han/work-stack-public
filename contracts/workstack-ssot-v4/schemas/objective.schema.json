@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/objective.schema.json",
+  "title": "Work Stack SSOT v4 objective record",
+  "$defs": {
+    "keyResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uid", "display_id", "title", "status", "target", "progress"],
+      "properties": {
+        "uid": { "$ref": "common.schema.json#/$defs/uuid" },
+        "display_id": { "type": "string", "pattern": "^KR-[0-9]{1,}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "status": { "enum": ["active", "done", "dropped"] },
+        "target": { "type": "string", "maxLength": 500 },
+        "progress": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    }
+  },
+  "allOf": [
+    { "$ref": "common.schema.json#/$defs/recordEnvelope" },
+    {
+      "type": "object",
+      "required": ["display_id", "title", "status", "quarter", "key_results", "revision_origin"],
+      "properties": {
+        "format": { "const": "workstack.objective" },
+        "schema_version": { "const": 1 },
+        "created_at": { "$ref": "common.schema.json#/$defs/dateOrTimestamp" },
+        "updated_at": { "$ref": "common.schema.json#/$defs/dateOrTimestamp" },
+        "display_id": { "type": "string", "pattern": "^O-[0-9]{1,}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "status": { "enum": ["active", "done", "dropped"] },
+        "quarter": {
+          "oneOf": [
+            { "type": "string", "pattern": "^[0-9]{4}-Q[1-4]$" },
+            { "type": "null" }
+          ]
+        },
+        "key_results": {
+          "type": "array", "maxItems": 128,
+          "items": { "$ref": "#/$defs/keyResult" }
+        },
+        "revision_origin": { "enum": ["explicit", "legacy_missing"] }
+      }
+    }
+  ],
+  "unevaluatedProperties": false
+}

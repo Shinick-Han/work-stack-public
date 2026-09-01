@@ -109,6 +109,7 @@ export interface StorageStatus {
   workspace_id: string
   store_schema_version: number
   product_version: string
+  remote_protocol_version: number
   file_count: number
   total_bytes: number
   backup_format: 'workstack-backup-v1'
@@ -136,10 +137,29 @@ export type SyncState = (typeof SYNC_STATES)[number]
 export interface SyncStatus {
   state: SyncState
   workspace_id: string
+  candidate_workspace_id: string
   generation: number
   manifest_digest: string | null
   changed_files: string[]
   reason: string | null
+  rebind_available: boolean
+}
+
+export interface WorkspaceRebindPreview {
+  state: 'workspace-identity-mismatch'
+  manifest_workspace_id: string
+  candidate_workspace_id: string
+  manifest_digest: string
+  candidate_digest: string
+  changed_files: string[]
+}
+
+export interface WorkspaceRebindResult {
+  state: 'in-sync'
+  workspace_id: string
+  generation: number
+  recovery_receipt_digest: string
+  planning_mutated: false
 }
 
 export interface BackupDownload {
@@ -361,6 +381,7 @@ export interface QuickTaskInput {
 }
 
 export interface CaptureTaskInput extends QuickTaskInput {
+  intent_id?: string
   parent_id?: string | null
   dependencies?: string[]
 }

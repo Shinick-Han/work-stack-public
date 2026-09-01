@@ -1,4 +1,4 @@
-import { TASK_STATUSES, type Task, type TaskStatus } from '../../domain/types'
+import { TASK_STATUSES, type Task, type TaskStatus } from './types'
 
 export type TaskRelationshipField = 'parent_id' | 'dependencies'
 

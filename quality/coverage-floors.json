@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "python": {
+    "global": { "branches": 60.0, "lines": 69.0 },
+    "critical": {
+      "desktop/python-webview-shell/workstack_update.py": { "branches": 51.0, "lines": 71.0 },
+      "workstack/capture.py": { "branches": 75.0, "lines": 83.0 },
+      "workstack/planning_status.py": { "branches": 64.0, "lines": 76.0 },
+      "workstack/service.py": { "branches": 70.0, "lines": 82.0 },
+      "workstack/snapshot.py": { "branches": 82.0, "lines": 86.0 },
+      "workstack/store.py": { "branches": 68.0, "lines": 81.0 }
+    }
+  },
+  "frontend": {
+    "global": { "branches": 81.0, "functions": 72.0, "lines": 89.0 },
+    "critical": {
+      "src/api/client.ts": { "branches": 78.0, "lines": 77.0 },
+      "src/app/syncStatusEvents.ts": { "branches": 53.0, "lines": 94.0 },
+      "src/features/inbox/captureTrust.ts": { "branches": 100.0, "lines": 100.0 },
+      "src/features/inbox/sourceCapture.ts": { "branches": 76.0, "lines": 100.0 },
+      "src/features/inbox/sourceHostBridge.ts": { "branches": 83.0, "lines": 95.0 }
+    }
+  }
+}

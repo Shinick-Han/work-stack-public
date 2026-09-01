@@ -103,6 +103,9 @@ NEGATIVE_TEST_RULES = {
     Path("tests/test_capture.py"): {"raw-content canary"},
     Path("tests/test_audit_export.py"): {"email address", "raw-content canary"},
 }
+SOURCE_METADATA_RULES = {
+    Path("frontend/package-lock.json"): {"email address"},
+}
 FROZEN_FIXTURE_HASHES = {
     Path("contracts/workstack-conduit-v1/safety/snapshot-v1-safety-cases.json"):
         "480a16ccb18338417c718aca6e7729037431a201a464b6298e0819a0c349f92f",
@@ -197,6 +200,13 @@ def _negative_rule_allowed(relative: Path, label: str) -> bool:
     )
 
 
+def _rule_allowed(relative: Path, label: str) -> bool:
+    normalized = Path(relative.as_posix())
+    return _negative_rule_allowed(normalized, label) or label in SOURCE_METADATA_RULES.get(
+        normalized, set()
+    )
+
+
 def _exact_frozen_fixture(relative: Path, path: Path) -> bool:
     expected = FROZEN_FIXTURE_HASHES.get(Path(relative.as_posix()))
     return expected is not None and hashlib.sha256(path.read_bytes()).hexdigest() == expected
@@ -240,7 +250,7 @@ def _structured_json_findings(relative: Path, value: Any) -> Iterator[str]:
             ("personal path", bool(PERSONAL_PATH_RE.search(text))),
         )
         for label, matched in rules:
-            if matched and not _negative_rule_allowed(relative, label):
+            if matched and not _rule_allowed(relative, label):
                 yield "{} at {}".format(label, json_path)
 
 
@@ -298,7 +308,7 @@ def audit(root: Path, denied: Iterable[str], mode: str = "auto") -> list[str]:
         if _exact_frozen_fixture(relative, path):
             continue
         for label, pattern in TEXT_RULES.items():
-            if pattern.search(text) and not _negative_rule_allowed(relative, label):
+            if pattern.search(text) and not _rule_allowed(relative, label):
                 findings.append("{}: {}".format(relative, label))
         if suffix == ".json":
             try:

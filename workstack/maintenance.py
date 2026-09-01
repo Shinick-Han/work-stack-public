@@ -123,12 +123,16 @@ def backup_store(data_dir: Path | str, output_dir: Path | str) -> BackupArtifact
     )
 
 
-def _read_verified_archive(path: Path | str) -> tuple[BackupArtifact, dict[str, bytes]]:
+def _backup_candidate(path: Path | str) -> Path:
     candidate = Path(path).expanduser().resolve()
     if not candidate.is_file():
         raise BackupValidationError("backup archive does not exist")
     if candidate.stat().st_size > MAX_BACKUP_BYTES:
         raise BackupValidationError("backup archive exceeds the size limit")
+    return candidate
+
+
+def _read_archive_members(candidate: Path) -> dict[str, bytes]:
     expected_names = {BACKUP_MANIFEST, *DEFAULTS.keys()}
     try:
         with zipfile.ZipFile(candidate, "r") as archive:
@@ -136,60 +140,92 @@ def _read_verified_archive(path: Path | str) -> tuple[BackupArtifact, dict[str, 
             names = [item.filename for item in infos]
             if len(names) != len(set(names)) or set(names) != expected_names:
                 raise BackupValidationError("backup archive member set is invalid")
-            if any(item.is_dir() or item.file_size > MAX_BACKUP_BYTES for item in infos):
+            if any(
+                item.is_dir() or item.file_size > MAX_BACKUP_BYTES
+                for item in infos
+            ):
                 raise BackupValidationError("backup archive contains an invalid member")
             if sum(item.file_size for item in infos) > MAX_BACKUP_BYTES:
                 raise BackupValidationError("expanded backup exceeds the size limit")
-            bodies = {name: archive.read(name) for name in names}
+            return {name: archive.read(name) for name in names}
     except (zipfile.BadZipFile, OSError) as error:
         raise BackupValidationError("backup archive is unreadable") from error
 
+
+def _decode_backup_manifest(bodies: dict[str, bytes]) -> dict[str, Any]:
     try:
         manifest = json.loads(bodies.pop(BACKUP_MANIFEST).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BackupValidationError("backup manifest is invalid") from error
-    if not isinstance(manifest, dict) or set(manifest) != {
+    expected = {
         "schema_version",
         "product_version",
         "created_at",
         "workspace_id",
         "store_schema_version",
         "files",
-    }:
+    }
+    if not isinstance(manifest, dict) or set(manifest) != expected:
         raise BackupValidationError("backup manifest fields are invalid")
+    return manifest
+
+
+def _validate_backup_manifest_header(manifest: dict[str, Any]) -> None:
     if manifest["schema_version"] != BACKUP_SCHEMA_VERSION:
         raise BackupValidationError("backup schema version is unsupported")
-    if not isinstance(manifest["product_version"], str) or not manifest["product_version"]:
+    if (
+        not isinstance(manifest["product_version"], str)
+        or not manifest["product_version"]
+    ):
         raise BackupValidationError("backup product version is invalid")
     if not isinstance(manifest["created_at"], str):
         raise BackupValidationError("backup creation time is invalid")
     try:
-        parsed_time = dt.datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00"))
+        parsed_time = dt.datetime.fromisoformat(
+            manifest["created_at"].replace("Z", "+00:00")
+        )
     except ValueError as error:
         raise BackupValidationError("backup creation time is invalid") from error
     if parsed_time.tzinfo is None or parsed_time.utcoffset() is None:
         raise BackupValidationError("backup creation time must include a timezone")
     if not isinstance(manifest["workspace_id"], str) or not manifest["workspace_id"]:
         raise BackupValidationError("backup workspace identity is invalid")
+
+
+def _validate_backup_file_record(
+    record: Any,
+    bodies: dict[str, bytes],
+    indexed: dict[str, dict[str, Any]],
+) -> None:
+    if not isinstance(record, dict) or set(record) != {"name", "sha256", "size"}:
+        raise BackupValidationError("backup file record is invalid")
+    name = record["name"]
+    if name not in DEFAULTS or name in indexed:
+        raise BackupValidationError("backup file record is unknown or repeated")
+    body = bodies[name]
+    if type(record["size"]) is not int or record["size"] != len(body):
+        raise BackupValidationError("backup member size mismatch")
+    if not isinstance(record["sha256"], str) or not secrets.compare_digest(
+        record["sha256"], _sha256(body)
+    ):
+        raise BackupValidationError("backup member digest mismatch")
+    indexed[name] = record
+
+
+def _verify_backup_file_manifest(
+    manifest: dict[str, Any], bodies: dict[str, bytes]
+) -> None:
     files = manifest["files"]
     if not isinstance(files, list) or len(files) != len(DEFAULTS):
         raise BackupValidationError("backup file manifest is invalid")
     indexed: dict[str, dict[str, Any]] = {}
     for record in files:
-        if not isinstance(record, dict) or set(record) != {"name", "sha256", "size"}:
-            raise BackupValidationError("backup file record is invalid")
-        name = record["name"]
-        if name not in DEFAULTS or name in indexed:
-            raise BackupValidationError("backup file record is unknown or repeated")
-        body = bodies[name]
-        if type(record["size"]) is not int or record["size"] != len(body):
-            raise BackupValidationError("backup member size mismatch")
-        if not isinstance(record["sha256"], str) or not secrets.compare_digest(
-            record["sha256"], _sha256(body)
-        ):
-            raise BackupValidationError("backup member digest mismatch")
-        indexed[name] = record
+        _validate_backup_file_record(record, bodies, indexed)
 
+
+def _validate_backup_store(
+    manifest: dict[str, Any], bodies: dict[str, bytes]
+) -> None:
     with tempfile.TemporaryDirectory(prefix="workstack-backup-verify-") as temporary:
         validation_root = Path(temporary)
         for name, body in bodies.items():
@@ -197,12 +233,22 @@ def _read_verified_archive(path: Path | str) -> tuple[BackupArtifact, dict[str, 
         try:
             readiness = Store(validation_root).initialize()
         except (OSError, ValueError) as error:
-            raise BackupValidationError("backup store failed semantic validation") from error
+            raise BackupValidationError(
+                "backup store failed semantic validation"
+            ) from error
         if readiness.workspace_uid != manifest["workspace_id"]:
             raise BackupValidationError("backup workspace identity mismatch")
         if readiness.schema_version != manifest["store_schema_version"]:
             raise BackupValidationError("backup store schema mismatch")
 
+
+def _read_verified_archive(path: Path | str) -> tuple[BackupArtifact, dict[str, bytes]]:
+    candidate = _backup_candidate(path)
+    bodies = _read_archive_members(candidate)
+    manifest = _decode_backup_manifest(bodies)
+    _validate_backup_manifest_header(manifest)
+    _verify_backup_file_manifest(manifest, bodies)
+    _validate_backup_store(manifest, bodies)
     artifact = BackupArtifact(
         path=candidate,
         workspace_id=manifest["workspace_id"],

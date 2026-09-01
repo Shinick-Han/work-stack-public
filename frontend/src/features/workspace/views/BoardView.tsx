@@ -29,7 +29,7 @@ import {
   blockingDependenciesFromIndex,
   indexDependencyTasks,
   type TaskBlocker,
-} from "../../tasks/taskRelationships";
+} from "../../../domain/taskRelationships";
 import { useLocalToday } from "../../focus/useLocalToday";
 import { TaskDueTiming } from "./TaskDueTiming";
 

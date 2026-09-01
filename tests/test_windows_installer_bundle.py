@@ -31,6 +31,15 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn("UTF8Encoding", script)
         self.assertIn("GetFileName($output)", script)
 
+    def test_one_file_setup_forwards_backup_policy_to_the_installer(self) -> None:
+        script = self.read("Build-WindowsInstaller.ps1")
+
+        self.assertGreaterEqual(script.count("[int]$BackupRetention = 14"), 1)
+        self.assertGreaterEqual(script.count("[string]$BackupDir = ''"), 1)
+        self.assertIn("@('DataDir', 'BackupDir', 'Port', 'BackupRetention')", script)
+        self.assertIn("$PSBoundParameters.ContainsKey($optionalName)", script)
+        self.assertIn("& $installer @installerArguments", script)
+
     def test_builder_removes_local_python_bytecode_before_packaging(self) -> None:
         script = self.read("Build-WindowsInstaller.ps1")
 
@@ -76,6 +85,10 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         script = self.read("Stop-WorkStack.ps1")
 
         self.assertIn(".IndexOf($entryPath, [StringComparison]::OrdinalIgnoreCase)", script)
+        self.assertIn("runtime\\pythonw.exe", script)
+        self.assertIn("desktop\\python-webview-shell\\workstack_desktop.py", script)
+        self.assertIn(".IndexOf($desktopEntryPath, [StringComparison]::OrdinalIgnoreCase)", script)
+        self.assertIn("$ownsServer -or $ownsDesktop", script)
         self.assertNotIn(".Contains($entryPath, [StringComparison]::OrdinalIgnoreCase)", script)
 
     def test_installer_rejects_runtime_data_path_overlap_before_mutation(self) -> None:
@@ -110,7 +123,7 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
 
         self.assertIn("function Resolve-AvailableLoopbackPort", installer)
         self.assertIn("$resolvedPort = Resolve-AvailableLoopbackPort -PreferredPort $Port", installer)
-        self.assertIn("port = $resolvedPort", installer)
+        self.assertIn("$configValues['port'] = $resolvedPort", installer)
         self.assertLess(
             installer.index("& $stopScript -InstallRoot $installPath"),
             installer.index("$resolvedPort = Resolve-AvailableLoopbackPort -PreferredPort $Port"),
@@ -130,6 +143,7 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn("--require-hashes", script)
         self.assertIn("requirements.txt", script)
         self.assertIn("requirements-windows-desktop.txt", script)
+        self.assertIn("import jsonschema", script)
 
     def test_user_guide_does_not_require_python_or_node_on_the_target_machine(self) -> None:
         guide = (ROOT / "docs" / "WORKSTACK_WINDOWS_INSTALL_BACKUP_USER_GUIDE_2026-08-30.md").read_text(
@@ -150,9 +164,60 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertLess(script.index("Test-WorkStackSetup.ps1"), script.index("& $setup"))
         self.assertIn("$config.data_dir", script)
         self.assertIn("$config.port", script)
+        self.assertIn("$config.backup_retention", script)
+        self.assertIn("$config.backup_dir", script)
+        self.assertIn("-BackupDir $backupPath", script)
         self.assertIn("-NoShortcut:$NoShortcut", script)
         self.assertNotIn("SourceRoot", script)
         self.assertNotIn("Install-WorkStack.ps1", script)
+
+    def test_installer_restores_configuration_when_upgrade_rolls_back(self) -> None:
+        script = self.read("Install-WorkStack.ps1")
+
+        self.assertIn("$originalConfigBytes", script)
+        self.assertIn("function Write-Utf8NoBomAtomic", script)
+        self.assertIn("function Restore-OriginalConfig", script)
+        self.assertIn("Restore-OriginalConfig", script)
+        self.assertIn("$preserveExistingConfig", script)
+        self.assertIn("$existingConfig.PSObject.Properties", script)
+        self.assertIn("$existingConfig.backup_dir", script)
+        self.assertIn("$PSBoundParameters.ContainsKey('BackupDir')", script)
+        self.assertIn("WORKSTACK_INSTALL_TEST_FAIL_AFTER_CONFIG_WRITE", script)
+
+    def test_direct_reinstall_preserves_the_selected_ssot_path_by_default(self) -> None:
+        script = self.read("Install-WorkStack.ps1")
+
+        self.assertIn("$PSBoundParameters.ContainsKey('DataDir')", script)
+        self.assertIn("$existingDataDir = [string]$existingConfig.data_dir", script)
+        self.assertIn("$dataPath = [IO.Path]::GetFullPath($existingDataDir)", script)
+        self.assertIn("$PSBoundParameters.ContainsKey('Port')", script)
+
+    def test_shipping_upgrade_smoke_covers_105_preservation_and_rollback(self) -> None:
+        script = self.read("Test-WorkStackUpgrade.ps1")
+
+        self.assertIn("PreviousSetupPath", script)
+        self.assertIn("CandidateSetupPath", script)
+        self.assertIn("PreviousVersion", script)
+        self.assertIn("1.0.5", script)
+        self.assertIn("configuration bytes were not preserved", script.lower())
+        self.assertIn("rollback did not restore the $previousversion payload", script.lower())
+        self.assertIn("release-gate-marker.txt", script)
+        self.assertIn("Set-IsReadOnly", script)
+        self.assertIn("custom-backups", script)
+        self.assertIn("custom backup directory", script.lower())
+
+    def test_post_install_launcher_failure_rolls_back_before_receipting_success(self) -> None:
+        script = self.read("Apply-WorkStackUpdate.ps1")
+
+        self.assertIn("function New-InstallRecoverySnapshot", script)
+        self.assertIn("function Restore-InstallRecoverySnapshot", script)
+        self.assertIn("WORKSTACK_UPDATE_TEST_FAIL_LAUNCHER_VALIDATION", script)
+        self.assertIn("WORKSTACK_UPDATE_TEST_FAIL_RESTART", script)
+        self.assertIn("-Status 'rolled-back'", script)
+        self.assertIn("-Status 'recovery-required'", script)
+        self.assertIn("recovery_path", script)
+        self.assertLess(script.index("Start-Process"), script.index("-Status 'installed'"))
+        self.assertIn("post-install launcher rollback", self.read("Test-WorkStackUpgrade.ps1").lower())
 
     def test_maintenance_launcher_is_offline_explicit_and_fail_closed(self) -> None:
         script = self.read("Maintain-WorkStack.ps1")
@@ -179,13 +244,14 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn("Maintain-WorkStack.ps1", installer)
         self.assertIn("Work Stack Maintenance.lnk", uninstaller)
 
-    def test_primary_shortcut_uses_the_signed_python_window_host(self) -> None:
+    def test_primary_shortcut_uses_the_signed_windowless_python_host_directly(self) -> None:
         installer = self.read("Install-WorkStack.ps1")
         launcher = self.read("Start-WorkStack.ps1")
         builder = self.read("Build-WindowsInstaller.ps1")
 
         self.assertIn("runtime\\pythonw.exe", installer)
         self.assertIn("desktop\\python-webview-shell\\workstack_desktop.py", installer)
+        self.assertNotIn("System32\\wscript.exe", installer)
         self.assertIn("requirements-windows-desktop.txt", builder)
         self.assertIn("desktop", builder)
         self.assertIn("requirements-windows-desktop.txt", installer)
@@ -209,8 +275,16 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
     def test_installer_writes_configuration_as_utf8_without_bom(self) -> None:
         installer = self.read("Install-WorkStack.ps1")
 
-        self.assertIn("[IO.File]::WriteAllText((Join-Path $statePath 'config.json')", installer)
+        self.assertIn("function Write-Utf8NoBomAtomic", installer)
+        self.assertIn("Write-Utf8NoBomAtomic -Path $configPath", installer)
+        self.assertIn("Write-BytesAtomic -Path (Join-Path $installPath 'runtime-config.json')", installer)
         self.assertIn("[Text.UTF8Encoding]::new($false)", installer)
+
+    def test_desktop_launcher_can_use_the_install_local_runtime_configuration(self) -> None:
+        start = self.read("Start-WorkStack.ps1")
+
+        self.assertIn("[string]$ConfigPath = ''", start)
+        self.assertIn("[IO.Path]::GetFullPath($ConfigPath)", start)
 
     def test_remote_configurator_is_non_secret_strict_and_uses_a_distinct_forward(self) -> None:
         script = self.read("Configure-WorkStackRemote.ps1")

@@ -1,5 +1,10 @@
-import { describe, expect, test } from 'vitest'
-import { buildManualWebCapturePacket, classifyMicrosoftSourceUrl, parseExternalSourceCapture, sanitizeMicrosoftSourceUrl } from './sourceCapture'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+import { buildManualWebCapturePacket, classifyMicrosoftSourceUrl, createSourceCaptureIntentId, parseExternalSourceCapture, sanitizeMicrosoftSourceUrl } from './sourceCapture'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
 
 describe('Microsoft web source capture', () => {
   test('accepts a bounded external handoff and rejects unknown providers', () => {
@@ -18,6 +23,20 @@ describe('Microsoft web source capture', () => {
     expect(sanitizeMicrosoftSourceUrl('https://teams.microsoft.com/v2/?access_token=secret')).toBeNull()
     expect(sanitizeMicrosoftSourceUrl('https://teams.live.com/v2/')).toBe('https://teams.live.com/v2/')
     expect(sanitizeMicrosoftSourceUrl('https://outlook.live.com/mail/inbox/id/abc')).toBe('https://outlook.live.com/mail/inbox/id/abc')
+    expect(sanitizeMicrosoftSourceUrl('https://www.onenote.com/notebooks/test')).toBe('https://www.onenote.com/notebooks/test')
+    expect(sanitizeMicrosoftSourceUrl('https://tenant.onenote.com/notebooks/test')).toBeNull()
+    expect(sanitizeMicrosoftSourceUrl('https://teams.microsoft.com/v2/#%E0%A4%A')).toBeNull()
+  })
+
+  test('creates a UUID when randomUUID is unavailable', () => {
+    vi.stubGlobal('crypto', {
+      getRandomValues: (bytes: Uint8Array) => bytes.fill(0),
+    })
+    expect(createSourceCaptureIntentId()).toBe('00000000-0000-4000-8000-000000000000')
+
+    vi.stubGlobal('crypto', undefined)
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    expect(createSourceCaptureIntentId()).toBe('00000000-0000-4000-8000-000000000000')
   })
 
   test('distinguishes item deep links from app and authentication links', () => {
@@ -29,6 +48,7 @@ describe('Microsoft web source capture', () => {
 
   test('builds a canonical manual capture without claiming OOB provenance', async () => {
     const packet = await buildManualWebCapturePacket({
+      intentId: '11111111-1111-4111-8111-111111111111',
       provider: 'onenote',
       captureTitle: 'Planning note',
       text: 'Prepare the owner-by-owner action plan.',

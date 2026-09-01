@@ -10,5 +10,7 @@ frontend/test-results/
 # Runtime-only state and secrets. Tracked data/*.json files are demo fixtures.
 .runtime/
 .artifacts/
+.coverage
+.coverage.*
 *.log
 

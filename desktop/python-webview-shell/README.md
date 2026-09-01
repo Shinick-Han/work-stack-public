@@ -56,6 +56,26 @@ and agent. Work Stack never stores a password or private-key path. Host-key
 checking remains strict, both ends of the forward bind to loopback, and the
 desktop process stops its SSH child when the window closes. Unknown fields,
 relative or root Linux paths, unsafe aliases, and invalid ports fail closed.
+`local_forward_port` is a preferred port, not a promise. If another process is
+already listening there, the current run selects an OS-assigned loopback port
+without probing, replacing, or terminating the occupant; the saved preference
+is left unchanged. The SSH forward still uses `ExitOnForwardFailure=yes` so a
+bind race fails closed.
+
+While the desktop application is open, an in-process monitor checks both the
+owned SSH process and the loopback health endpoint. After two consecutive
+health failures (or an exited SSH child), it makes at most three reconnect
+attempts with bounded backoff. The Work Stack view reloads only after the
+replacement tunnel and workspace identity are verified. A terminal failure is
+shown as `Disconnected`; closing the application cancels waits and prevents a
+late reconnect from resurrecting the tunnel. This monitor is part of the
+desktop process, not a background daemon.
+
+The sidebar's **SSOT connection** entry opens the Connection Center. It can
+validate a Local or Remote SSH draft without changing the active connection,
+then save the profile atomically. Applying a saved profile still requires an
+application restart so the active planning-state authority changes at a clear
+boundary.
 The remote server must expose the exact configured workspace UUID before the
 desktop UI opens; the remote command also refuses a directory without an
 existing Work Stack identity store.

@@ -65,10 +65,10 @@ interface GraphViewProps {
 }
 
 const EDGE_COLORS = {
-  alignment: "#8b7cf6",
-  dependency: "#f06f7d",
-  parent: "#44bfd1",
-  reference: "#d7a94d",
+  alignment: "var(--wsv-relation-alignment)",
+  dependency: "var(--wsv-relation-dependency)",
+  parent: "var(--wsv-relation-parent)",
+  reference: "var(--wsv-relation-reference)",
 } as const;
 
 type GraphEdgeData = Record<string, unknown> & {
@@ -139,8 +139,8 @@ function PlanningEdge({
       label={data?.kind}
       labelX={label.x}
       labelY={label.y}
-      labelStyle={{ fill: "#90a1b8", fontSize: 9, fontWeight: 700 }}
-      labelBgStyle={{ fill: "#0b1421", fillOpacity: 0.84 }}
+      labelStyle={{ fill: "var(--wsv-graph-edge-label-text)", fontSize: 9, fontWeight: 700 }}
+      labelBgStyle={{ fill: "var(--wsv-graph-edge-label-bg)", fillOpacity: 0.84 }}
       labelBgBorderRadius={4}
       labelBgPadding={[4, 2]}
     />
@@ -227,9 +227,9 @@ const INITIAL_NODE_DIMENSIONS = {
 } as const;
 
 export function miniMapNodeColor(node: WorkspaceFlowNode) {
-  if (node.data.kind === "objective") return "#8b7cf6";
-  if (node.data.kind === "note") return "#d7a94d";
-  return "#4ea8de";
+  if (node.data.kind === "objective") return "var(--wsv-minimap-node-objective)";
+  if (node.data.kind === "note") return "var(--wsv-minimap-node-note)";
+  return "var(--wsv-minimap-node-task)";
 }
 
 export function miniMapNodeClassName(node: WorkspaceFlowNode) {
@@ -516,12 +516,12 @@ export function GraphView({
         maxZoom={1.7}
         proOptions={{ hideAttribution: true }}
       >
-        <Background color="#31445d" gap={24} size={1} />
+        <Background color="var(--wsv-graph-grid)" gap={24} size={1} />
         <MiniMap
           ariaLabel="Workspace overview minimap"
-          bgColor="#07111d"
-          maskColor="rgba(4, 10, 18, 0.22)"
-          maskStrokeColor="#8fbde1"
+          bgColor="var(--wsv-minimap-bg)"
+          maskColor="var(--wsv-minimap-mask)"
+          maskStrokeColor="var(--wsv-minimap-mask-border)"
           maskStrokeWidth={1.25}
           pannable
           zoomable
@@ -529,7 +529,9 @@ export function GraphView({
           nodeClassName={(node) => miniMapNodeClassName(node as WorkspaceFlowNode)}
           nodeColor={(node) => miniMapNodeColor(node as WorkspaceFlowNode)}
           nodeComponent={WorkspaceMiniMapNode}
-          nodeStrokeColor={(node) => node.data?.selected ? "#f5fbff" : "#0b1421"}
+          nodeStrokeColor={(node) => node.data?.selected
+            ? "var(--wsv-minimap-node-selected)"
+            : "var(--wsv-minimap-node-stroke)"}
           nodeStrokeWidth={3}
           offsetScale={10}
         />

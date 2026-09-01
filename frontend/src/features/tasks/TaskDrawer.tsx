@@ -2,91 +2,42 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, api } from '../../api/client'
 import { Icon } from '../../components/Icon'
-import { Button, EmptyState, IconButton, LoadingBlock, Pill } from '../../components/Primitives'
+import { EmptyState, IconButton, LoadingBlock } from '../../components/Primitives'
 import {
   microsoftProviderGates,
-  providerReplyVerified,
   type MicrosoftProviderGates,
 } from '../../config/providerGates'
 import {
-  MICROSOFT_PROVIDERS,
-  TASK_PRIORITIES,
-  TASK_STATUSES,
-  type ContextItem,
-  type MicrosoftProvider,
+  type ApprovedReplyInput,
   type ReplyCommand,
+  type ReplyReceipt,
   type Task,
   type TaskDetail,
-  type TaskPatch,
   type WorkspaceProjection,
 } from '../../domain/types'
-import { formatDateTime, getErrorMessage, getObjectiveTitle, priorityLabels, safeExternalUrl, statusLabels } from '../../utils/format'
-import { ReplyComposer, type ReplySource } from './ReplyComposer'
+import { getErrorMessage } from '../../utils/format'
 import { SnapshotExportDialog } from './SnapshotExportDialog'
 import { TaskActionsDialog } from './TaskActionsDialog'
-import { cyclicRelationshipCandidates } from './taskRelationships'
+import {
+  createSaveRun,
+  hasPatch,
+  overlayDirtyFields,
+  patchFields,
+  pruneServerEqualFields,
+  sameValue,
+  type EditableTaskField,
+  type EditableTaskPatch,
+  type SaveRun,
+} from './taskDrawerModel'
+import { TaskActivityTimeline, TaskContextTimeline } from './TaskDrawerTimelines'
+import { TaskRelationshipsSection } from './TaskRelationshipsSection'
+import { TaskOverviewEditor } from './TaskOverviewEditor'
+import { TaskOverviewSummary } from './TaskOverviewSummary'
+import { TaskReplySection } from './TaskReplySection'
+import { selectTaskDrawerData, type TaskDrawerSelection } from './taskDrawerSelectors'
 
 type DrawerTab = 'overview' | 'context' | 'activity'
-type EditableTaskPatch = Omit<TaskPatch, 'revision'>
-type EditableTaskField = keyof EditableTaskPatch
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
-
-interface SaveRun {
-  taskId: string
-  confirmed: Task | null
-  queued: EditableTaskPatch
-  inFlight: EditableTaskPatch | null
-  inFlightBase: Task | null
-  dirtyFields: Set<EditableTaskField>
-  running: boolean
-  blocked: boolean
-  autoRebaseUsed: boolean
-  detached: boolean
-}
-
-function createSaveRun(taskId: string): SaveRun {
-  return {
-    taskId,
-    confirmed: null,
-    queued: {},
-    inFlight: null,
-    inFlightBase: null,
-    dirtyFields: new Set(),
-    running: false,
-    blocked: false,
-    autoRebaseUsed: false,
-    detached: false,
-  }
-}
-
-function patchFields(patch: EditableTaskPatch): EditableTaskField[] {
-  return Object.keys(patch) as EditableTaskField[]
-}
-
-function hasPatch(patch: EditableTaskPatch) {
-  return patchFields(patch).length > 0
-}
-
-function sameValue(left: unknown, right: unknown) {
-  if (Array.isArray(left) && Array.isArray(right)) {
-    return left.length === right.length && left.every((value, index) => value === right[index])
-  }
-  return left === right
-}
-
-function pruneServerEqualFields(patch: EditableTaskPatch, task: Task) {
-  const pruned = { ...patch }
-  for (const field of patchFields(pruned)) {
-    if (sameValue(pruned[field], task[field])) delete pruned[field]
-  }
-  return pruned
-}
-
-function overlayDirtyFields(task: Task, draft: Task, fields: Set<EditableTaskField>) {
-  let overlaid = { ...task }
-  for (const field of fields) overlaid = { ...overlaid, [field]: draft[field] }
-  return overlaid
-}
 
 interface TaskDrawerProps {
   taskId: string
@@ -99,45 +50,197 @@ interface TaskDrawerProps {
   providerGates?: MicrosoftProviderGates
 }
 
-function externalContext(item: ContextItem) {
-  return Boolean(item.source || item.normalized || item.kind === 'capture' || item.type === 'capture')
+function saveRunForTask(current: SaveRun, taskId: string) {
+  if (current.taskId === taskId) return current
+  current.detached = true
+  return createSaveRun(taskId)
 }
 
-function contextTitle(item: ContextItem) {
-  return item.source?.display_title ?? item.normalized?.summary ?? item.text ?? 'Context item'
+function draftContextCount(draft: Task | null) {
+  return draft ? draft.context_count : 0
 }
 
-function activityTitle(item: TaskDetail['activity'][number]) {
-  if (item.type !== 'task.planning_status' || !item.status) {
-    return item.message ?? item.action ?? item.type ?? 'Task updated'
-  }
-  if (item.prior_status) return `${statusLabels[item.prior_status]} → ${statusLabels[item.status]}`
-  return `Status recorded as ${statusLabels[item.status]}`
+function retryAvailable(saveState: SaveState, run: SaveRun) {
+  return saveState === 'error' && hasPatch(run.queued)
 }
 
-function microsoftReplySource(item: ContextItem): ReplySource | null {
-  const source = item.source
-  if (
-    !item.id
-    || !source
-    || !MICROSOFT_PROVIDERS.includes(source.provider as MicrosoftProvider)
-    || !source.resource_type
-    || !source.connection_ref
-    || !source.container_ref
-    || !source.display_title
-    || !source.object_ref
-    || !source.version_ref
-  ) return null
-  return {
-    capture_id: item.id,
-    provider: source.provider as MicrosoftProvider,
-    resource_type: source.resource_type,
-    connection_ref: source.connection_ref,
-    container_ref: source.container_ref,
-    display_title: source.display_title,
-    object_ref: source.object_ref,
-    version_ref: source.version_ref,
-  }
+function draftTabActive(tab: DrawerTab, expected: DrawerTab, draft: Task | null) {
+  return tab === expected && Boolean(draft)
+}
+
+function taskDetailError(isError: boolean, error: unknown) {
+  return isError ? error : null
+}
+
+function taskDetailContext(detail?: TaskDetail) {
+  return detail ? detail.context : []
+}
+
+function taskDetailActivity(detail?: TaskDetail) {
+  return detail ? detail.activity : []
+}
+
+function taskDetailReplies(detail?: TaskDetail) {
+  return detail ? detail.replies : []
+}
+
+function saveStateLabel(saveState: SaveState) {
+  if (saveState === 'saving') return 'Saving…'
+  if (saveState === 'saved') return 'Saved'
+  if (saveState === 'error') return 'Not saved'
+  return ''
+}
+
+function TaskDrawerHeader({ navigationLocked, onClose, onMore, saveState, taskId }: {
+  navigationLocked: boolean
+  onClose: () => void
+  onMore: () => void
+  saveState: SaveState
+  taskId: string
+}) {
+  return <header className="drawer-header">
+    <div className="drawer-header__identity"><span className="task-glyph"><Icon name="task" size={17} /></span><div><span>Task</span><strong>{taskId}</strong></div></div>
+    <div className="drawer-header__actions">
+      <span aria-live="polite" className={`save-state save-state--${saveState}`}>{saveStateLabel(saveState)}</span>
+      <IconButton disabled={navigationLocked} icon="more" label="More task actions" onClick={onMore} variant="ghost" />
+      <IconButton disabled={navigationLocked} icon="close" label="Close task drawer" onClick={onClose} variant="ghost" />
+    </div>
+  </header>
+}
+
+function TaskDrawerTabs({ contextCount, onTab, tab }: { contextCount: number; onTab: (tab: DrawerTab) => void; tab: DrawerTab }) {
+  return <nav aria-label="Task details" className="drawer-tabs">
+    {(['overview', 'context', 'activity'] as const).map((item) => (
+      <button aria-selected={tab === item} className={tab === item ? 'is-active' : ''} key={item} onClick={() => onTab(item)} role="tab" type="button">
+        {item[0].toUpperCase() + item.slice(1)}
+        {item === 'context' && contextCount ? <span>{contextCount}</span> : null}
+      </button>
+    ))}
+  </nav>
+}
+
+function TaskDrawerLoadState({ draft, error, pending }: { draft: Task | null; error: unknown; pending: boolean }) {
+  if (pending) return <LoadingBlock label="Loading task details…" />
+  if (error) return <EmptyState icon="warning" title="Task detail unavailable">{getErrorMessage(error)}</EmptyState>
+  if (!draft) return <EmptyState icon="warning" title="Task detail unavailable">The task did not include a readable projection.</EmptyState>
+  return null
+}
+
+function TaskDrawerOverviewTab({ active, canRetry, draft, markDirty, navigateAfterSave, navigationLocked, onDiscard, onDraftChange, onInvalidTitle, onOpenObjective, onOpenSnapshot, onOpenTask, onRetry, onSave, onTagTextChange, saveError, saveState, selection, tagText, workspace }: {
+  active: boolean
+  canRetry: boolean
+  draft: Task | null
+  markDirty: (field: EditableTaskField) => void
+  navigateAfterSave: (action: () => void) => void
+  navigationLocked: boolean
+  onDiscard: () => void
+  onDraftChange: (task: Task) => void
+  onInvalidTitle: () => void
+  onOpenObjective?: (objectiveId: string) => void
+  onOpenSnapshot: () => void
+  onOpenTask?: (taskId: string) => void
+  onRetry: () => void
+  onSave: (patch: EditableTaskPatch) => void
+  onTagTextChange: (value: string) => void
+  saveError: string | null
+  saveState: SaveState
+  selection: TaskDrawerSelection
+  tagText: string
+  workspace: WorkspaceProjection
+}) {
+  if (!active || !draft) return null
+  const openObjective = onOpenObjective ? (objectiveId: string) => navigateAfterSave(() => onOpenObjective(objectiveId)) : undefined
+  const relationshipSection = onOpenTask ? (
+    <TaskRelationshipsSection
+      childTasks={selection.childTasks}
+      dependentTasks={selection.dependentTasks}
+      dependencyTasks={selection.dependencyTasks}
+      disabled={navigationLocked}
+      onOpenTask={(relatedTaskId) => navigateAfterSave(() => onOpenTask(relatedTaskId))}
+      parentTask={selection.parentTask}
+    />
+  ) : null
+  return <div className="drawer-overview">
+    <TaskOverviewSummary
+      canDiscard={saveState === 'error'}
+      canRetry={canRetry}
+      draft={draft}
+      isSaving={saveState === 'saving'}
+      navigationLocked={navigationLocked}
+      objectives={selection.taskObjectives}
+      onDiscard={onDiscard}
+      onDraftChange={onDraftChange}
+      onInvalidTitle={onInvalidTitle}
+      onMarkDirty={markDirty}
+      onOpenObjective={openObjective}
+      onOpenSnapshot={onOpenSnapshot}
+      onRetry={onRetry}
+      onSaveTitle={(title) => onSave({ title })}
+      saveError={saveError}
+    />
+    <TaskOverviewEditor
+      availableDependencyTasks={selection.availableDependencyTasks}
+      availableParentTasks={selection.availableParentTasks}
+      draft={draft}
+      isSaving={saveState === 'saving'}
+      onDraftChange={onDraftChange}
+      onMarkDirty={markDirty}
+      onSave={onSave}
+      onTagTextChange={onTagTextChange}
+      relationshipSection={relationshipSection}
+      tagText={tagText}
+      workspace={workspace}
+    />
+  </div>
+}
+
+function TaskDrawerContextTab({ active, context, onCreate, onImportReceipt, onToggle, open, providerGates, replies, selection, taskId }: {
+  active: boolean
+  context: TaskDetail['context']
+  onCreate: (input: ApprovedReplyInput) => Promise<ReplyCommand>
+  onImportReceipt: (replyId: string, receipt: ReplyReceipt) => Promise<ReplyCommand>
+  onToggle: () => void
+  open: boolean
+  providerGates: MicrosoftProviderGates
+  replies: ReplyCommand[]
+  selection: TaskDrawerSelection
+  taskId: string
+}) {
+  if (!active) return null
+  return <div className="context-tab">
+    <TaskReplySection
+      onCreate={onCreate}
+      onImportReceipt={onImportReceipt}
+      onToggle={onToggle}
+      open={open}
+      replies={replies}
+      sources={selection.replySources}
+      taskId={taskId}
+      unavailableSources={selection.replyUnavailableSources}
+    />
+    <TaskContextTimeline context={context} providerGates={providerGates} />
+  </div>
+}
+
+function TaskDrawerActivityTab({ active, activity }: { active: boolean; activity: TaskDetail['activity'] }) {
+  return active ? <TaskActivityTimeline activity={activity} /> : null
+}
+
+function TaskDrawerDialogs({ draft, onActionClose, onDeleted, onNotice, onSaved, onSnapshotClose, snapshotOpen, taskActionsOpen, taskId }: {
+  draft: Task | null
+  onActionClose: () => void
+  onDeleted: () => void
+  onNotice: TaskDrawerProps['onNotice']
+  onSaved: (task: Task) => void
+  onSnapshotClose: () => void
+  snapshotOpen: boolean
+  taskActionsOpen: boolean
+  taskId: string
+}) {
+  return <>
+    <SnapshotExportDialog onClose={onSnapshotClose} onNotice={onNotice} open={snapshotOpen} taskId={taskId} />
+    {draft ? <TaskActionsDialog onClose={onActionClose} onDeleted={onDeleted} onNotice={onNotice} onSaved={onSaved} open={taskActionsOpen} task={draft} /> : null}
+  </>
 }
 
 export function TaskDrawer({
@@ -162,11 +265,7 @@ export function TaskDrawer({
   const mountedRef = useRef(true)
   const savedTimerRef = useRef<number | null>(null)
   const saveRunRef = useRef<SaveRun>(createSaveRun(taskId))
-
-  if (saveRunRef.current.taskId !== taskId) {
-    saveRunRef.current.detached = true
-    saveRunRef.current = createSaveRun(taskId)
-  }
+  saveRunRef.current = saveRunForTask(saveRunRef.current, taskId)
 
   const detailQuery = useQuery({
     queryKey: ['task', taskId],
@@ -264,6 +363,51 @@ export function TaskDrawer({
     if (!run.running && !run.blocked) setSaveState('idle')
   }
 
+  const clearPrunedDirtyFields = (run: SaveRun, beforePrune: EditableTaskPatch) => {
+    for (const field of patchFields(beforePrune)) {
+      if (!(field in run.queued)) run.dirtyFields.delete(field)
+    }
+  }
+
+  const refreshFailedRun = async (run: SaveRun) => {
+    const result = await detailQuery.refetch()
+    const latest = result.data?.task
+    if (latest && (!run.confirmed || latest.revision >= run.confirmed.revision)) run.confirmed = latest
+    const newest = newestCachedTask(run)
+    if (newest) {
+      run.confirmed = newest
+      updateCaches(newest, run.taskId)
+      hydrateDraft(newest, run.dirtyFields)
+    }
+    return newest
+  }
+
+  const tryAutomaticRebase = (
+    run: SaveRun,
+    error: unknown,
+    failedBase: Task | null,
+    newest: Task | null | undefined,
+  ) => {
+    if (!(error instanceof ApiError) || error.code !== 'revision_conflict' || !failedBase || !newest || run.autoRebaseUsed) {
+      return false
+    }
+    const beforePrune = run.queued
+    run.queued = pruneServerEqualFields(run.queued, newest)
+    clearPrunedDirtyFields(run, beforePrune)
+    const overlappingFields = patchFields(run.queued).filter((field) => !sameValue(failedBase[field], newest[field]))
+    if (overlappingFields.length) return false
+    run.autoRebaseUsed = true
+    run.blocked = false
+    setSaveError(null)
+    if (hasPatch(run.queued)) {
+      setSaveState('saving')
+    } else {
+      hydrateDraft(newest)
+      setSaveState('saved')
+    }
+    return true
+  }
+
   const reportSaveFailure = async (run: SaveRun, error: unknown) => {
     const failed = run.inFlight ?? {}
     const failedBase = run.inFlightBase
@@ -277,36 +421,9 @@ export function TaskDrawer({
     const message = error instanceof ApiError && error.code === 'revision_conflict'
       ? 'This task changed elsewhere. Latest values were reloaded; review and try again.'
       : getErrorMessage(error)
-    const result = await detailQuery.refetch()
-    const latest = result.data?.task
-    if (latest && (!run.confirmed || latest.revision >= run.confirmed.revision)) run.confirmed = latest
-    const newest = newestCachedTask(run)
-    if (newest) {
-      run.confirmed = newest
-      updateCaches(newest, run.taskId)
-      hydrateDraft(newest, run.dirtyFields)
-    }
+    const newest = await refreshFailedRun(run)
     if (!isActiveRun(run)) return
-    if (error instanceof ApiError && error.code === 'revision_conflict' && failedBase && newest && !run.autoRebaseUsed) {
-      const beforePrune = run.queued
-      run.queued = pruneServerEqualFields(run.queued, newest)
-      for (const field of patchFields(beforePrune)) {
-        if (!(field in run.queued)) run.dirtyFields.delete(field)
-      }
-      const overlappingFields = patchFields(run.queued).filter((field) => !sameValue(failedBase[field], newest[field]))
-      if (!overlappingFields.length) {
-        run.autoRebaseUsed = true
-        run.blocked = false
-        setSaveError(null)
-        if (hasPatch(run.queued)) {
-          setSaveState('saving')
-        } else {
-          hydrateDraft(newest)
-          setSaveState('saved')
-        }
-        return
-      }
-    }
+    if (tryAutomaticRebase(run, error, failedBase, newest)) return
     setSaveState('error')
     setSaveError(message)
     onNotice(getErrorMessage(error), 'error')
@@ -342,6 +459,50 @@ export function TaskDrawer({
     return true
   }
 
+  const acceptPatchResult = (run: SaveRun, base: Task, patch: EditableTaskPatch, updated: Task) => {
+    const confirmed = base.revision > updated.revision ? base : updated
+    run.confirmed = confirmed
+    run.inFlight = null
+    run.inFlightBase = null
+    updateCaches(updated, run.taskId)
+    for (const field of patchFields(patch)) {
+      if (!(field in run.queued)) run.dirtyFields.delete(field)
+    }
+    const beforePrune = run.queued
+    run.queued = pruneServerEqualFields(run.queued, confirmed)
+    clearPrunedDirtyFields(run, beforePrune)
+  }
+
+  const saveNextQueuedPatch = async (run: SaveRun): Promise<'empty' | 'saved' | 'stop'> => {
+    if (!hasPatch(run.queued)) return 'empty'
+    const base = run.confirmed
+    if (!base) return 'stop'
+    const patch = run.queued
+    run.queued = {}
+    run.inFlight = patch
+    run.inFlightBase = base
+    let updated: Task
+    try {
+      updated = await api.patchTask(run.taskId, { ...patch, revision: base.revision })
+    } catch (error) {
+      await reportSaveFailure(run, error)
+      return 'stop'
+    }
+    const newerCached = newestCachedTask(run)
+    if (newerCached && newerCached.revision > updated.revision) {
+      run.confirmed = newerCached
+      updateCaches(updated, run.taskId)
+      await reportSaveFailure(run, new ApiError(
+        409,
+        'revision_conflict',
+        'This task changed again while your save response was in flight.',
+      ))
+      return 'stop'
+    }
+    acceptPatchResult(run, base, patch, updated)
+    return isActiveRun(run) ? 'saved' : 'stop'
+  }
+
   const drain = async (run: SaveRun) => {
     if (run.running || run.blocked || !run.confirmed) return
     run.running = true
@@ -353,50 +514,9 @@ export function TaskDrawer({
     }
     try {
       for (;;) {
-        while (hasPatch(run.queued)) {
-          const base = run.confirmed
-          if (!base) return
-          const patch = run.queued
-          run.queued = {}
-          run.inFlight = patch
-          run.inFlightBase = base
-          let updated: Task
-          try {
-            updated = await api.patchTask(run.taskId, { ...patch, revision: base.revision })
-          } catch (error) {
-            await reportSaveFailure(run, error)
-            return
-          }
-
-          const newerCached = newestCachedTask(run)
-          if (newerCached && newerCached.revision > updated.revision) {
-            run.confirmed = newerCached
-            updateCaches(updated, run.taskId)
-            await reportSaveFailure(run, new ApiError(
-              409,
-              'revision_conflict',
-              'This task changed again while your save response was in flight.',
-            ))
-            return
-          }
-
-          const confirmed: Task = base.revision > updated.revision ? base : updated
-          run.confirmed = confirmed
-          run.inFlight = null
-          run.inFlightBase = null
-          updateCaches(updated, run.taskId)
-
-          for (const field of patchFields(patch)) {
-            if (!(field in run.queued)) run.dirtyFields.delete(field)
-          }
-          const beforePrune = run.queued
-          run.queued = pruneServerEqualFields(run.queued, confirmed)
-          for (const field of patchFields(beforePrune)) {
-            if (!(field in run.queued)) run.dirtyFields.delete(field)
-          }
-          if (!isActiveRun(run)) return
-        }
-
+        const outcome = await saveNextQueuedPatch(run)
+        if (outcome === 'saved') continue
+        if (outcome === 'stop') return
         if (await finalizeRun(run)) return
         if (!isActiveRun(run)) return
       }
@@ -406,16 +526,16 @@ export function TaskDrawer({
     }
   }
 
-  const save = (patch: EditableTaskPatch) => {
-    const run = saveRunRef.current
-    if (!run.confirmed || !hasPatch(patch)) return
-    if (!run.running && !run.blocked) run.autoRebaseUsed = false
-    let pending = pruneServerEqualFields(patch, run.confirmed)
-    if (run.inFlight) {
-      for (const field of patchFields(patch)) {
-        if (field in run.inFlight && !(field in pending)) pending = { ...pending, [field]: patch[field] }
-      }
+  const pendingPatch = (run: SaveRun, patch: EditableTaskPatch) => {
+    let pending = pruneServerEqualFields(patch, run.confirmed!)
+    if (!run.inFlight) return pending
+    for (const field of patchFields(patch)) {
+      if (field in run.inFlight && !(field in pending)) pending = { ...pending, [field]: patch[field] }
     }
+    return pending
+  }
+
+  const mergePendingPatch = (run: SaveRun, patch: EditableTaskPatch, pending: EditableTaskPatch) => {
     for (const field of patchFields(patch)) {
       if (field in pending) {
         run.dirtyFields.add(field)
@@ -425,6 +545,9 @@ export function TaskDrawer({
       }
     }
     run.queued = { ...run.queued, ...pending }
+  }
+
+  const resumeSaveRun = (run: SaveRun) => {
     onNavigationLockChange?.(run.dirtyFields.size > 0 || hasPatch(run.queued) || run.running || run.blocked)
     clearSavedTimer()
     if (run.blocked && !hasPatch(run.queued)) {
@@ -433,6 +556,40 @@ export function TaskDrawer({
       return
     }
     if (!run.blocked && !run.running) void drain(run)
+  }
+
+  const save = (patch: EditableTaskPatch) => {
+    const run = saveRunRef.current
+    if (!run.confirmed || !hasPatch(patch)) return
+    if (!run.running && !run.blocked) run.autoRebaseUsed = false
+    mergePendingPatch(run, patch, pendingPatch(run, patch))
+    resumeSaveRun(run)
+  }
+
+  const reportRetryReloadFailure = (run: SaveRun, error: unknown) => {
+    run.running = false
+    if (!isActiveRun(run)) return
+    const message = getErrorMessage(error ?? new Error('Latest task could not be reloaded.'))
+    setSaveState('error')
+    setSaveError(message)
+    onNotice(message, 'error')
+  }
+
+  const prepareRetry = (run: SaveRun, reloaded: Task) => {
+    if (!run.confirmed || reloaded.revision >= run.confirmed.revision) run.confirmed = reloaded
+    const newest = newestCachedTask(run)
+    if (newest) run.confirmed = newest
+    const beforePrune = run.queued
+    run.queued = run.confirmed ? pruneServerEqualFields(run.queued, run.confirmed) : run.queued
+    clearPrunedDirtyFields(run, beforePrune)
+    if (!isActiveRun(run)) {
+      run.running = false
+      return false
+    }
+    run.autoRebaseUsed = false
+    run.blocked = false
+    run.running = false
+    return true
   }
 
   const retrySave = async () => {
@@ -445,30 +602,10 @@ export function TaskDrawer({
     setSaveError(null)
     const result = await detailQuery.refetch()
     if (result.error || !result.data?.task) {
-      run.running = false
-      if (isActiveRun(run)) {
-        const message = getErrorMessage(result.error ?? new Error('Latest task could not be reloaded.'))
-        setSaveState('error')
-        setSaveError(message)
-        onNotice(message, 'error')
-      }
+      reportRetryReloadFailure(run, result.error)
       return
     }
-    if (!run.confirmed || result.data.task.revision >= run.confirmed.revision) run.confirmed = result.data.task
-    const newest = newestCachedTask(run)
-    if (newest) run.confirmed = newest
-    const beforePrune = run.queued
-    run.queued = run.confirmed ? pruneServerEqualFields(run.queued, run.confirmed) : run.queued
-    for (const field of patchFields(beforePrune)) {
-      if (!(field in run.queued)) run.dirtyFields.delete(field)
-    }
-    if (!isActiveRun(run)) {
-      run.running = false
-      return
-    }
-    run.autoRebaseUsed = false
-    run.blocked = false
-    run.running = false
+    if (!prepareRetry(run, result.data.task)) return
     void drain(run)
   }
 
@@ -503,59 +640,12 @@ export function TaskDrawer({
 
   const navigationLocked = saveState === 'saving' || saveState === 'error'
 
-  const taskObjectives = useMemo(
-    () => workspace.objectives.filter((objective) => draft?.objective_ids.includes(objective.id)),
-    [draft?.objective_ids, workspace.objectives],
-  )
-  const parentTask = useMemo(
-    () => workspace.tasks.find((task) => task.id === draft?.parent_id) ?? null,
-    [draft?.parent_id, workspace.tasks],
-  )
-  const dependencyTasks = useMemo(
-    () => workspace.tasks.filter((task) => draft?.dependencies.includes(task.id)),
-    [draft?.dependencies, workspace.tasks],
-  )
-  const childTasks = useMemo(
-    () => workspace.tasks.filter((task) => draft ? task.parent_id === draft.id : false),
-    [draft?.id, workspace.tasks],
-  )
-  const dependentTasks = useMemo(
-    () => workspace.tasks.filter((task) => draft ? task.dependencies.includes(draft.id) : false),
-    [draft?.id, workspace.tasks],
-  )
-  const cyclicParentCandidates = useMemo(
-    () => draft ? cyclicRelationshipCandidates(workspace.tasks, draft.id, 'parent_id') : new Set<string>(),
-    [draft?.id, workspace.tasks],
-  )
-  const cyclicDependencyCandidates = useMemo(
-    () => draft ? cyclicRelationshipCandidates(workspace.tasks, draft.id, 'dependencies') : new Set<string>(),
-    [draft?.id, workspace.tasks],
-  )
-  const availableParentTasks = useMemo(
-    () => workspace.tasks.filter((task) => draft
-      && task.id !== draft.id
-      && (task.id === draft.parent_id || !cyclicParentCandidates.has(task.id))),
-    [cyclicParentCandidates, draft?.id, draft?.parent_id, workspace.tasks],
-  )
-  const availableDependencyTasks = useMemo(
-    () => workspace.tasks.filter((task) => draft
-      && task.id !== draft.id
-      && !draft.dependencies.includes(task.id)
-      && !cyclicDependencyCandidates.has(task.id)),
-    [cyclicDependencyCandidates, draft?.dependencies, draft?.id, workspace.tasks],
-  )
-  const linkedMicrosoftSources = useMemo(
-    () => detailQuery.data?.context.map(microsoftReplySource).filter((source): source is ReplySource => source !== null) ?? [],
-    [detailQuery.data?.context],
-  )
-  const replySources = useMemo(
-    () => linkedMicrosoftSources.filter((source) => providerReplyVerified(source.provider, providerGates)),
-    [linkedMicrosoftSources, providerGates],
-  )
-  const replyUnavailableSources = useMemo(
-    () => linkedMicrosoftSources.filter((source) => !providerReplyVerified(source.provider, providerGates)),
-    [linkedMicrosoftSources, providerGates],
-  )
+  const selection = useMemo(() => selectTaskDrawerData({
+    context: detailQuery.data?.context ?? [],
+    draft,
+    providerGates,
+    workspace,
+  }), [detailQuery.data?.context, draft, providerGates, workspace])
 
   const recordReply = (updated: ReplyCommand, message: string) => {
     queryClient.setQueryData(['task', taskId], (current: typeof detailQuery.data) => current ? {
@@ -563,6 +653,20 @@ export function TaskDrawer({
       replies: [...current.replies.filter((reply) => reply.id !== updated.id), updated],
     } : current)
     onNotice(message)
+  }
+
+  const createReply = async (input: ApprovedReplyInput) => {
+    const created = await api.createReply(input)
+    recordReply(created, `${created.id} approved; copy it to the connected agent when ready`)
+    await queryClient.invalidateQueries({ queryKey: ['task', taskId] })
+    return created
+  }
+
+  const importReplyReceipt = async (replyId: string, receipt: ReplyReceipt) => {
+    const updated = await api.importReplyReceipt(replyId, receipt)
+    recordReply(updated, `${updated.id} receipt recorded as ${updated.state}`)
+    await queryClient.invalidateQueries({ queryKey: ['task', taskId] })
+    return updated
   }
 
   const recordTaskAction = (updated: Task) => {
@@ -587,325 +691,39 @@ export function TaskDrawer({
 
   return (
     <aside aria-label={`Task ${taskId}`} className="detail-drawer">
-      <header className="drawer-header">
-        <div className="drawer-header__identity"><span className="task-glyph"><Icon name="task" size={17} /></span><div><span>Task</span><strong>{taskId}</strong></div></div>
-        <div className="drawer-header__actions">
-          <span aria-live="polite" className={`save-state save-state--${saveState}`}>
-            {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Not saved' : ''}
-          </span>
-          <IconButton
-            disabled={navigationLocked}
-            icon="more"
-            label="More task actions"
-            onClick={() => setTaskActionsOpen(true)}
-            variant="ghost"
-          />
-          <IconButton disabled={navigationLocked} icon="close" label="Close task drawer" onClick={() => navigateAfterSave(onClose)} variant="ghost" />
-        </div>
-      </header>
-
-      <nav aria-label="Task details" className="drawer-tabs">
-        {(['overview', 'context', 'activity'] as const).map((item) => (
-          <button aria-selected={tab === item} className={tab === item ? 'is-active' : ''} key={item} onClick={() => setTab(item)} role="tab" type="button">
-            {item[0].toUpperCase() + item.slice(1)}
-            {item === 'context' && draft?.context_count ? <span>{draft.context_count}</span> : null}
-          </button>
-        ))}
-      </nav>
-
+      <TaskDrawerHeader navigationLocked={navigationLocked} onClose={() => navigateAfterSave(onClose)} onMore={() => setTaskActionsOpen(true)} saveState={saveState} taskId={taskId} />
+      <TaskDrawerTabs contextCount={draftContextCount(draft)} onTab={setTab} tab={tab} />
       <div className="drawer-body">
-        {detailQuery.isPending ? <LoadingBlock label="Loading task details…" /> : detailQuery.isError ? (
-          <EmptyState icon="warning" title="Task detail unavailable">{getErrorMessage(detailQuery.error)}</EmptyState>
-        ) : !draft ? <EmptyState icon="warning" title="Task detail unavailable">The task did not include a readable projection.</EmptyState> : null}
-
-        {draft && tab === 'overview' ? (
-          <div className="drawer-overview">
-            <label className="drawer-title-field">
-              <span className="sr-only">Task title</span>
-              <textarea
-                disabled={saveState === 'saving'}
-                onBlur={() => {
-                  if (draft.title.trim()) {
-                    void save({ title: draft.title.trim() })
-                  } else {
-                    setSaveState('error')
-                    setSaveError('Task title cannot be empty. Restore a title or discard the unsaved change.')
-                  }
-                }}
-                onChange={(event) => { markDirty('title'); setDraft({ ...draft, title: event.target.value }) }}
-                rows={2}
-                value={draft.title}
-              />
-            </label>
-            <div className="drawer-chips">
-              <Pill tone={draft.priority.toLowerCase()}>{draft.priority} · {priorityLabels[draft.priority]}</Pill>
-              {taskObjectives.map((objective) => onOpenObjective ? (
-                <button
-                  aria-label={`Open objective ${objective.id}`}
-                  className="objective-pill-link"
-                  disabled={navigationLocked}
-                  key={objective.id}
-                  onClick={() => navigateAfterSave(() => onOpenObjective(objective.id))}
-                  title={getObjectiveTitle(objective)}
-                  type="button"
-                ><Pill tone="accent">{objective.id}</Pill></button>
-              ) : <Pill key={objective.id} tone="accent">{objective.id}</Pill>)}
-            </div>
-            <div aria-label="Task identity" className="task-identity" role="group">
-              <span><strong>Stable UID</strong><code>{draft.uid}</code></span>
-              <span><strong>Current version</strong><code>Revision {draft.revision}</code></span>
-            </div>
-            <section className="snapshot-launch">
-              <div>
-                <strong>Execution handoff</strong>
-                <p>Review and save one immutable planning-task revision for Conduit.</p>
-              </div>
-              <Button
-                disabled={navigationLocked}
-                icon="arrowUpRight"
-                onClick={() => setSnapshotOpen(true)}
-                variant="secondary"
-              >Export to Conduit</Button>
-            </section>
-
-            {saveError ? (
-              <div className="inline-error" role="alert">
-                <span>{saveError}</span>
-                {saveState === 'error' && hasPatch(saveRunRef.current.queued) ? <Button onClick={() => void retrySave()} variant="ghost">Retry save</Button> : null}
-                {saveState === 'error' ? <Button onClick={discardUnsavedChanges} variant="ghost">Discard unsaved changes</Button> : null}
-              </div>
-            ) : null}
-
-            <section className="drawer-section">
-              <h3>Properties</h3>
-              <div className="property-grid">
-                <label><span>Status</span><select disabled={saveState === 'saving'} onChange={(event) => { const status = event.target.value as Task['status']; setDraft({ ...draft, status }); void save({ status }) }} value={draft.status}>{TASK_STATUSES.map((status) => <option key={status} value={status}>{statusLabels[status]}</option>)}</select></label>
-                <label><span>Priority</span><select disabled={saveState === 'saving'} onChange={(event) => { const priority = event.target.value as Task['priority']; setDraft({ ...draft, priority }); void save({ priority }) }} value={draft.priority}>{TASK_PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority} · {priorityLabels[priority]}</option>)}</select></label>
-                <label><span>Plan for</span><input disabled={saveState === 'saving'} onBlur={() => { void save({ scheduled: draft.scheduled ?? null }) }} onChange={(event) => { markDirty('scheduled'); setDraft({ ...draft, scheduled: event.target.value || null }) }} type="date" value={draft.scheduled ?? ''} /></label>
-                <label><span>Due</span><input disabled={saveState === 'saving'} onBlur={() => { void save({ due: draft.due }) }} onChange={(event) => { markDirty('due'); setDraft({ ...draft, due: event.target.value || null }) }} type="date" value={draft.due ?? ''} /></label>
-                <label><span>Estimate <small>minutes</small></span><input disabled={saveState === 'saving'} max={1440} min={1} onBlur={() => { void save({ estimate_minutes: draft.estimate_minutes ?? null }) }} onChange={(event) => { markDirty('estimate_minutes'); setDraft({ ...draft, estimate_minutes: event.target.value ? Number(event.target.value) : null }) }} type="number" value={draft.estimate_minutes ?? ''} /></label>
-                <label><span>Parent</span><select disabled={saveState === 'saving'} onChange={(event) => { const parent_id = event.target.value || null; setDraft({ ...draft, parent_id }); void save({ parent_id }) }} value={draft.parent_id ?? ''}><option value="">No parent</option>{availableParentTasks.map((task) => <option key={task.id} value={task.id}>{task.id} · {task.title}</option>)}</select></label>
-              </div>
-            </section>
-
-            <section className="drawer-section">
-              <h3>Definition of done</h3>
-              <textarea
-                className="drawer-detail-input"
-                disabled={saveState === 'saving'}
-                onBlur={() => { void save({ detail: draft.detail }) }}
-                onChange={(event) => { markDirty('detail'); setDraft({ ...draft, detail: event.target.value }) }}
-                placeholder="Describe the outcome…"
-                rows={5}
-                value={draft.detail}
-              />
-            </section>
-
-            <section className="drawer-section">
-              <h3>Alignment</h3>
-              <div className="objective-checks">
-                {workspace.objectives.map((objective) => (
-                  <label key={objective.id}>
-                    <input
-                      checked={draft.objective_ids.includes(objective.id)}
-                      disabled={saveState === 'saving'}
-                      onChange={() => {
-                        const objective_ids = draft.objective_ids.includes(objective.id)
-                          ? draft.objective_ids.filter((id) => id !== objective.id)
-                          : [...draft.objective_ids, objective.id]
-                        setDraft({ ...draft, objective_ids })
-                        void save({ objective_ids })
-                      }}
-                      type="checkbox"
-                    />
-                    <span><strong>{objective.id}</strong>{getObjectiveTitle(objective)}</span>
-                  </label>
-                ))}
-              </div>
-            </section>
-
-            {onOpenTask && (parentTask || dependencyTasks.length || childTasks.length || dependentTasks.length) ? (
-              <section className="drawer-section">
-                <h3>Task relationships</h3>
-                <div className="task-relationship-links">
-                  {parentTask ? (
-                    <button
-                      aria-label={`Open parent ${parentTask.id}`}
-                      disabled={navigationLocked}
-                      onClick={() => navigateAfterSave(() => onOpenTask(parentTask.id))}
-                      type="button"
-                    ><span>Parent</span><strong>{parentTask.id}</strong><small>{parentTask.title}</small></button>
-                  ) : null}
-                  {dependencyTasks.map((dependency) => (
-                    <button
-                      aria-label={`Open dependency ${dependency.id}`}
-                      disabled={navigationLocked}
-                      key={dependency.id}
-                      onClick={() => navigateAfterSave(() => onOpenTask(dependency.id))}
-                      type="button"
-                    ><span>Dependency</span><strong>{dependency.id}</strong><small>{dependency.title}</small></button>
-                  ))}
-                  {childTasks.map((child) => (
-                    <button
-                      aria-label={`Open child ${child.id}`}
-                      disabled={navigationLocked}
-                      key={child.id}
-                      onClick={() => navigateAfterSave(() => onOpenTask(child.id))}
-                      type="button"
-                    ><span>Child</span><strong>{child.id}</strong><small>{child.title}</small></button>
-                  ))}
-                  {dependentTasks.map((dependent) => (
-                    <button
-                      aria-label={`Open dependent ${dependent.id}`}
-                      disabled={navigationLocked}
-                      key={dependent.id}
-                      onClick={() => navigateAfterSave(() => onOpenTask(dependent.id))}
-                      type="button"
-                    ><span>Dependent</span><strong>{dependent.id}</strong><small>{dependent.title}</small></button>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
-            <section className="drawer-section">
-              <h3>Tags & dependencies</h3>
-              <label className="field"><span>Tags</span><input disabled={saveState === 'saving'} onBlur={() => { const tags = tagText.split(',').map((value) => value.trim()).filter(Boolean); setDraft({ ...draft, tags }); void save({ tags }) }} onChange={(event) => { const value = event.target.value; markDirty('tags'); setTagText(value); setDraft({ ...draft, tags: value.split(',').map((item) => item.trim()).filter(Boolean) }) }} value={tagText} /></label>
-              <div className="dependency-editor">
-                <span className="dependency-editor__label">Dependencies</span>
-                {draft.dependencies.length ? (
-                  <div className="dependency-chips">
-                    {draft.dependencies.map((dependencyId) => {
-                      const dependency = workspace.tasks.find((task) => task.id === dependencyId)
-                      return (
-                        <button
-                          aria-label={`Remove dependency ${dependencyId}`}
-                          disabled={saveState === 'saving'}
-                          key={dependencyId}
-                          onClick={() => {
-                            const dependencies = draft.dependencies.filter((id) => id !== dependencyId)
-                            setDraft({ ...draft, dependencies })
-                            void save({ dependencies })
-                          }}
-                          type="button"
-                        ><strong>{dependencyId}</strong><span>{dependency?.title ?? 'Unavailable Task'}</span><Icon name="close" size={12} /></button>
-                      )
-                    })}
-                  </div>
-                ) : <p className="dependency-editor__empty">No dependencies</p>}
-                <label className="field"><span>Add dependency</span><select
-                  aria-label="Add dependency"
-                  disabled={saveState === 'saving' || availableDependencyTasks.length === 0}
-                  onChange={(event) => {
-                    if (!event.target.value) return
-                    const dependencies = [...new Set([...draft.dependencies, event.target.value])].sort()
-                    setDraft({ ...draft, dependencies })
-                    void save({ dependencies })
-                  }}
-                  value=""
-                ><option value="">Choose a Task…</option>{availableDependencyTasks.map((task) => <option key={task.id} value={task.id}>{task.id} · {task.title}</option>)}</select></label>
-              </div>
-            </section>
-          </div>
-        ) : null}
-
-        {draft && tab === 'context' ? (
-          <div className="context-tab">
-            {replySources.length ? (
-              <section className="reply-launch">
-                <div><strong>Reply to a linked Microsoft thread</strong><p>The target comes only from the selected Capture. Approval creates a command; sending remains a manual agent handoff.</p></div>
-                {detailQuery.data?.replies.length ? <div className="reply-launch__states">{detailQuery.data.replies.map((reply) => <Pill key={reply.id} tone={reply.state}>{reply.state}</Pill>)}</div> : null}
-                <Button icon="command" onClick={() => setReplyOpen((value) => !value)} variant={replyOpen ? 'ghost' : 'primary'}>{replyOpen ? 'Close reply composer' : 'Prepare Outlook/Teams reply'}</Button>
-              </section>
-            ) : null}
-            {replyUnavailableSources.length ? (
-              <section className="reply-launch reply-launch--unavailable">
-                <div><strong>Microsoft reply unavailable</strong><p>{replyUnavailableSources.map((source) => source.display_title).join(', ')} cannot be used for replies until that provider’s read and reply capabilities pass Gate 0.</p></div>
-                <Pill tone="neutral">Reply unavailable · Gate 0 pending</Pill>
-              </section>
-            ) : null}
-            {replyOpen && replySources.length ? (
-              <ReplyComposer
-                onCreate={async (input) => {
-                  const created = await api.createReply(input)
-                  recordReply(created, `${created.id} approved; copy it to the connected agent when ready`)
-                  await queryClient.invalidateQueries({ queryKey: ['task', taskId] })
-                  return created
-                }}
-                onImportReceipt={async (replyId, receipt) => {
-                  const updated = await api.importReplyReceipt(replyId, receipt)
-                  recordReply(updated, `${updated.id} receipt recorded as ${updated.state}`)
-                  await queryClient.invalidateQueries({ queryKey: ['task', taskId] })
-                  return updated
-                }}
-                replies={detailQuery.data?.replies ?? []}
-                sources={replySources}
-                taskId={taskId}
-              />
-            ) : null}
-            <div className="timeline-list">
-              {detailQuery.data?.context.length ? detailQuery.data.context.map((item, index) => {
-                const external = externalContext(item)
-                const source = item.source
-                const normalized = item.normalized
-                const microsoftProvider = source && MICROSOFT_PROVIDERS.includes(source.provider as MicrosoftProvider)
-                  ? source.provider as MicrosoftProvider
-                  : null
-                const replyUnavailable = microsoftProvider !== null
-                  && !providerReplyVerified(microsoftProvider, providerGates)
-                return (
-                  <article className="context-entry" key={item.id ?? index}>
-                    <span className={`timeline-mark ${external ? 'timeline-mark--external' : ''}`}><Icon name={external ? 'inbox' : 'context'} size={14} /></span>
-                    <div>
-                      <header><Pill tone={external ? 'verified' : 'neutral'}>{external ? source?.provider ?? 'External context' : 'Context card'}</Pill>{replyUnavailable ? <Pill tone="neutral">Reply unavailable · Gate 0 pending</Pill> : null}<time>{formatDateTime(item.created_at ?? item.created)}</time></header>
-                      <h3>{contextTitle(item)}</h3>
-                      {normalized?.context ? <p>{normalized.context}</p> : item.text ? <p>{item.text}</p> : null}
-                      {normalized?.action_items?.length ? <ul>{normalized.action_items.map((action, actionIndex) => <li key={action.id ?? actionIndex}>{action.title}</li>)}</ul> : null}
-                      {safeExternalUrl(source?.web_url) ? <a href={safeExternalUrl(source?.web_url)!} rel="noopener noreferrer" target="_blank">Open source <Icon name="arrowUpRight" size={13} /></a> : null}
-                    </div>
-                  </article>
-                )
-              }) : (
-                <EmptyState icon="context" title="No context yet">Link a sanitized Inbox capture or add a Context card to preserve why this work matters.</EmptyState>
-              )}
-            </div>
-          </div>
-        ) : null}
-
-        {draft && tab === 'activity' ? (
-          <div className="timeline-list">
-            {detailQuery.data?.activity.length ? detailQuery.data.activity.map((item, index) => (
-              <article className="activity-entry" key={item.id ?? index}>
-                <span className="timeline-mark"><Icon name="activity" size={14} /></span>
-                <div>
-                  <h3>{activityTitle(item)}</h3>
-                  <time>{formatDateTime(item.created_at ?? item.at)}</time>
-                  {item.type === 'task.planning_status' && item.prior_revision !== null && item.prior_revision !== undefined
-                    ? <p>Revision {item.prior_revision} → {item.new_revision}</p>
-                    : null}
-                  {item.actor ? <p>By {item.actor}{item.provenance ? ` · ${item.provenance}` : ''}</p> : null}
-                </div>
-              </article>
-            )) : (
-              <EmptyState icon="activity" title="No activity yet">Changes to status and linked context will appear here.</EmptyState>
-            )}
-          </div>
-        ) : null}
-      </div>
-      <SnapshotExportDialog
-        onClose={() => setSnapshotOpen(false)}
-        onNotice={onNotice}
-        open={snapshotOpen}
-        taskId={taskId}
-      />
-      {draft ? (
-        <TaskActionsDialog
-          onClose={() => setTaskActionsOpen(false)}
-          onNotice={onNotice}
-          onSaved={recordTaskAction}
-          open={taskActionsOpen}
-          task={draft}
+        <TaskDrawerLoadState draft={draft} error={taskDetailError(detailQuery.isError, detailQuery.error)} pending={detailQuery.isPending} />
+        <TaskDrawerOverviewTab
+          active={tab === 'overview'}
+          canRetry={retryAvailable(saveState, saveRunRef.current)}
+          draft={draft}
+          markDirty={markDirty}
+          navigateAfterSave={navigateAfterSave}
+          navigationLocked={navigationLocked}
+          onDiscard={discardUnsavedChanges}
+          onDraftChange={setDraft}
+          onInvalidTitle={() => {
+            setSaveState('error')
+            setSaveError('Task title cannot be empty. Restore a title or discard the unsaved change.')
+          }}
+          onOpenObjective={onOpenObjective}
+          onOpenSnapshot={() => setSnapshotOpen(true)}
+          onOpenTask={onOpenTask}
+          onRetry={() => { void retrySave() }}
+          onSave={(patch) => { void save(patch) }}
+          onTagTextChange={setTagText}
+          saveError={saveError}
+          saveState={saveState}
+          selection={selection}
+          tagText={tagText}
+          workspace={workspace}
         />
-      ) : null}
+        <TaskDrawerContextTab active={draftTabActive(tab, 'context', draft)} context={taskDetailContext(detailQuery.data)} onCreate={createReply} onImportReceipt={importReplyReceipt} onToggle={() => setReplyOpen((value) => !value)} open={replyOpen} providerGates={providerGates} replies={taskDetailReplies(detailQuery.data)} selection={selection} taskId={taskId} />
+        <TaskDrawerActivityTab active={draftTabActive(tab, 'activity', draft)} activity={taskDetailActivity(detailQuery.data)} />
+      </div>
+      <TaskDrawerDialogs draft={draft} onActionClose={() => setTaskActionsOpen(false)} onDeleted={onClose} onNotice={onNotice} onSaved={recordTaskAction} onSnapshotClose={() => setSnapshotOpen(false)} snapshotOpen={snapshotOpen} taskActionsOpen={taskActionsOpen} taskId={taskId} />
     </aside>
   )
 }

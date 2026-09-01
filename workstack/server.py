@@ -7,6 +7,7 @@ import mimetypes
 import re
 import secrets
 import socket
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
 from .capture import CaptureValidationError, canonical_digest
-from .store import StoreExternalChangeError
+from .store import StoreAdoptionConflictError, StoreExternalChangeError
 from .service import (
     DomainError,
     IdempotencyConflictError,
@@ -37,6 +38,94 @@ CAPTURE_BODY_LIMIT = 64 * 1024
 DEFAULT_BODY_LIMIT = 1024 * 1024
 
 
+@dataclass(frozen=True)
+class PostRoute:
+    name: str
+    pattern: re.Pattern[str]
+    handler: str
+
+    def match(self, path: str) -> re.Match[str] | None:
+        return self.pattern.fullmatch(path)
+
+
+def _post_route(name: str, path_pattern: str, handler: str) -> PostRoute:
+    return PostRoute(name, re.compile(path_pattern), handler)
+
+
+V1_POST_ROUTES = (
+    _post_route("sync_adopt", r"/api/v1/sync/adopt", "_post_sync_adopt"),
+    _post_route("sync_rebind", r"/api/v1/sync/rebind-workspace", "_post_sync_rebind"),
+    _post_route("task_create", r"/api/v1/tasks", "_post_task_create"),
+    _post_route("work_session_create", r"/api/v1/work-sessions", "_post_work_session_create"),
+    _post_route("work_session_action", r"/api/v1/work-sessions/([^/]+)/(pause|resume|stop|worklog)", "_post_work_session_action"),
+    _post_route("backup", r"/api/v1/maintenance/backup", "_post_backup"),
+    _post_route("snapshot_export", r"/api/v1/tasks/([^/]+)/snapshot/export", "_post_snapshot_export"),
+    _post_route("task_note", r"/api/v1/tasks/([^/]+)/notes", "_post_task_note"),
+    _post_route("task_subtask", r"/api/v1/tasks/([^/]+)/subtasks", "_post_task_subtask"),
+    _post_route("objective_create", r"/api/v1/objectives", "_post_objective_create"),
+    _post_route("key_result_create", r"/api/v1/objectives/([^/]+)/key-results", "_post_key_result_create"),
+    _post_route("note_create", r"/api/v1/notes", "_post_note_create"),
+    _post_route("review_checkin", r"/api/v1/review/checkin", "_post_review_checkin"),
+    _post_route("review_entry", r"/api/v1/review/entries", "_post_review_entry"),
+    _post_route("capture_ingest", r"/api/v1/captures", "_post_capture_ingest"),
+    _post_route("capture_link", r"/api/v1/captures/([^/]+)/link", "_post_capture_link"),
+    _post_route("capture_action_task", r"/api/v1/captures/([^/]+)/actions/([^/]+)/task", "_post_capture_action_task"),
+    _post_route("capture_task", r"/api/v1/captures/([^/]+)/task", "_post_capture_task"),
+    _post_route("capture_dismiss", r"/api/v1/captures/([^/]+)/dismiss", "_post_capture_dismiss"),
+    _post_route("reply_create", r"/api/v1/replies", "_post_reply_create"),
+    _post_route("reply_receipt", r"/api/v1/replies/([^/]+)/receipt", "_post_reply_receipt"),
+)
+
+IDEMPOTENT_POST_ROUTES = frozenset({
+    "sync_adopt",
+    "sync_rebind",
+    "task_create",
+    "work_session_create",
+    "work_session_action",
+    "task_note",
+    "task_subtask",
+    "objective_create",
+    "key_result_create",
+    "note_create",
+    "review_checkin",
+    "review_entry",
+    "reply_create",
+    "reply_receipt",
+})
+
+
+@dataclass(frozen=True)
+class GetRoute:
+    pattern: re.Pattern[str]
+    handler: str
+
+    def match(self, path: str) -> re.Match[str] | None:
+        return self.pattern.fullmatch(path)
+
+
+def _get_route(path_pattern: str, handler: str) -> GetRoute:
+    return GetRoute(re.compile(path_pattern), handler)
+
+
+V1_GET_ROUTES = (
+    _get_route(r"/api/v1/session", "_get_session"),
+    _get_route(r"/api/v1/health", "_get_health"),
+    _get_route(r"/api/v1/sync/status", "_get_sync_status"),
+    _get_route(r"/api/v1/sync/rebind-preview", "_get_sync_rebind_preview"),
+    _get_route(r"/api/v1/sync/events", "_get_sync_events"),
+    _get_route(r"/api/v1/events", "_get_events"),
+    _get_route(r"/api/v1/storage", "_get_storage"),
+    _get_route(r"/api/v1/workspace", "_get_workspace"),
+    _get_route(r"/api/v1/search", "_get_search"),
+    _get_route(r"/api/v1/review", "_get_review"),
+    _get_route(r"/api/v1/work-sessions", "_get_work_sessions"),
+    _get_route(r"/api/v1/objectives/([^/]+)", "_get_objective"),
+    _get_route(r"/api/v1/tasks/([^/]+)/snapshot", "_get_snapshot"),
+    _get_route(r"/api/v1/tasks/([^/]+)", "_get_task"),
+    _get_route(r"/api/v1/captures", "_get_captures"),
+)
+
+
 class RequestError(ValueError):
     def __init__(self, code: str, message: str, status: int, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
@@ -49,12 +138,24 @@ class WorkStackHTTPServer(ThreadingHTTPServer):
     daemon_threads = False
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], stack: WorkStack) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        stack: WorkStack,
+        *,
+        public_port: int | None = None,
+    ) -> None:
         host, port = address
         if host not in LOOPBACK_HOSTS:
             raise ValueError(
                 "non-loopback binding is disabled; use an authenticated reverse proxy"
             )
+        if public_port is not None and (
+            isinstance(public_port, bool)
+            or not isinstance(public_port, int)
+            or not 1 <= public_port <= 65_535
+        ):
+            raise ValueError("public_port must be an integer from 1 to 65535")
         self.stack = stack
         self.csrf_token = secrets.token_urlsafe(32)
         self.capture_token = secrets.token_urlsafe(48)
@@ -69,6 +170,11 @@ class WorkStackHTTPServer(ThreadingHTTPServer):
             super().__init__(address, Handler)
             socket_ready = True
             actual_host, actual_port = self.server_address[:2]
+            self.accepted_host_ports = frozenset(
+                (int(actual_port),)
+                if public_port is None
+                else (int(actual_port), public_port)
+            )
             published_host = host if host != "localhost" else "127.0.0.1"
             if actual_host == "0.0.0.0":
                 raise ValueError("server resolved to a non-loopback address")
@@ -230,7 +336,7 @@ class Handler(BaseHTTPRequestHandler):
             port = parsed.port
         except ValueError as error:
             raise RequestError("invalid_host", "Host header is invalid", 400) from error
-        if hostname not in LOOPBACK_HOSTS or port != self.server.actual_port:
+        if hostname not in LOOPBACK_HOSTS or port not in self.server.accepted_host_ports:
             raise RequestError("invalid_host", "Host does not match the loopback server", 400)
         return hostname, port
 
@@ -352,12 +458,142 @@ class Handler(BaseHTTPRequestHandler):
                     "changed_files": error.status.get("changed_files", []),
                 },
             )
+        elif isinstance(error, StoreAdoptionConflictError):
+            self.send_api_error("idempotency_conflict", str(error), 409)
         elif isinstance(error, DomainError):
             self.send_api_error(error.code, str(error), 400, error.details)
         elif isinstance(error, (ValueError, json.JSONDecodeError)):
             self.send_api_error("invalid_request", str(error), 400)
         else:
             raise error
+
+    @staticmethod
+    def _match_v1_get_route(path: str) -> tuple[GetRoute | None, re.Match[str] | None]:
+        for route in V1_GET_ROUTES:
+            match = route.match(path)
+            if match is not None:
+                return route, match
+        return None, None
+
+    def _handle_v1_get(self, parsed: Any) -> None:
+        route, match = self._match_v1_get_route(parsed.path)
+        if route is None or match is None:
+            self.send_api_error("not_found", "API endpoint not found", 404)
+            return
+        getattr(self, route.handler)(parsed, match)
+
+    def _get_session(self, parsed: Any, match: re.Match[str]) -> None:
+        self.send_json({"data": {"csrf_token": self.server.csrf_token}})
+
+    def _get_health(self, parsed: Any, match: re.Match[str]) -> None:
+        self.send_json({"data": {"api_version": "v1", "status": "ready"}})
+
+    def _get_sync_status(self, parsed: Any, match: re.Match[str]) -> None:
+        if parsed.query:
+            raise RequestError("invalid_query", "sync status query is invalid", 400)
+        self.send_json({"data": self.stack.store.sync_status()})
+
+    def _get_sync_rebind_preview(self, parsed: Any, match: re.Match[str]) -> None:
+        if parsed.query:
+            raise RequestError("invalid_query", "sync rebind preview query is invalid", 400)
+        self.send_json({"data": self.stack.store.workspace_rebind_preview()})
+
+    def _get_sync_events(self, parsed: Any, match: re.Match[str]) -> None:
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if set(query) - {"after"} or len(query.get("after", ["0"])) != 1:
+            raise RequestError("invalid_query", "sync event query is invalid", 400)
+        try:
+            after = int(query.get("after", ["0"])[0])
+            result = self.stack.store.sync_events(after)
+        except ValueError as error:
+            raise RequestError("invalid_query", str(error), 400) from error
+        self.send_json({"data": result})
+
+    def _get_events(self, parsed: Any, match: re.Match[str]) -> None:
+        if parsed.query:
+            raise RequestError("invalid_query", "event stream query is invalid", 400)
+        raw_cursor = self._header_once("Last-Event-ID") or "0"
+        try:
+            after = int(raw_cursor)
+            if after < 0:
+                raise ValueError
+        except ValueError as error:
+            raise RequestError(
+                "invalid_header", "Last-Event-ID is invalid", 400
+            ) from error
+        self.send_sync_event(after)
+
+    def _get_storage(self, parsed: Any, match: re.Match[str]) -> None:
+        self.send_json({"data": self.stack.storage_status()})
+
+    def _get_workspace(self, parsed: Any, match: re.Match[str]) -> None:
+        self.send_json({"data": self.stack.workspace_projection()})
+
+    def _get_search(self, parsed: Any, match: re.Match[str]) -> None:
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if (
+            set(query) - {"q", "limit"}
+            or len(query.get("q", [])) != 1
+            or len(query.get("limit", ["30"])) != 1
+        ):
+            raise RequestError("invalid_query", "search query is invalid", 400)
+        try:
+            limit = int(query.get("limit", ["30"])[0])
+            result = self.stack.search_projection(query["q"][0], limit)
+        except (ValueError, DomainError) as error:
+            raise RequestError("invalid_query", str(error), 400) from error
+        self.send_json({"data": result})
+
+    def _get_review(self, parsed: Any, match: re.Match[str]) -> None:
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if (
+            set(query) - {"date", "days"}
+            or len(query.get("date", [])) != 1
+            or len(query.get("days", ["7"])) != 1
+        ):
+            raise RequestError("invalid_query", "review query is invalid", 400)
+        try:
+            days = int(query.get("days", ["7"])[0])
+        except ValueError as error:
+            raise RequestError("invalid_query", "review days is invalid", 400) from error
+        if days < 1 or days > 31:
+            raise RequestError(
+                "invalid_query", "review days must be between 1 and 31", 400
+            )
+        self.send_json(
+            {"data": self.stack.review_projection(query["date"][0], days)}
+        )
+
+    def _get_work_sessions(self, parsed: Any, match: re.Match[str]) -> None:
+        if parsed.query:
+            raise RequestError("invalid_query", "work session query is invalid", 400)
+        self.send_json({"data": self.stack.work_sessions_projection()})
+
+    def _get_objective(self, parsed: Any, match: re.Match[str]) -> None:
+        self.send_json(
+            {"data": self.stack.objective_detail(unquote(match.group(1)))}
+        )
+
+    def _get_snapshot(self, parsed: Any, match: re.Match[str]) -> None:
+        artifact = self.stack.planning_snapshot(unquote(match.group(1)))
+        self.send_json({
+            "data": {
+                "snapshot": artifact.snapshot,
+                "digest": artifact.digest,
+                "filename": artifact.filename,
+                "omissions": list(artifact.omissions),
+            }
+        })
+
+    def _get_task(self, parsed: Any, match: re.Match[str]) -> None:
+        self.send_json({"data": self.stack.task_detail(unquote(match.group(1)))})
+
+    def _get_captures(self, parsed: Any, match: re.Match[str]) -> None:
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if set(query) - {"status"} or len(query.get("status", ["inbox"])) != 1:
+            raise RequestError("invalid_query", "capture query is invalid", 400)
+        status = query.get("status", ["inbox"])[0]
+        self.send_json({"data": self.stack.list_captures(status)})
 
     def do_GET(self) -> None:
         try:
@@ -367,117 +603,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/state":
                 self.send_json(self.stack.snapshot())
                 return
-            if path == "/api/v1/session":
-                self.send_json({"data": {"csrf_token": self.server.csrf_token}})
-                return
-            if path == "/api/v1/health":
-                self.send_json({
-                    "data": {
-                        "api_version": "v1",
-                        "status": "ready",
-                    }
-                })
-                return
-            if path == "/api/v1/sync/status":
-                if parsed.query:
-                    raise RequestError("invalid_query", "sync status query is invalid", 400)
-                self.send_json({"data": self.stack.store.sync_status()})
-                return
-            if path == "/api/v1/sync/events":
-                query = parse_qs(parsed.query, keep_blank_values=True)
-                if set(query) - {"after"} or len(query.get("after", ["0"])) != 1:
-                    raise RequestError("invalid_query", "sync event query is invalid", 400)
-                try:
-                    after = int(query.get("after", ["0"])[0])
-                    result = self.stack.store.sync_events(after)
-                except ValueError as error:
-                    raise RequestError("invalid_query", str(error), 400) from error
-                self.send_json({"data": result})
-                return
-            if path == "/api/v1/events":
-                if parsed.query:
-                    raise RequestError("invalid_query", "event stream query is invalid", 400)
-                raw_cursor = self._header_once("Last-Event-ID") or "0"
-                try:
-                    after = int(raw_cursor)
-                    if after < 0:
-                        raise ValueError
-                except ValueError as error:
-                    raise RequestError("invalid_header", "Last-Event-ID is invalid", 400) from error
-                self.send_sync_event(after)
-                return
-            if path == "/api/v1/storage":
-                self.send_json({"data": self.stack.storage_status()})
-                return
-            if path == "/api/v1/workspace":
-                self.send_json({"data": self.stack.workspace_projection()})
-                return
-            if path == "/api/v1/search":
-                query = parse_qs(parsed.query, keep_blank_values=True)
-                if (
-                    set(query) - {"q", "limit"}
-                    or len(query.get("q", [])) != 1
-                    or len(query.get("limit", ["30"])) != 1
-                ):
-                    raise RequestError("invalid_query", "search query is invalid", 400)
-                try:
-                    limit = int(query.get("limit", ["30"])[0])
-                    result = self.stack.search_projection(query["q"][0], limit)
-                except (ValueError, DomainError) as error:
-                    raise RequestError("invalid_query", str(error), 400) from error
-                self.send_json({"data": result})
-                return
-            if path == "/api/v1/review":
-                query = parse_qs(parsed.query, keep_blank_values=True)
-                if (
-                    set(query) - {"date", "days"}
-                    or len(query.get("date", [])) != 1
-                    or len(query.get("days", ["7"])) != 1
-                ):
-                    raise RequestError("invalid_query", "review query is invalid", 400)
-                try:
-                    days = int(query.get("days", ["7"])[0])
-                except ValueError as error:
-                    raise RequestError("invalid_query", "review days is invalid", 400) from error
-                if days < 1 or days > 31:
-                    raise RequestError("invalid_query", "review days must be between 1 and 31", 400)
-                self.send_json({"data": self.stack.review_projection(query["date"][0], days)})
-                return
-            if path == "/api/v1/work-sessions":
-                if parsed.query:
-                    raise RequestError("invalid_query", "work session query is invalid", 400)
-                self.send_json({"data": self.stack.work_sessions_projection()})
-                return
-            objective_match = re.fullmatch(r"/api/v1/objectives/([^/]+)", path)
-            if objective_match:
-                self.send_json(
-                    {"data": self.stack.objective_detail(unquote(objective_match.group(1)))}
-                )
-                return
-            snapshot_match = re.fullmatch(r"/api/v1/tasks/([^/]+)/snapshot", path)
-            if snapshot_match:
-                artifact = self.stack.planning_snapshot(
-                    unquote(snapshot_match.group(1))
-                )
-                self.send_json({
-                    "data": {
-                        "snapshot": artifact.snapshot,
-                        "digest": artifact.digest,
-                        "filename": artifact.filename,
-                        "omissions": list(artifact.omissions),
-                    }
-                })
-                return
-            task_match = re.fullmatch(r"/api/v1/tasks/([^/]+)", path)
-            if task_match:
-                self.send_json({"data": self.stack.task_detail(unquote(task_match.group(1)))})
-                return
-            if path == "/api/v1/captures":
-                query = parse_qs(parsed.query, keep_blank_values=True)
-                if set(query) - {"status"} or len(query.get("status", ["inbox"])) != 1:
-                    raise RequestError("invalid_query", "capture query is invalid", 400)
-                status = query.get("status", ["inbox"])[0]
-                self.send_json({"data": self.stack.list_captures(status)})
+            if path.startswith("/api/v1/"):
+                self._handle_v1_get(parsed)
                 return
             if path.startswith("/api/"):
                 self.send_api_error("not_found", "API endpoint not found", 404)
@@ -485,6 +612,7 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(path)
         except BaseException as error:
             self._dispatch_error(error)
+
 
     def _serve_static(self, request_path: str) -> None:
         if FRONTEND_ROOT.is_dir() and (FRONTEND_ROOT / "index.html").is_file():
@@ -517,369 +645,447 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    @staticmethod
+    def _match_v1_post_route(path: str) -> tuple[PostRoute | None, re.Match[str] | None]:
+        for route in V1_POST_ROUTES:
+            match = route.match(path)
+            if match is not None:
+                return route, match
+        return None, None
+
+    @staticmethod
+    def _post_needs_idempotency(path: str, route: PostRoute | None) -> bool:
+        return path.startswith("/api/v1/captures") or (
+            route is not None and route.name in IDEMPOTENT_POST_ROUTES
+        )
+
+    def _send_service_result(self, result: dict[str, Any]) -> None:
+        self.send_json(result["body"], result["status"])
+
+    def _handle_v1_post(self, path: str) -> None:
+        route, match = self._match_v1_post_route(path)
+        maximum = (
+            CAPTURE_BODY_LIMIT
+            if path.startswith("/api/v1/captures")
+            else DEFAULT_BODY_LIMIT
+        )
+        # Consume the bounded JSON body before returning an authorization
+        # error. Closing a Windows socket with unread request bytes can reset
+        # the connection before the client receives the JSON error.
+        body, request_digest = self.read_json(maximum)
+        is_agent_ingest = (
+            route is not None
+            and route.name == "capture_ingest"
+            and self._has_agent_bearer()
+        )
+        if not is_agent_ingest:
+            self._require_browser_mutation()
+        idempotency_key = (
+            self._idempotency_key()
+            if self._post_needs_idempotency(path, route)
+            else ""
+        )
+        if route is None or match is None:
+            self.send_api_error("not_found", "API endpoint not found", 404)
+            return
+        handler = getattr(self, route.handler)
+        handler(path, match, body, request_digest, idempotency_key)
+
+    def _handle_legacy_post(self, path: str) -> None:
+        self.read_json()
+        self._require_browser_mutation()
+        if path == "/api/tasks":
+            self.send_api_error(
+                "legacy_task_writer_disabled",
+                "Use POST /api/v1/tasks with Idempotency-Key",
+                410,
+            )
+            return
+        if path in {"/api/objectives", "/api/worklog", "/api/notes"}:
+            self.send_api_error(
+                "legacy_writer_disabled",
+                "Use the corresponding versioned /api/v1 endpoint",
+                410,
+            )
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _post_sync_adopt(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if set(body) != {"expected_generation", "expected_manifest_digest"}:
+            raise RequestError(
+                "invalid_body",
+                "sync adoption requires expected_generation and expected_manifest_digest",
+                400,
+            )
+        result = self.stack.store.adopt_external_change(
+            body["expected_generation"],
+            body["expected_manifest_digest"],
+            idempotency_key,
+        )
+        self.send_json({"data": result})
+
+    def _post_sync_rebind(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        expected = {
+            "confirmed",
+            "expected_manifest_workspace_id",
+            "expected_candidate_workspace_id",
+            "expected_manifest_digest",
+            "expected_candidate_digest",
+        }
+        if set(body) != expected:
+            raise RequestError(
+                "invalid_body",
+                "sync rebind body is invalid",
+                400,
+            )
+        result = self.stack.store.rebind_workspace_identity(
+            confirmed=body["confirmed"],
+            expected_manifest_workspace_id=body["expected_manifest_workspace_id"],
+            expected_candidate_workspace_id=body["expected_candidate_workspace_id"],
+            expected_manifest_digest=body["expected_manifest_digest"],
+            expected_candidate_digest=body["expected_candidate_digest"],
+            idempotency_key=idempotency_key,
+        )
+        self.send_json({
+            "data": {
+                "state": result["state"],
+                "workspace_id": result["workspace_id"],
+                "generation": result["generation"],
+                "recovery_receipt_digest": result["recovery"]["receipt_digest"],
+                "planning_mutated": result["recovery"]["planning_mutated"],
+            }
+        })
+
+    def _post_task_create(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        self._send_service_result(
+            self.stack.create_task_v1(body, idempotency_key, path=path)
+        )
+
+    def _post_work_session_create(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if set(body) != {"task_id"} or not isinstance(body["task_id"], str):
+            raise RequestError(
+                "invalid_body", "work session creation requires only task_id", 400
+            )
+        self._send_service_result(
+            self.stack.start_work_session_v1(body, idempotency_key, path=path)
+        )
+
+    def _post_work_session_action(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        session_id = unquote(match.group(1))
+        action = match.group(2)
+        if action == "worklog":
+            self._post_work_session_log(
+                path, session_id, body, idempotency_key
+            )
+            return
+        if body:
+            raise RequestError(
+                "invalid_body", "work session transitions require an empty body", 400
+            )
+        self._send_service_result(
+            self.stack.transition_work_session_v1(
+                session_id, action, body, idempotency_key, path=path
+            )
+        )
+
+    def _post_work_session_log(
+        self, path: str, session_id: str, body: dict[str, Any],
+        idempotency_key: str,
+    ) -> None:
+        fields = ("done", "next", "blockers")
+        if set(body) != set(fields) or any(
+            not isinstance(body[field], list)
+            or any(not isinstance(item, str) for item in body[field])
+            for field in fields
+        ):
+            raise RequestError(
+                "invalid_body",
+                "work session worklog requires string arrays for done, next, and blockers",
+                400,
+            )
+        self._send_service_result(
+            self.stack.record_work_session_v1(
+                session_id, body, idempotency_key, path=path
+            )
+        )
+
+    def _post_backup(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if set(body) != {"confirmed"} or body["confirmed"] is not True:
+            raise RequestError(
+                "invalid_body", "backup download requires explicit confirmation", 400
+            )
+        download = self.stack.create_backup_download()
+        self.send_backup(
+            download.body, download.filename, download.digest, download.workspace_id
+        )
+
+    def _post_snapshot_export(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        expected = {
+            "disclosure_confirmed", "expected_revision", "expected_digest"
+        }
+        if set(body) != expected:
+            raise RequestError(
+                "invalid_body",
+                "snapshot export confirmation has unknown or missing fields",
+                400,
+            )
+        artifact = self.stack.confirmed_snapshot_export(
+            unquote(match.group(1)),
+            body["expected_revision"],
+            body["expected_digest"],
+            body["disclosure_confirmed"],
+        )
+        self.send_snapshot(
+            artifact.canonical_bytes, artifact.filename, artifact.digest
+        )
+
+    def _post_task_note(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if set(body) != {"text", "revision"}:
+            raise RequestError(
+                "invalid_body", "task note requires only text and revision", 400
+            )
+        self._send_service_result(
+            self.stack.add_task_note_v1(
+                unquote(match.group(1)), body, idempotency_key, path=path
+            )
+        )
+
+    def _post_task_subtask(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if set(body) != {"title", "priority", "revision"}:
+            raise RequestError(
+                "invalid_body",
+                "subtask creation requires only title, priority, and revision",
+                400,
+            )
+        self._send_service_result(
+            self.stack.add_subtask_v1(
+                unquote(match.group(1)), body, idempotency_key, path=path
+            )
+        )
+
+    def _post_objective_create(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if (
+            set(body) != {"objective", "quarter"}
+            or not isinstance(body["objective"], str)
+            or not isinstance(body["quarter"], str)
+        ):
+            raise RequestError(
+                "invalid_body",
+                "objective creation requires only string objective and quarter fields",
+                400,
+            )
+        self._send_service_result(
+            self.stack.create_objective_v1(body, idempotency_key, path=path)
+        )
+
+    def _post_key_result_create(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if (
+            set(body) != {"text", "target", "revision"}
+            or not isinstance(body["text"], str)
+            or not isinstance(body["target"], str)
+            or type(body["revision"]) is not int
+        ):
+            raise RequestError(
+                "invalid_body",
+                "key result creation requires only text, target, and revision",
+                400,
+            )
+        self._send_service_result(
+            self.stack.add_key_result_v1(
+                unquote(match.group(1)), body, idempotency_key, path=path
+            )
+        )
+
+    def _post_note_create(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if (
+            set(body) != {"text", "links"}
+            or not isinstance(body["text"], str)
+            or not isinstance(body["links"], list)
+            or any(not isinstance(link, str) for link in body["links"])
+        ):
+            raise RequestError(
+                "invalid_body",
+                "note creation requires only string text and a string links array",
+                400,
+            )
+        self._send_service_result(
+            self.stack.create_note_v1(body, idempotency_key, path=path)
+        )
+
+    def _post_review_checkin(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if (
+            set(body) != {"date", "time"}
+            or not isinstance(body["date"], str)
+            or not isinstance(body["time"], str)
+        ):
+            raise RequestError(
+                "invalid_body",
+                "review check-in requires only string date and time fields",
+                400,
+            )
+        self._send_service_result(
+            self.stack.checkin_v1(body, idempotency_key, path=path)
+        )
+
+    def _post_review_entry(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        fields = ("done", "next", "blockers")
+        if (
+            set(body) != {"date", "task_id", *fields}
+            or not isinstance(body["date"], str)
+            or not isinstance(body["task_id"], str)
+            or any(
+                not isinstance(body[field], list)
+                or any(not isinstance(item, str) for item in body[field])
+                for field in fields
+            )
+        ):
+            raise RequestError(
+                "invalid_body",
+                "review entry requires date, task_id, and string arrays for done, next, and blockers",
+                400,
+            )
+        self._send_service_result(
+            self.stack.add_worklog_v1(body, idempotency_key, path=path)
+        )
+
+    def _post_capture_ingest(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        self._send_service_result(
+            self.stack.ingest_capture(
+                body, idempotency_key, request_digest, path=path
+            )
+        )
+
+    def _post_capture_link(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if set(body) != {"task_id"} or not isinstance(body["task_id"], str):
+            raise RequestError("invalid_body", "link requires only task_id", 400)
+        self._send_service_result(
+            self.stack.link_capture(
+                unquote(match.group(1)), body["task_id"], idempotency_key,
+                request_digest, path=path,
+            )
+        )
+
+    def _post_capture_action_task(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if set(body) - {"objective_ids"} or not isinstance(
+            body.get("objective_ids", []), list
+        ):
+            raise RequestError(
+                "invalid_body", "conversion accepts only objective_ids", 400
+            )
+        self._send_service_result(
+            self.stack.convert_capture_action(
+                unquote(match.group(1)), unquote(match.group(2)),
+                body.get("objective_ids", []), idempotency_key,
+                request_digest, path=path,
+            )
+        )
+
+    def _post_capture_task(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        self._send_service_result(
+            self.stack.create_task_from_capture(
+                unquote(match.group(1)), body, idempotency_key,
+                request_digest, path=path,
+            )
+        )
+
+    def _post_capture_dismiss(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if body:
+            raise RequestError(
+                "invalid_body", "dismiss requires an empty object", 400
+            )
+        self._send_service_result(
+            self.stack.dismiss_capture(
+                unquote(match.group(1)), idempotency_key,
+                request_digest, path=path,
+            )
+        )
+
+    def _post_reply_create(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        self._send_service_result(
+            self.stack.approve_reply(
+                body, idempotency_key, request_digest, path=path
+            )
+        )
+
+    def _post_reply_receipt(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        self._send_service_result(
+            self.stack.apply_reply_receipt(
+                unquote(match.group(1)), body, idempotency_key,
+                request_digest, path=path,
+            )
+        )
+
     def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path
+        path = urlparse(self.path).path
         try:
             self._validate_host()
             if path.startswith("/api/v1/"):
-                is_ingest = path == "/api/v1/captures"
-                is_task_create = path == "/api/v1/tasks"
-                is_sync_adopt = path == "/api/v1/sync/adopt"
-                snapshot_export_match = re.fullmatch(
-                    r"/api/v1/tasks/([^/]+)/snapshot/export", path
-                )
-                receipt_match = re.fullmatch(r"/api/v1/replies/([^/]+)/receipt", path)
-                is_reply_mutation = path == "/api/v1/replies" or receipt_match is not None
-                work_session_action_match = re.fullmatch(
-                    r"/api/v1/work-sessions/([^/]+)/(pause|resume|stop|worklog)", path
-                )
-                is_work_session_mutation = (
-                    path == "/api/v1/work-sessions" or work_session_action_match is not None
-                )
-                is_idempotent_creation = (
-                    is_task_create
-                    or path
-                    in {
-                        "/api/v1/objectives",
-                        "/api/v1/notes",
-                        "/api/v1/review/checkin",
-                        "/api/v1/review/entries",
-                    }
-                    or re.fullmatch(r"/api/v1/tasks/[^/]+/(?:notes|subtasks)", path)
-                    is not None
-                    or re.fullmatch(r"/api/v1/objectives/[^/]+/key-results", path)
-                    is not None
-                    or is_work_session_mutation
-                )
-                maximum = CAPTURE_BODY_LIMIT if path.startswith("/api/v1/captures") else DEFAULT_BODY_LIMIT
-                # Consume the bounded JSON body before returning an authorization
-                # error.  Closing a Windows socket with unread request bytes can
-                # reset the connection before the client receives the JSON error.
-                body, request_digest = self.read_json(maximum)
-                if not (is_ingest and self._has_agent_bearer()):
-                    self._require_browser_mutation()
-                idempotency_key = (
-                    self._idempotency_key()
-                    if path.startswith("/api/v1/captures")
-                    or is_reply_mutation
-                    or is_idempotent_creation
-                    else ""
-                )
-                if is_sync_adopt:
-                    if set(body) != {"expected_generation", "expected_manifest_digest"}:
-                        raise RequestError(
-                            "invalid_body",
-                            "sync adoption requires expected_generation and expected_manifest_digest",
-                            400,
-                        )
-                    result = self.stack.store.adopt_external_change(
-                        body["expected_generation"], body["expected_manifest_digest"]
-                    )
-                    self.send_json({"data": result})
-                    return
-                if is_task_create:
-                    result = self.stack.create_task_v1(body, idempotency_key, path=path)
-                    self.send_json(result["body"], result["status"])
-                    return
-                if path == "/api/v1/work-sessions":
-                    if set(body) != {"task_id"} or not isinstance(body["task_id"], str):
-                        raise RequestError(
-                            "invalid_body",
-                            "work session creation requires only task_id",
-                            400,
-                        )
-                    result = self.stack.start_work_session_v1(
-                        body, idempotency_key, path=path
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                if work_session_action_match:
-                    session_id = unquote(work_session_action_match.group(1))
-                    action = work_session_action_match.group(2)
-                    if action == "worklog":
-                        if (
-                            set(body) != {"done", "next", "blockers"}
-                            or any(
-                                not isinstance(body[field], list)
-                                or any(not isinstance(item, str) for item in body[field])
-                                for field in ("done", "next", "blockers")
-                            )
-                        ):
-                            raise RequestError(
-                                "invalid_body",
-                                "work session worklog requires string arrays for done, next, and blockers",
-                                400,
-                            )
-                        result = self.stack.record_work_session_v1(
-                            session_id, body, idempotency_key, path=path
-                        )
-                    else:
-                        if body:
-                            raise RequestError(
-                                "invalid_body",
-                                "work session transitions require an empty body",
-                                400,
-                            )
-                        result = self.stack.transition_work_session_v1(
-                            session_id, action, body, idempotency_key, path=path
-                        )
-                    self.send_json(result["body"], result["status"])
-                    return
-                if path == "/api/v1/maintenance/backup":
-                    if set(body) != {"confirmed"} or body["confirmed"] is not True:
-                        raise RequestError(
-                            "invalid_body",
-                            "backup download requires explicit confirmation",
-                            400,
-                        )
-                    download = self.stack.create_backup_download()
-                    self.send_backup(
-                        download.body,
-                        download.filename,
-                        download.digest,
-                        download.workspace_id,
-                    )
-                    return
-                if snapshot_export_match:
-                    if set(body) != {
-                        "disclosure_confirmed",
-                        "expected_revision",
-                        "expected_digest",
-                    }:
-                        raise RequestError(
-                            "invalid_body",
-                            "snapshot export confirmation has unknown or missing fields",
-                            400,
-                        )
-                    artifact = self.stack.confirmed_snapshot_export(
-                        unquote(snapshot_export_match.group(1)),
-                        body["expected_revision"],
-                        body["expected_digest"],
-                        body["disclosure_confirmed"],
-                    )
-                    self.send_snapshot(
-                        artifact.canonical_bytes, artifact.filename, artifact.digest
-                    )
-                    return
-                task_note_match = re.fullmatch(r"/api/v1/tasks/([^/]+)/notes", path)
-                if task_note_match:
-                    if set(body) != {"text", "revision"}:
-                        raise RequestError(
-                            "invalid_body",
-                            "task note requires only text and revision",
-                            400,
-                        )
-                    task_id = unquote(task_note_match.group(1))
-                    result = self.stack.add_task_note_v1(
-                        task_id,
-                        body,
-                        idempotency_key,
-                        path=path,
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                task_subtask_match = re.fullmatch(r"/api/v1/tasks/([^/]+)/subtasks", path)
-                if task_subtask_match:
-                    if set(body) != {"title", "priority", "revision"}:
-                        raise RequestError(
-                            "invalid_body",
-                            "subtask creation requires only title, priority, and revision",
-                            400,
-                        )
-                    task_id = unquote(task_subtask_match.group(1))
-                    result = self.stack.add_subtask_v1(
-                        task_id,
-                        body,
-                        idempotency_key,
-                        path=path,
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                if path == "/api/v1/objectives":
-                    if (
-                        set(body) != {"objective", "quarter"}
-                        or not isinstance(body["objective"], str)
-                        or not isinstance(body["quarter"], str)
-                    ):
-                        raise RequestError(
-                            "invalid_body",
-                            "objective creation requires only string objective and quarter fields",
-                            400,
-                        )
-                    result = self.stack.create_objective_v1(
-                        body, idempotency_key, path=path
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                key_result_match = re.fullmatch(
-                    r"/api/v1/objectives/([^/]+)/key-results", path
-                )
-                if key_result_match:
-                    if (
-                        set(body) != {"text", "target", "revision"}
-                        or not isinstance(body["text"], str)
-                        or not isinstance(body["target"], str)
-                        or type(body["revision"]) is not int
-                    ):
-                        raise RequestError(
-                            "invalid_body",
-                            "key result creation requires only text, target, and revision",
-                            400,
-                        )
-                    result = self.stack.add_key_result_v1(
-                        unquote(key_result_match.group(1)),
-                        body,
-                        idempotency_key,
-                        path=path,
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                if path == "/api/v1/notes":
-                    if (
-                        set(body) != {"text", "links"}
-                        or not isinstance(body["text"], str)
-                        or not isinstance(body["links"], list)
-                        or any(not isinstance(link, str) for link in body["links"])
-                    ):
-                        raise RequestError(
-                            "invalid_body",
-                            "note creation requires only string text and a string links array",
-                            400,
-                        )
-                    result = self.stack.create_note_v1(body, idempotency_key, path=path)
-                    self.send_json(result["body"], result["status"])
-                    return
-                if path == "/api/v1/review/checkin":
-                    if (
-                        set(body) != {"date", "time"}
-                        or not isinstance(body["date"], str)
-                        or not isinstance(body["time"], str)
-                    ):
-                        raise RequestError(
-                            "invalid_body",
-                            "review check-in requires only string date and time fields",
-                            400,
-                        )
-                    result = self.stack.checkin_v1(body, idempotency_key, path=path)
-                    self.send_json(result["body"], result["status"])
-                    return
-                if path == "/api/v1/review/entries":
-                    if (
-                        set(body) != {"date", "task_id", "done", "next", "blockers"}
-                        or not isinstance(body["date"], str)
-                        or not isinstance(body["task_id"], str)
-                        or any(
-                            not isinstance(body[field], list)
-                            or any(not isinstance(item, str) for item in body[field])
-                            for field in ("done", "next", "blockers")
-                        )
-                    ):
-                        raise RequestError(
-                            "invalid_body",
-                            "review entry requires date, task_id, and string arrays for done, next, and blockers",
-                            400,
-                        )
-                    result = self.stack.add_worklog_v1(body, idempotency_key, path=path)
-                    self.send_json(result["body"], result["status"])
-                    return
-                if is_ingest:
-                    result = self.stack.ingest_capture(
-                        body, idempotency_key, request_digest, path=path
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                link_match = re.fullmatch(r"/api/v1/captures/([^/]+)/link", path)
-                if link_match:
-                    if set(body) != {"task_id"} or not isinstance(body["task_id"], str):
-                        raise RequestError("invalid_body", "link requires only task_id", 400)
-                    result = self.stack.link_capture(
-                        unquote(link_match.group(1)),
-                        body["task_id"],
-                        idempotency_key,
-                        request_digest,
-                        path=path,
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                action_match = re.fullmatch(
-                    r"/api/v1/captures/([^/]+)/actions/([^/]+)/task", path
-                )
-                if action_match:
-                    if set(body) - {"objective_ids"} or not isinstance(body.get("objective_ids", []), list):
-                        raise RequestError("invalid_body", "conversion accepts only objective_ids", 400)
-                    result = self.stack.convert_capture_action(
-                        unquote(action_match.group(1)),
-                        unquote(action_match.group(2)),
-                        body.get("objective_ids", []),
-                        idempotency_key,
-                        request_digest,
-                        path=path,
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                task_match = re.fullmatch(r"/api/v1/captures/([^/]+)/task", path)
-                if task_match:
-                    result = self.stack.create_task_from_capture(
-                        unquote(task_match.group(1)),
-                        body,
-                        idempotency_key,
-                        request_digest,
-                        path=path,
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                dismiss_match = re.fullmatch(r"/api/v1/captures/([^/]+)/dismiss", path)
-                if dismiss_match:
-                    if body:
-                        raise RequestError("invalid_body", "dismiss requires an empty object", 400)
-                    result = self.stack.dismiss_capture(
-                        unquote(dismiss_match.group(1)),
-                        idempotency_key,
-                        request_digest,
-                        path=path,
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                if path == "/api/v1/replies":
-                    result = self.stack.approve_reply(
-                        body,
-                        idempotency_key,
-                        request_digest,
-                        path=path,
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                if receipt_match:
-                    result = self.stack.apply_reply_receipt(
-                        unquote(receipt_match.group(1)),
-                        body,
-                        idempotency_key,
-                        request_digest,
-                        path=path,
-                    )
-                    self.send_json(result["body"], result["status"])
-                    return
-                self.send_api_error("not_found", "API endpoint not found", 404)
-                return
-
-            self.read_json()
-            self._require_browser_mutation()
-            if path == "/api/tasks":
-                self.send_api_error(
-                    "legacy_task_writer_disabled",
-                    "Use POST /api/v1/tasks with Idempotency-Key",
-                    410,
-                )
-                return
-            if path in {"/api/objectives", "/api/worklog", "/api/notes"}:
-                self.send_api_error(
-                    "legacy_writer_disabled",
-                    "Use the corresponding versioned /api/v1 endpoint",
-                    410,
-                )
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
+                self._handle_v1_post(path)
+            else:
+                self._handle_legacy_post(path)
         except BaseException as error:
             self._dispatch_error(error)
 
@@ -986,12 +1192,24 @@ class Handler(BaseHTTPRequestHandler):
             self._dispatch_error(error)
 
 
-def create_server(stack: WorkStack, host: str = "127.0.0.1", port: int = 8765) -> WorkStackHTTPServer:
-    return WorkStackHTTPServer((host, port), stack)
+def create_server(
+    stack: WorkStack,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    *,
+    public_port: int | None = None,
+) -> WorkStackHTTPServer:
+    return WorkStackHTTPServer((host, port), stack, public_port=public_port)
 
 
-def serve(stack: WorkStack, host: str = "127.0.0.1", port: int = 8765) -> None:
-    server = create_server(stack, host, port)
+def serve(
+    stack: WorkStack,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    *,
+    public_port: int | None = None,
+) -> None:
+    server = create_server(stack, host, port, public_port=public_port)
     print("work-stack web: http://{}:{}/".format(host, server.actual_port))
     try:
         server.serve_forever()

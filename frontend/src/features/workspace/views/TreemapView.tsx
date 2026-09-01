@@ -33,13 +33,19 @@ interface TreemapContentProps {
 }
 
 const PRIORITY_COLORS: Record<string, string> = {
-  P0: "#703142",
-  P1: "#624c29",
-  P2: "#244e6c",
-  P3: "#263a51",
+  P0: "var(--wsv-priority-p0-surface)",
+  P1: "var(--wsv-priority-p1-surface)",
+  P2: "var(--wsv-priority-p2-surface)",
+  P3: "var(--wsv-priority-p3-surface)",
 };
 
-const GROUP_COLORS = ["#342f66", "#244858", "#3b354e", "#314766", "#3e4230"];
+const GROUP_COLORS = [
+  "var(--wsv-treemap-group-1)",
+  "var(--wsv-treemap-group-2)",
+  "var(--wsv-treemap-group-3)",
+  "var(--wsv-treemap-group-4)",
+  "var(--wsv-treemap-group-5)",
+];
 
 function clipText(value: string, width: number, characterWidth: number) {
   const count = Math.max(0, Math.floor(width / characterWidth));
@@ -77,7 +83,7 @@ export function TreemapObjectiveGroup({
         rx={10}
         fill={GROUP_COLORS[colorIndex % GROUP_COLORS.length]}
         fillOpacity={0.32}
-        stroke="#61718b"
+        stroke="var(--wsv-treemap-group-border)"
         strokeOpacity={0.5}
       />
       {width > 90 && height > 28 ? (
@@ -174,7 +180,9 @@ function TreemapContent({
         height={Math.max(0, height - 4)}
         rx={7}
         fill={PRIORITY_COLORS[priority] || PRIORITY_COLORS.P2}
-        stroke={selected ? "#f3f8ff" : "#90a8c4"}
+        stroke={selected
+          ? "var(--wsv-treemap-selection)"
+          : "var(--wsv-treemap-cell-border)"}
         strokeWidth={selected ? 2.5 : 0.7}
         strokeOpacity={selected ? 1 : 0.38}
       />

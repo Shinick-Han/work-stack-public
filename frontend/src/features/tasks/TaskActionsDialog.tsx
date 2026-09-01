@@ -9,14 +9,17 @@ interface TaskActionsDialogProps {
   open: boolean
   task: Task
   onClose: () => void
+  onDeleted?: () => void
   onSaved: (task: Task) => void
   onNotice: (message: string, tone?: 'success' | 'error') => void
 }
 
-export function TaskActionsDialog({ open, task, onClose, onSaved, onNotice }: TaskActionsDialogProps) {
+export function TaskActionsDialog({ open, task, onClose, onDeleted, onSaved, onNotice }: TaskActionsDialogProps) {
   const [note, setNote] = useState('')
   const [subtaskTitle, setSubtaskTitle] = useState('')
   const [subtaskPriority, setSubtaskPriority] = useState<TaskPriority>('P2')
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteConfirmation, setDeleteConfirmation] = useState('')
   const [pending, setPending] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const noteIntentKey = useRef<string | null>(null)
@@ -27,6 +30,8 @@ export function TaskActionsDialog({ open, task, onClose, onSaved, onNotice }: Ta
       setNote('')
       setSubtaskTitle('')
       setSubtaskPriority('P2')
+      setDeleteOpen(false)
+      setDeleteConfirmation('')
       setPending(null)
       setError(null)
       noteIntentKey.current = null
@@ -38,7 +43,11 @@ export function TaskActionsDialog({ open, task, onClose, onSaved, onNotice }: Ta
     key: string,
     operation: () => Promise<Task>,
     message: string,
-    options?: { onSuccess?: () => void; committed?: (task: Task) => boolean },
+    options?: {
+      afterCommit?: (task: Task) => void
+      onSuccess?: () => void
+      committed?: (task: Task) => boolean
+    },
   ) => {
     if (pending) return
     setPending(key)
@@ -49,6 +58,7 @@ export function TaskActionsDialog({ open, task, onClose, onSaved, onNotice }: Ta
       onSaved(updated)
       onNotice(message)
       onClose()
+      options?.afterCommit?.(updated)
     } catch (reason) {
       if (options?.committed) {
         try {
@@ -57,6 +67,7 @@ export function TaskActionsDialog({ open, task, onClose, onSaved, onNotice }: Ta
           if (options.committed(authoritative)) {
             onNotice(`${message} (verified after reconnect)`)
             onClose()
+            options.afterCommit?.(authoritative)
             return
           }
         } catch {
@@ -68,6 +79,20 @@ export function TaskActionsDialog({ open, task, onClose, onSaved, onNotice }: Ta
     } finally {
       setPending(null)
     }
+  }
+
+  const deleteTask = (event: FormEvent) => {
+    event.preventDefault()
+    if (deleteConfirmation !== task.id || task.status === 'dropped') return
+    void run(
+      'delete',
+      () => api.patchTask(task.id, { status: 'dropped', revision: task.revision }),
+      `${task.id} deleted from active work; immutable history preserved`,
+      {
+        committed: (authoritative) => authoritative.status === 'dropped',
+        afterCommit: () => onDeleted?.(),
+      },
+    )
   }
 
   const addNote = (event: FormEvent) => {
@@ -154,6 +179,40 @@ export function TaskActionsDialog({ open, task, onClose, onSaved, onNotice }: Ta
           </form>
         </section>
       </div>
+      <section aria-labelledby="task-actions-delete" className="task-action-danger">
+        <div>
+          <h3 id="task-actions-delete">Delete Task</h3>
+          <p>
+            Remove this Task from active work without erasing its immutable SSOT and Activity history.
+            Related Tasks may remain blocked until their links are updated.
+          </p>
+        </div>
+        {task.status === 'dropped' ? (
+          <p className="task-action-danger__deleted" role="status">This Task has already been deleted from active work.</p>
+        ) : deleteOpen ? (
+          <form className="task-action-delete-confirmation" onSubmit={deleteTask}>
+            <label className="field">
+              <span>Type <strong>{task.id}</strong> to confirm</span>
+              <input
+                autoComplete="off"
+                autoFocus
+                disabled={pending !== null}
+                onChange={(event) => setDeleteConfirmation(event.target.value)}
+                value={deleteConfirmation}
+              />
+            </label>
+            <p>This appends a Dropped transition; it does not rewrite or erase prior records.</p>
+            <div>
+              <Button disabled={pending !== null} onClick={() => { setDeleteOpen(false); setDeleteConfirmation('') }} variant="ghost">Cancel</Button>
+              <Button disabled={pending !== null || deleteConfirmation !== task.id} type="submit" variant="danger">
+                {pending === 'delete' ? 'Deleting…' : 'Delete Task'}
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <Button disabled={pending !== null} onClick={() => setDeleteOpen(true)} variant="danger">Delete Task…</Button>
+        )}
+      </section>
       {error ? <div className="inline-error" role="alert">{error}</div> : null}
     </Dialog>
   )

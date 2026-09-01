@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-ssot-v4/schemas/planning-status-event.schema.json",
+  "title": "Work Stack SSOT v4 planning-status stream event",
+  "$comment": "Cross-record validation requires record_uid to equal task_uid and validates the fact chain.",
+  "allOf": [
+    { "$ref": "common.schema.json#/$defs/eventEnvelope" },
+    {
+      "type": "object",
+      "required": ["legacy_fact_id", "task_uid", "task_display_id", "previous_event_uid", "previous_legacy_fact_id", "prior_revision", "new_revision", "prior_status", "status"],
+      "properties": {
+        "format": { "const": "workstack.planning-status-event" },
+        "schema_version": { "const": 1 },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "actor": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "legacy_fact_id": { "type": "string", "pattern": "^PS-[0-9]{6,}$" },
+        "task_uid": { "$ref": "common.schema.json#/$defs/uuid" },
+        "task_display_id": { "type": "string", "pattern": "^T-[0-9]{4,}$" },
+        "previous_event_uid": { "$ref": "common.schema.json#/$defs/uuidOrNull" },
+        "previous_legacy_fact_id": {
+          "oneOf": [
+            { "type": "string", "pattern": "^PS-[0-9]{6,}$" },
+            { "type": "null" }
+          ]
+        },
+        "prior_revision": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+            { "type": "null" }
+          ]
+        },
+        "new_revision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "prior_status": {
+          "oneOf": [
+            { "enum": ["open", "started", "done", "dropped"] },
+            { "type": "null" }
+          ]
+        },
+        "status": { "enum": ["open", "started", "done", "dropped"] }
+      }
+    }
+  ],
+  "unevaluatedProperties": false
+}

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, test, vi } from 'vitest'
 import { Dialog } from './Dialog'
+import { DialogLifecycleProvider } from './DialogLifecycle'
 
 const originalChrome = (window as Window & { chrome?: unknown }).chrome
 
@@ -22,11 +23,24 @@ test('prevents native cancel before delegating close to the controlled parent', 
 })
 
 test('temporarily suspends the native Microsoft surface while a dialog is open', () => {
-  const postMessage = vi.fn()
-  Object.defineProperty(window, 'chrome', { configurable: true, value: { webview: { postMessage } } })
-  const rendered = render(<Dialog onClose={vi.fn()} open title="Review source">Contents</Dialog>)
+  const suspend = vi.fn(() => true)
+  const resume = vi.fn()
+  const lifecycle = { resume, suspend }
+  const rendered = render(
+    <DialogLifecycleProvider lifecycle={lifecycle}>
+      <Dialog onClose={vi.fn()} open title="Review source">Contents</Dialog>
+    </DialogLifecycleProvider>,
+  )
 
-  expect(postMessage).toHaveBeenCalledWith('workstack-source-host|suspend')
-  rendered.rerender(<Dialog onClose={vi.fn()} open={false} title="Review source">Contents</Dialog>)
-  expect(postMessage).toHaveBeenLastCalledWith('workstack-source-host|resume')
+  expect(suspend).toHaveBeenCalledOnce()
+  rendered.rerender(
+    <DialogLifecycleProvider lifecycle={lifecycle}>
+      <Dialog onClose={vi.fn()} open={false} title="Review source">Contents</Dialog>
+    </DialogLifecycleProvider>,
+  )
+  expect(resume).toHaveBeenCalledOnce()
+})
+
+test('is host agnostic when no lifecycle is provided', () => {
+  expect(() => render(<Dialog onClose={vi.fn()} open title="Portable dialog">Contents</Dialog>)).not.toThrow()
 })

@@ -16,6 +16,16 @@ License, Version 2.0. A complete copy is distributed at
 
 No `unicodedata2` source is vendored in this repository.
 
+## JSON Schema validation
+
+Work Stack uses jsonschema 4.26.0, attrs 26.1.0, jsonschema-specifications
+2025.9.1, referencing 0.37.0, rpds-py 2026.6.3, and typing-extensions
+4.16.0 to validate the bundled Work Stack SSOT schemas. Package metadata
+declares MIT licenses for jsonschema, attrs, jsonschema-specifications,
+referencing, and rpds-py; typing-extensions is distributed under PSF-2.0.
+Package license texts remain in each installed `*.dist-info/licenses`
+directory where supplied. No package source is vendored in this repository.
+
 ## Python 3.12.10 embeddable runtime
 
 The Windows setup artifact bundles the official CPython 3.12.10 64-bit embeddable
