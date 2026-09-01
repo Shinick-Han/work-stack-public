@@ -2,13 +2,13 @@
 
 - Source repository: `Shinick-Han/work-stack`
 - Source branch: `codex/workstack-python-desktop-20260831`
-- Source commit: `6f72eb221db88307611e1602dc278cea3d551188`
-- Source tree: `f06a11b308daf646a42287500dc5cb3874188702`
+- Source commit: `dd19521a31af4329c3068f9dc27a8b6720fd35ba`
+- Source tree: `8e4a031935e8bcfed394c5d397f41a3e43b2efdb`
 - Export shape: tracked files from the source commit, committed onto the public
   snapshot history with the verified Windows installer built from public commit
-  `f15e5b09c533101ec2e5cc616e17072839841064`
+  `48857bad1b8cafc601e17094c43ecb5bad54fa3b`
 - Included installer: `installer/WorkStack-Setup-1.0.6.ps1`
-- Installer SHA-256: `9e8e9c4db53c25a6af9971fc85d2c6ea30902625fa91f255e3aa2aa66ac9106e`
+- Installer SHA-256: `5a41a4d542ce40662d73d1a769f1c6f5b311da5008a9da7296ed6795008420da`
 - Stable update manifest: `installer/workstack-update.json`
 
 Runtime data, Microsoft content, credentials, browser profiles, local configuration, locks, and

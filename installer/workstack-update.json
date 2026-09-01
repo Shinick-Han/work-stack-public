@@ -2,19 +2,19 @@
   "schema_version": 1,
   "channel": "stable",
   "version": "1.0.6",
-  "published_at": "2026-09-01T14:00:29Z",
+  "published_at": "2026-09-01T14:20:57Z",
   "release_url": "https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.6",
   "minimum_remote_protocol": 1,
   "installer": {
     "name": "WorkStack-Setup-1.0.6.ps1",
     "url": "https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.6/WorkStack-Setup-1.0.6.ps1",
-    "sha256": "9e8e9c4db53c25a6af9971fc85d2c6ea30902625fa91f255e3aa2aa66ac9106e",
-    "size": 26402241
+    "sha256": "5a41a4d542ce40662d73d1a769f1c6f5b311da5008a9da7296ed6795008420da",
+    "size": 26402269
   },
   "checksum": {
     "name": "WorkStack-Setup-1.0.6.ps1.sha256",
     "url": "https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.6/WorkStack-Setup-1.0.6.ps1.sha256",
-    "sha256": "856b7f6b3411dae91b6c9cf2d60b05d603e60e4137dc96df99a8d034c2ad3eee",
+    "sha256": "e387decb947bf5a35f74fe1521231c0de3a6c147237296995cdf29bd62a28d88",
     "size": 92
   }
 }

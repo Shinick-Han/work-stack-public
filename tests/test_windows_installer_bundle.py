@@ -15,7 +15,7 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
     def test_published_installer_bytes_are_not_normalized_by_git(self) -> None:
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
 
-        self.assertIn("installer/WorkStack-Setup-*.ps1 -text", attributes)
+        self.assertIn("installer/WorkStack-Setup-*.ps1 binary", attributes)
 
     def test_builder_pins_and_bundles_the_official_python_runtime(self) -> None:
         script = self.read("Build-WindowsInstaller.ps1")
