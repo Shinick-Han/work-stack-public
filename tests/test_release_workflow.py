@@ -39,6 +39,15 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             body.index("npm --prefix frontend run test:e2e:compat"),
         )
 
+    def test_native_chromium_smoke_waits_for_and_captures_the_gui_process(self) -> None:
+        body = self._job_body("chromium-smoke")
+
+        self.assertIn("Start-Process -FilePath $edge", body)
+        self.assertIn("-Wait -PassThru", body)
+        self.assertIn("-RedirectStandardOutput $stdout", body)
+        self.assertIn("$edgeProcess.ExitCode", body)
+        self.assertIn("--headless=new", body)
+
     def test_downstream_jobs_consume_numeric_artifact_id_and_never_rebuild(self) -> None:
         download_count = self.workflow.count(
             "artifact-ids: ${{ needs.release-build.outputs.artifact_id }}"

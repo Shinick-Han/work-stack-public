@@ -1,9 +1,9 @@
 {
-  "config_digest": "6860454059b5ccccdfda9e50f9c468f08ba8fa5fca6ea259d780e5178cc7cd97",
+  "config_digest": "258b39f65e1fe3ad94c3492b690c1aa27887a5fe1a1967bac84220205f89b8ef",
   "coverage_floors": {},
   "critical_complexity_debt": {},
   "critical_typescript_complexity_debt": {},
-  "measurement_commit": "1347ef7011641b26eaf6e0813e81f5727d56f40c",
+  "measurement_commit": "e2b3ac246298e527e78331a4faedf6ce102f90bc",
   "measurement_source_digest": "25928b44fe9b9000f00fff49172544ec709d0ab96035941b52c33f2c9e604b4f",
   "schema_version": 1,
   "source_populations": {

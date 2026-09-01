@@ -218,6 +218,7 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn("Set-IsReadOnly", script)
         self.assertIn("custom-backups", script)
         self.assertIn("custom backup directory", script.lower())
+        self.assertIn("$global:LASTEXITCODE = 0", script)
 
     def test_post_install_launcher_failure_rolls_back_before_receipting_success(self) -> None:
         script = self.read("Apply-WorkStackUpdate.ps1")

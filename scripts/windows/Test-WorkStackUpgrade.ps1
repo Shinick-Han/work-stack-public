@@ -221,3 +221,4 @@ try {
 } finally {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }
+$global:LASTEXITCODE = 0
