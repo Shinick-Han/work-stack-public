@@ -30,6 +30,15 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("inputs.previous_version", body)
         self.assertIn("work-stack-public/releases/download", body)
 
+    def test_browser_compatibility_installs_locked_python_runtime_dependencies(self) -> None:
+        body = self._job_body("browser-compat")
+
+        self.assertIn("python -m pip install --require-hashes -r requirements.txt", body)
+        self.assertLess(
+            body.index("python -m pip install --require-hashes -r requirements.txt"),
+            body.index("npm --prefix frontend run test:e2e:compat"),
+        )
+
     def test_downstream_jobs_consume_numeric_artifact_id_and_never_rebuild(self) -> None:
         self.assertGreaterEqual(
             self.workflow.count("artifact-ids: ${{ needs.release-build.outputs.artifact_id }}"), 2

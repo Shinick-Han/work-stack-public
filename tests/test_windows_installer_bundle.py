@@ -143,6 +143,14 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn("--require-hashes", script)
         self.assertIn("requirements.txt", script)
         self.assertIn("requirements-windows-desktop.txt", script)
+        self.assertIn("requirements-windows-build.txt", script)
+        self.assertIn("setuptools.build_meta", script)
+        self.assertIn("PYTHONPATH", script)
+        build_requirements = (ROOT / "requirements-windows-build.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("setuptools==78.1.0", build_requirements)
+        self.assertIn("--hash=sha256:", build_requirements)
         self.assertIn("import jsonschema", script)
 
     def test_user_guide_does_not_require_python_or_node_on_the_target_machine(self) -> None:

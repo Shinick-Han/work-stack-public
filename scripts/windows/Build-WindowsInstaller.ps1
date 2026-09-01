@@ -112,8 +112,23 @@ try {
         $wheels = Join-Path $payload 'wheels'
         Copy-Item -LiteralPath $sourceWheels -Destination $wheels -Recurse
     }
-    python -m pip install --disable-pip-version-check --no-index --find-links $wheels --no-deps --no-build-isolation --require-hashes --target $sitePackages -r (Join-Path $sourcePath 'requirements.txt') -r (Join-Path $sourcePath 'requirements-windows-desktop.txt')
-    if ($LASTEXITCODE -ne 0) { throw 'Locked runtime dependency installation failed.' }
+    $buildTools = Join-Path $temporary 'build-tools'
+    python -m pip install --disable-pip-version-check --only-binary=:all: --no-deps --require-hashes --target $buildTools -r (Join-Path $sourcePath 'requirements-windows-build.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'Locked installer build dependency installation failed.' }
+    $previousPythonPath = [Environment]::GetEnvironmentVariable('PYTHONPATH', 'Process')
+    try {
+        $buildPythonPath = $buildTools
+        if ($previousPythonPath) {
+            $buildPythonPath += [IO.Path]::PathSeparator + $previousPythonPath
+        }
+        [Environment]::SetEnvironmentVariable('PYTHONPATH', $buildPythonPath, 'Process')
+        python -c "import setuptools.build_meta"
+        if ($LASTEXITCODE -ne 0) { throw 'Locked installer build backend is unavailable.' }
+        python -m pip install --disable-pip-version-check --no-index --find-links $wheels --no-deps --no-build-isolation --require-hashes --target $sitePackages -r (Join-Path $sourcePath 'requirements.txt') -r (Join-Path $sourcePath 'requirements-windows-desktop.txt')
+        if ($LASTEXITCODE -ne 0) { throw 'Locked runtime dependency installation failed.' }
+    } finally {
+        [Environment]::SetEnvironmentVariable('PYTHONPATH', $previousPythonPath, 'Process')
+    }
     $bundledPackage = Join-Path $payload 'workstack\__init__.py'
     if (-not (Test-Path -LiteralPath $bundledPackage -PathType Leaf)) {
         throw "Bundled Work Stack package is missing: $bundledPackage"
