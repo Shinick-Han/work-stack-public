@@ -59,11 +59,7 @@ code { color: var(--ws-text-code); font-family: 'Cascadia Code', Consolas, monos
 .brand-block > div { display: grid; gap: 1px; }
 .brand-block strong { font: 700 14px/1.2 Inter, Aptos, 'Segoe UI', sans-serif; letter-spacing: -.01em; }
 .brand-block small { color: var(--ws-text-muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
-.brand-mark { align-items: center; background: var(--ws-brand-accent); border-radius: 8px; display: flex; gap: 2px; height: 29px; justify-content: center; width: 29px; }
-.brand-mark span { background: var(--ws-brand-ink); border-radius: 3px; display: block; width: 3px; }
-.brand-mark span:nth-child(1) { height: 8px; }
-.brand-mark span:nth-child(2) { height: 15px; }
-.brand-mark span:nth-child(3) { height: 11px; }
+.brand-mark { display: block; height: 29px; user-select: none; width: 29px; }
 .mobile-close { display: none !important; margin-left: auto; }
 
 .primary-nav { display: grid; gap: 5px; padding: 10px 12px 20px; }

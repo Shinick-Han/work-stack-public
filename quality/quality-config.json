@@ -108,7 +108,14 @@
     "workstack/snapshot*.py",
     "workstack/storage/**",
     "workstack/store.py",
-    "desktop/python-webview-shell/workstack_update.py"
+    "desktop/python-webview-shell/workstack_update.py",
+    "workstack/checkpoint_transition.py",
+    "workstack/checkpoint_change.py",
+    "workstack/checkpoint_projection.py",
+    "workstack/context_projection.py",
+    "workstack/sse_events.py",
+    "workstack/cli_writer.py",
+    "workstack/checkpoint_state_cli.py"
   ],
   "python_layers": [
     {
@@ -151,14 +158,23 @@
       ]
     },
     {
-      "name": "py_storage",
+      "name": "py_legacy_store",
       "globs": [
-        "workstack/maintenance.py",
-        "workstack/store.py",
-        "workstack/storage/**"
+        "workstack/store.py"
       ],
       "may_import": [
         "py_foundation"
+      ]
+    },
+    {
+      "name": "py_storage",
+      "globs": [
+        "workstack/maintenance.py",
+        "workstack/storage/**"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_legacy_store"
       ]
     },
     {
@@ -168,9 +184,14 @@
       ],
       "may_import": [
         "py_foundation",
+        "py_legacy_store",
         "py_snapshot",
         "py_snapshot_export",
-        "py_storage"
+        "py_storage",
+        "py_checkpoint_facts",
+        "py_checkpoint_projection",
+        "py_checkpoint_contract",
+        "py_context_projection"
       ]
     },
     {
@@ -181,7 +202,97 @@
       "may_import": [
         "py_application",
         "py_foundation",
-        "py_storage"
+        "py_legacy_store",
+        "py_sse_encoder"
+      ]
+    },
+    {
+      "name": "py_agent_contract",
+      "globs": [
+        "workstack/agent_cli_contract.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_agent_authority",
+      "globs": [
+        "workstack/agent_authority.py"
+      ],
+      "may_import": [
+        "py_agent_contract"
+      ]
+    },
+    {
+      "name": "py_agent_command_status",
+      "globs": [
+        "workstack/agent_command_status.py"
+      ],
+      "may_import": [
+        "py_agent_contract"
+      ]
+    },
+    {
+      "name": "py_agent_command_context",
+      "globs": [
+        "workstack/agent_command_context.py"
+      ],
+      "may_import": [
+        "py_agent_contract"
+      ]
+    },
+    {
+      "name": "py_agent_command_checkpoint",
+      "globs": [
+        "workstack/agent_command_checkpoint.py"
+      ],
+      "may_import": [
+        "py_agent_contract"
+      ]
+    },
+    {
+      "name": "py_agent_registry",
+      "globs": [
+        "workstack/agent_commands.py"
+      ],
+      "may_import": [
+        "py_agent_contract"
+      ]
+    },
+    {
+      "name": "py_agent_local_backend",
+      "globs": [
+        "workstack/agent_local_backend.py"
+      ],
+      "may_import": [
+        "py_agent_contract",
+        "py_application",
+        "py_legacy_store"
+      ]
+    },
+    {
+      "name": "py_agent_transport",
+      "globs": [
+        "workstack/agent_transport.py"
+      ],
+      "may_import": [
+        "py_agent_contract"
+      ]
+    },
+    {
+      "name": "py_agent_runtime",
+      "globs": [
+        "workstack/agent_runtime.py"
+      ],
+      "may_import": [
+        "py_agent_authority",
+        "py_agent_command_checkpoint",
+        "py_agent_command_context",
+        "py_agent_command_status",
+        "py_agent_contract",
+        "py_agent_local_backend",
+        "py_agent_registry",
+        "py_agent_transport",
+        "py_legacy_store"
       ]
     },
     {
@@ -191,20 +302,44 @@
         "workstack/cli.py"
       ],
       "may_import": [
+        "py_agent_runtime",
         "py_application",
         "py_foundation",
+        "py_legacy_store",
         "py_snapshot_export",
         "py_storage",
-        "py_transport"
+        "py_transport",
+        "py_cli_writer",
+        "py_checkpoint_cli"
       ]
     },
     {
       "name": "py_desktop",
       "globs": [
-        "desktop/python-webview-shell/**"
+        "desktop/python-webview-shell/bounded_request_worker.py",
+        "desktop/python-webview-shell/brand_assets.py",
+        "desktop/python-webview-shell/connection_registry.py",
+        "desktop/python-webview-shell/connection_registry_activation_recovery.py",
+        "desktop/python-webview-shell/connection_registry_compat.py",
+        "desktop/python-webview-shell/connection_registry_host_contract.py",
+        "desktop/python-webview-shell/connection_registry_mutations.py",
+        "desktop/python-webview-shell/connection_registry_startup.py",
+        "desktop/python-webview-shell/generated/__init__.py",
+        "desktop/python-webview-shell/generated/theme_tokens.py",
+        "desktop/python-webview-shell/native_theme.py",
+        "desktop/python-webview-shell/profile_inspection.py",
+        "desktop/python-webview-shell/remote_connection_monitor.py",
+        "desktop/python-webview-shell/ssh_config_discovery.py",
+        "desktop/python-webview-shell/ssh_profile_metadata.py",
+        "desktop/python-webview-shell/ssot_connection.py",
+        "desktop/python-webview-shell/startup_recovery_host.py",
+        "desktop/python-webview-shell/v4_activation_binding.py",
+        "desktop/python-webview-shell/workstack_desktop.py",
+        "desktop/python-webview-shell/workstack_update.py"
       ],
       "may_import": [
-        "py_foundation"
+        "py_foundation",
+        "py_desktop_rebind"
       ]
     },
     {
@@ -217,6 +352,76 @@
         "scripts/run_mutation_sentinels.py"
       ],
       "may_import": []
+    },
+    {
+      "name": "py_checkpoint_contract",
+      "globs": [
+        "workstack/checkpoint_transition.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_checkpoint_facts",
+      "globs": [
+        "workstack/checkpoint_change.py"
+      ],
+      "may_import": [
+        "py_storage"
+      ]
+    },
+    {
+      "name": "py_checkpoint_projection",
+      "globs": [
+        "workstack/checkpoint_projection.py"
+      ],
+      "may_import": [
+        "py_checkpoint_contract",
+        "py_storage"
+      ]
+    },
+    {
+      "name": "py_context_projection",
+      "globs": [
+        "workstack/context_projection.py"
+      ],
+      "may_import": [
+        "py_foundation"
+      ]
+    },
+    {
+      "name": "py_sse_encoder",
+      "globs": [
+        "workstack/sse_events.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_cli_writer",
+      "globs": [
+        "workstack/cli_writer.py"
+      ],
+      "may_import": [
+        "py_legacy_store"
+      ]
+    },
+    {
+      "name": "py_checkpoint_cli",
+      "globs": [
+        "workstack/checkpoint_state_cli.py"
+      ],
+      "may_import": [
+        "py_checkpoint_contract",
+        "py_cli_writer"
+      ]
+    },
+    {
+      "name": "py_desktop_rebind",
+      "globs": [
+        "desktop/python-webview-shell/local_workspace_rebind.py"
+      ],
+      "may_import": [
+        "py_legacy_store"
+      ]
     }
   ],
   "frontend_layers": [

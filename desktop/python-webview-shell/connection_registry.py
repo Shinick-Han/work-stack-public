@@ -142,6 +142,12 @@ def _local_path(value: object) -> str:
     return normalized
 
 
+def validate_local_data_dir(value: object) -> str:
+    """Public form of the registry's local data_dir rules (absolute, non-UNC, non-root)."""
+
+    return _local_path(value)
+
+
 def _common_profile_values(raw: dict[object, object]) -> dict[str, object]:
     label = _bounded_string(raw["label"], "label", 100).strip()
     if not label:

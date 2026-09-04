@@ -1,0 +1,6 @@
+{"canonical":"{\"a\":2,\"b\":1}\n","input":{"a":2,"b":1},"name":"sorted-keys"}
+{"canonical":"{\"a\":{\"c\":[true,null],\"d\":4},\"z\":[1,2]}\n","input":{"a":{"c":[true,null],"d":4},"z":[1,2]},"name":"nested"}
+{"canonical":"{\"t\":\"é\"}\n","input":{"t":"é"},"name":"unicode"}
+{"canonical":"{}\n","input":{},"name":"empty"}
+{"canonical":"{\"k\":\"a\\\"b\\\\c\\n\"}\n","input":{"k":"a\"b\\c\n"},"name":"escapes"}
+{"canonical":"{\"m\":100,\"n\":1.5}\n","input":{"m":100,"n":1.5},"name":"numbers"}

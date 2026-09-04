@@ -1,0 +1,105 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "workstack/agent-p0-oracle/terminal-schema.v1.json",
+  "title": "Work Stack Agent P0 worker terminal result schema (v1)",
+  "description": "Exact-field terminal record accepted only as the complete content of the final assistant text event. Exactly one variant must match. Duplicate keys, malformed UTF-8, trailing prose, Markdown fences, multiple objects, packet/attempt mismatch and unknown fields are protocol errors handled by the parser and validator in scripts/run_agent_p0_gates.py.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "result", "packet_id", "attempt_id", "base_sha", "head_sha"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "result": {"const": "candidate"},
+        "packet_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"},
+        "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "result", "packet_id", "attempt_id", "reason", "contract_sha256", "requested_symbol", "failing_fixture"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "result": {"const": "blocked"},
+        "packet_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"},
+        "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "reason": {"const": "contract_gap"},
+        "contract_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "requested_symbol": {"type": "string", "minLength": 1},
+        "failing_fixture": {"type": "string", "minLength": 1}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "result", "packet_id", "attempt_id", "reason", "required_path"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "result": {"const": "blocked"},
+        "packet_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"},
+        "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "reason": {"const": "ownership_gap"},
+        "required_path": {"type": "string", "minLength": 1}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "result", "packet_id", "attempt_id", "reason", "receipt"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "result": {"const": "blocked"},
+        "packet_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"},
+        "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "reason": {"const": "dependency_gap"},
+        "receipt": {"type": "string", "minLength": 1}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "result", "packet_id", "attempt_id", "reason"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "result": {"const": "failed"},
+        "packet_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"},
+        "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "reason": {"const": "implementation_incomplete"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "result", "packet_id", "attempt_id", "findings", "finding_sha256"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "result": {"const": "evidence"},
+        "packet_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"},
+        "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "findings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "observation", "source", "reproduction"],
+            "properties": {
+              "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$"},
+              "observation": {"type": "string", "minLength": 1},
+              "source": {"type": "string", "minLength": 1},
+              "reproduction": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        },
+        "finding_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  ]
+}

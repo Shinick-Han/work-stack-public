@@ -189,6 +189,70 @@ test('routes both SSOT entry points to one multi-profile center only when its ga
   expect(postMessage).toHaveBeenCalled()
 })
 
+test('hands a connection identity mismatch to workspace synchronization without mutating the registry', async () => {
+  stubWorkspaceFetch()
+  vi.mocked(api.getSyncStatus).mockResolvedValue({
+    state: 'invalid',
+    workspace_id: 'dafe29d2-7625-41d3-809d-49e67685ccdf',
+    candidate_workspace_id: '014b10b4-53db-43c7-b744-dad41e19942b',
+    generation: 1,
+    manifest_digest: `sha256:${'a'.repeat(64)}`,
+    changed_files: ['workspace.json'],
+    reason: 'external candidate workspace identity changed',
+    rebind_available: false,
+  })
+  const listeners = new Set<(event: { data: unknown }) => void>()
+  const postMessage = vi.fn()
+  Object.defineProperty(window, 'chrome', {
+    configurable: true,
+    value: { webview: {
+      addEventListener: (_type: string, listener: (event: { data: unknown }) => void) => listeners.add(listener),
+      postMessage,
+      removeEventListener: (_type: string, listener: (event: { data: unknown }) => void) => listeners.delete(listener),
+    } },
+  })
+  const requests = () => postMessage.mock.calls.flatMap(([message]) => {
+    if (typeof message !== 'string' || !message.trimStart().startsWith('{')) return []
+    try { return [JSON.parse(message) as Record<string, any>] } catch { return [] }
+  })
+  const receive = (data: unknown) => act(() => listeners.forEach((listener) => listener({ data })))
+  const success = (request: Record<string, any>, result: unknown) => ({
+    type: 'workstack-connection-registry-response', schema_version: 1,
+    request_id: request.request_id, operation: request.operation, ok: true, result,
+  })
+  renderApp({ connectionCenterGates: { registry: true, activation: true } })
+
+  await screen.findByRole('heading', { name: /keep execution connected/i })
+  await userEvent.click(screen.getAllByRole('button', { name: /Configure SSOT connections/ })[0])
+  const getRegistry = await waitFor(() => {
+    const request = requests().find((candidate) => candidate.operation === 'get-registry')
+    expect(request).toBeDefined()
+    return request!
+  })
+  const profile = {
+    profile_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    label: 'Local planning', kind: 'local', enabled: true, live_updates: true,
+    expected_workspace_id: 'dafe29d2-7625-41d3-809d-49e67685ccdf',
+    data_dir: 'C:/WorkStack/planning-ssot',
+  }
+  receive(success(getRegistry, {
+    registry: { schema_version: 1, active_profile_id: profile.profile_id, profiles: [profile] },
+    registry_digest: `sha256:${'b'.repeat(64)}`,
+  }))
+  await userEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+  const testProfile = [...requests()].reverse().find((candidate) => candidate.operation === 'test-profile')!
+  receive(success(testProfile, {
+    profile_id: profile.profile_id, kind: 'local', status: 'identity_mismatch',
+    actual_workspace_id: '014b10b4-53db-43c7-b744-dad41e19942b',
+    product_version: '1.0.6', protocol_version: 1, proof_id: null,
+  }))
+
+  await userEvent.click(screen.getByRole('button', { name: 'Review workspace synchronization' }))
+  expect(screen.queryByRole('dialog', { name: 'SSOT connections' })).not.toBeInTheDocument()
+  expect(screen.getByRole('dialog', { name: 'Resolve SSOT conflict' })).toBeVisible()
+  expect(requests().some((candidate) => candidate.operation === 'save-registry' || candidate.operation === 'activate-profile')).toBe(false)
+})
+
 test('keeps a searchable Task navigator collapsed until requested and opens its Task in Workspace', async () => {
   stubWorkspaceFetch()
   renderApp()
@@ -337,15 +401,15 @@ test('uses 1–8 for views and surfaces and J/K for filtered task navigation', a
   fireEvent.keyDown(window, { key: '3' })
   expect(screen.getByRole('tab', { name: 'Treemap' })).toHaveAttribute('aria-selected', 'true')
   fireEvent.keyDown(window, { key: '4' })
-  expect(await screen.findByRole('button', { name: 'Focus 4' })).toHaveAttribute('aria-current', 'page')
-  fireEvent.keyDown(window, { key: '5' })
-  expect(await screen.findByRole('heading', { name: /turn signal into useful work/i })).toBeInTheDocument()
-  fireEvent.keyDown(window, { key: '6' })
-  expect(await screen.findByRole('heading', { name: /turn execution into evidence/i })).toBeInTheDocument()
-  fireEvent.keyDown(window, { key: '7' })
-  expect(await screen.findByRole('heading', { name: /make the goal–work chain explicit/i })).toBeInTheDocument()
-  fireEvent.keyDown(window, { key: '8' })
   expect(await screen.findByRole('tab', { name: 'Table' })).toHaveAttribute('aria-selected', 'true')
+  fireEvent.keyDown(window, { key: '5' })
+  expect(await screen.findByRole('button', { name: 'Focus 5' })).toHaveAttribute('aria-current', 'page')
+  fireEvent.keyDown(window, { key: '6' })
+  expect(await screen.findByRole('heading', { name: /turn signal into useful work/i })).toBeInTheDocument()
+  fireEvent.keyDown(window, { key: '7' })
+  expect(await screen.findByRole('heading', { name: /turn execution into evidence/i })).toBeInTheDocument()
+  fireEvent.keyDown(window, { key: '8' })
+  expect(await screen.findByRole('heading', { name: /make the goal–work chain explicit/i })).toBeInTheDocument()
   fireEvent.keyDown(window, { key: '1' })
   expect(await screen.findByRole('tab', { name: 'Graph' })).toHaveAttribute('aria-selected', 'true')
 
@@ -571,6 +635,9 @@ test('keeps a Board status change pending through its request and applies the re
   const { client } = renderApp()
 
   await screen.findByRole('heading', { name: /keep execution connected/i })
+  await userEvent.click(screen.getByRole('button', { name: 'Filter tasks' }))
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Completed task visibility' }), 'show')
+  await userEvent.click(screen.getByRole('button', { name: 'Filter tasks' }))
   await userEvent.click(screen.getByRole('tab', { name: 'Board' }))
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Change T-0001 status' }), 'done')
 
@@ -621,8 +688,16 @@ test('undoes only the latest status change through a new revision-guarded fact',
 
   await screen.findByRole('heading', { name: /keep execution connected/i })
   await userEvent.click(screen.getByRole('tab', { name: 'Board' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Filter tasks' }))
+  expect(screen.getByRole('combobox', { name: 'Completed task visibility' })).toHaveValue('default')
+  await userEvent.click(screen.getByRole('button', { name: 'Filter tasks' }))
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Change T-0001 status' }), 'done')
-  await userEvent.click(await screen.findByRole('button', { name: 'Undo' }))
+  const undo = await screen.findByRole('button', { name: 'Undo' })
+  expect(screen.queryByRole('combobox', { name: 'Change T-0001 status' })).not.toBeInTheDocument()
+  expect(client.getQueryData<WorkspaceProjection>(['workspace'])?.tasks[0]).toMatchObject({
+    status: 'done', revision: task.revision + 1,
+  })
+  await userEvent.click(undo)
 
   await waitFor(() => expect(patchBodies).toHaveLength(2))
   expect(patchBodies).toEqual([
@@ -634,6 +709,7 @@ test('undoes only the latest status change through a new revision-guarded fact',
     revision: task.revision + 2,
   }))
   expect(screen.getByText(`${task.id} restored to ${task.status}`)).toBeInTheDocument()
+  expect(screen.getByRole('combobox', { name: 'Change T-0001 status' })).toHaveValue(task.status)
 })
 
 test('returns every workspace view to the unselected state when the active task is clicked again', async () => {
@@ -729,4 +805,95 @@ test('rolls back only a conflicting Task and preserves a concurrent successful s
   })
   expect(screen.getByRole('combobox', { name: 'Change T-0001 status' })).toHaveValue('started')
   expect(screen.getAllByText('task revision is stale').length).toBeGreaterThan(0)
+})
+
+
+const outcomeTask = (id: string, uid: string, refs: { objective_id: string; key_result_id: string }[] | undefined, objectiveIds: string[]): Task => ({
+  ...task,
+  id,
+  uid,
+  title: `${id} title`,
+  objective_ids: objectiveIds,
+  ...(refs ? { key_result_refs: refs } : {}),
+})
+
+const outcomeWorkspace: WorkspaceProjection = {
+  ...workspace,
+  tasks: [
+    outcomeTask('T-2001', '20010000-0000-4000-8000-000000000001', [{ objective_id: 'O-A', key_result_id: 'KR-1' }], ['O-A']),
+    outcomeTask('T-2002', '20020000-0000-4000-8000-000000000002', [{ objective_id: 'O-B', key_result_id: 'KR-1' }], ['O-B']),
+    outcomeTask('T-2003', '20030000-0000-4000-8000-000000000003', undefined, []),
+  ],
+  objectives: [
+    { id: 'O-A', objective: 'Objective A', status: 'active', revision: 0, key_results: [{ id: 'KR-1', text: 'A outcome' }] },
+    { id: 'O-B', objective: 'Objective B', status: 'active', revision: 0, key_results: [{ id: 'KR-1', text: 'B outcome' }] },
+  ],
+}
+
+function stubOutcomeWorkspaceFetch() {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.includes('/api/v1/workspace')) return jsonResponse({ data: outcomeWorkspace })
+    if (url.includes('/api/v1/captures')) return jsonResponse({ data: { captures: [] } })
+    if (url.includes('/api/v1/tasks/')) {
+      const id = url.split('/api/v1/tasks/')[1].split(/[/?]/)[0]
+      const found = outcomeWorkspace.tasks.find((item) => item.id === id) ?? outcomeWorkspace.tasks[0]
+      return jsonResponse({ data: { task: found, context: [], activity: [], replies: [] } })
+    }
+    return jsonResponse({ data: {} })
+  }))
+}
+
+const pairQuery = `outcome=${encodeURIComponent(JSON.stringify(['pair', 'O-B', 'KR-1']))}`
+
+test('an outcome deep link keeps keyboard navigation inside the filtered Tasks', async () => {
+  stubOutcomeWorkspaceFetch()
+  window.history.replaceState(null, '', `/?surface=workspace&view=table&${pairQuery}`)
+  renderApp()
+
+  expect(await screen.findByRole('tab', { name: 'Table' })).toHaveAttribute('aria-selected', 'true')
+  const table = await screen.findByRole('table')
+  expect(within(table).getByText('T-2002')).toBeInTheDocument()
+  expect(within(table).queryByText('T-2001')).toBeNull()
+
+  fireEvent.keyDown(window, { key: 'j' })
+
+  expect(await screen.findByRole('complementary', { name: 'Task T-2002' })).toBeInTheDocument()
+})
+
+test('choosing an outcome in the real filter panel narrows keyboard navigation too', async () => {
+  stubOutcomeWorkspaceFetch()
+  window.history.replaceState(null, '', '/?surface=workspace&view=table')
+  renderApp()
+
+  expect(await screen.findByRole('tab', { name: 'Table' })).toHaveAttribute('aria-selected', 'true')
+  await userEvent.click(await screen.findByRole('button', { name: 'Filter tasks' }))
+  await userEvent.selectOptions(
+    await screen.findByRole('combobox', { name: 'Filter by outcome' }),
+    JSON.stringify(['pair', 'O-B', 'KR-1']),
+  )
+  await userEvent.click(screen.getByRole('heading', { level: 1 }))
+
+  const table = await screen.findByRole('table')
+  expect(within(table).getByText('T-2002')).toBeInTheDocument()
+  expect(within(table).queryByText('T-2001')).toBeNull()
+
+  fireEvent.keyDown(window, { key: 'j' })
+
+  expect(await screen.findByRole('complementary', { name: 'Task T-2002' })).toBeInTheDocument()
+})
+
+test('healthy control: with All outcomes j, j and k walk the canonical order', async () => {
+  stubOutcomeWorkspaceFetch()
+  window.history.replaceState(null, '', '/?surface=workspace&view=table')
+  renderApp()
+
+  expect(await screen.findByRole('tab', { name: 'Table' })).toHaveAttribute('aria-selected', 'true')
+
+  fireEvent.keyDown(window, { key: 'j' })
+  expect(await screen.findByRole('complementary', { name: 'Task T-2001' })).toBeInTheDocument()
+  fireEvent.keyDown(window, { key: 'j' })
+  expect(await screen.findByRole('complementary', { name: 'Task T-2002' })).toBeInTheDocument()
+  fireEvent.keyDown(window, { key: 'k' })
+  expect(await screen.findByRole('complementary', { name: 'Task T-2001' })).toBeInTheDocument()
 })

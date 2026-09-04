@@ -17,7 +17,7 @@ locators, credentials, and recipient data are neither searched nor returned.
 
 ## Table View
 
-1. Open Workspace and choose **Table**, or press `8` outside an editable field.
+1. Open Workspace and choose **Table**, or press `4` outside an editable field.
 2. Click an ID, Task, Status, Priority, or Due header to sort. Click the same header again
    to reverse the order.
 3. Click a Task row to open its shared Task Drawer. Click the same Task row again to

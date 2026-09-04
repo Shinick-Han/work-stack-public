@@ -2,7 +2,7 @@
 
 ## Open and inspect an Objective
 
-1. Open **Objective Hub** from the sidebar or press `7` while focus is not inside an input.
+1. Open **Objective Hub** from the sidebar or press `8` while focus is not inside an input.
 2. Choose an Objective from the left index. The URL keeps the selected Objective ID.
 3. Read its average Key Result progress, linked Tasks, and recorded change count.
 4. Choose a linked Task to open the same authoritative Task Drawer used by Workspace.

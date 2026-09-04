@@ -5,10 +5,50 @@ import {
   replyReceiptSchema,
   taskSchema,
   taskDetailSchema,
+  captureSchema,
 } from './schemas'
-import { task } from '../test/fixtures'
+import { capture, task } from '../test/fixtures'
 
 const digest = `sha256:${'a'.repeat(64)}`
+
+describe('shared context read metadata', () => {
+  const note = {
+    id: 'same', text: 'Shared note', links: ['T-0001', 'O-1'], created: '2026-09-02',
+    ref: { kind: 'note', id: 'same' }, date_precision: 'date',
+    connections: [{ target: { kind: 'task', id: 'T-0001' }, reasons: ['note-link'] }],
+  }
+  const source = {
+    ...capture, id: 'same', ref: { kind: 'capture', id: 'same' }, date_precision: 'instant',
+    connections: [{ target: { kind: 'task', id: 'T-0001' }, reasons: ['capture-link', 'capture-conversion'] }],
+  }
+  const parse = (context: unknown[]) => taskDetailSchema.parse({ task, context, activity: [], replies: [] }).context
+
+  test('preserves flat note and Capture records with distinct typed references', () => {
+    expect(parse([note, source])).toEqual([note, source])
+    expect(parse([source])[0]).toMatchObject({ source: capture.source, normalized: capture.normalized, provenance: capture.provenance })
+    expect(captureSchema.parse(capture)).toEqual(capture)
+  })
+
+  test('keeps old context payloads readable without synthesizing metadata', () => {
+    const legacy = { id: 'old', text: 'Legacy context' }
+    expect(parse([legacy, capture])).toEqual([legacy, capture])
+  })
+
+  test('refuses malformed, partial or contradictory metadata without a legacy fallback', () => {
+    const { ref: _ref, ...partial } = note
+    for (const invalid of [
+      partial,
+      { ...note, ref: { kind: 'note', id: 'different' } },
+      { ...note, ref: { kind: 'task', id: 'same' } },
+      { ...note, date_precision: 'midnight' },
+      { ...note, connections: [{ target: { kind: 'task', id: 'T-0001' }, reasons: [] }] },
+      { ...note, connections: source.connections },
+      { ...source, connections: [{ target: { kind: 'objective', id: 'O-1' }, reasons: ['capture-link'] }] },
+      { ...source, source: undefined },
+    ]) expect(() => parse([invalid])).toThrow()
+  })
+})
+
 const addEncodingLayers = (value: string, additionalLayers: number) => Array.from(
   { length: additionalLayers },
   () => undefined,
@@ -190,5 +230,59 @@ describe('task identity wire schema', () => {
     expect(() => taskSchema.parse({ ...task, uid: 'ffffffff-ffff-ffff-ffff-ffffffffffff' })).toThrow()
     expect(() => taskSchema.parse({ ...task, uid: '00000000-0000-0000-0000-000000000000' })).toThrow()
     expect(() => taskSchema.parse({ ...task, revision: Number.MAX_SAFE_INTEGER + 1 })).toThrow()
+  })
+})
+
+
+describe('task key_result_refs', () => {
+  test('an omitted field stays omitted and is never defaulted to an empty list', () => {
+    const parsed = taskSchema.parse({ ...task })
+
+    expect(parsed).not.toHaveProperty('key_result_refs')
+  })
+
+  test('an explicit empty list and valid pairs parse unchanged, including dangling ones', () => {
+    expect(taskSchema.parse({ ...task, key_result_refs: [] }).key_result_refs).toEqual([])
+
+    const pairs = [
+      { objective_id: 'o-0002', key_result_id: ' KR-2 ' },
+      { objective_id: 'O-0404', key_result_id: 'KR-9' },
+    ]
+
+    expect(taskSchema.parse({ ...task, key_result_refs: pairs }).key_result_refs).toEqual(pairs)
+  })
+
+  test.each([
+    ['non-array', 'nope'],
+    ['non-object member', ['O-0001']],
+    ['null member', [null]],
+    ['missing key', [{ objective_id: 'O-0001' }]],
+    ['non-string identity', [{ objective_id: 'O-0001', key_result_id: 7 }]],
+    ['blank identity', [{ objective_id: '', key_result_id: 'KR-1' }]],
+    ['extra key', [{ objective_id: 'O-0001', key_result_id: 'KR-1', text: 'x' }]],
+  ])('%s refs are rejected', (_name, key_result_refs) => {
+    expect(taskSchema.safeParse({ ...task, key_result_refs }).success).toBe(false)
+  })
+})
+
+
+describe('OE-01 blank scoped identities', () => {
+  test.each([
+    ['whitespace objective_id', [{ objective_id: '   ', key_result_id: 'KR-1' }]],
+    ['whitespace key_result_id', [{ objective_id: 'O-0001', key_result_id: '\t' }]],
+    ['whitespace in both', [{ objective_id: ' ', key_result_id: ' ' }]],
+  ])('%s is rejected', (_name, key_result_refs) => {
+    expect(taskSchema.safeParse({ ...task, key_result_refs }).success).toBe(false)
+  })
+
+  test('legitimate nonblank identities keep their exact bytes, including surrounding spaces', () => {
+    const key_result_refs = [
+      { objective_id: ' O-0001 ', key_result_id: ' KR-1 ' },
+      { objective_id: 'O-0002', key_result_id: 'KR-1' },
+    ]
+
+    const parsed = taskSchema.parse({ ...task, key_result_refs })
+
+    expect(parsed.key_result_refs).toEqual(key_result_refs)
   })
 })

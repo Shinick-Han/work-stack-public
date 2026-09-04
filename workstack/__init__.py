@@ -1,6 +1,6 @@
 """Portable, local-first work-stack."""
 
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 
 # Increment only when the desktop-to-remote HTTP contract becomes incompatible.
 # This value is reported by the running server; desktop clients must read it from

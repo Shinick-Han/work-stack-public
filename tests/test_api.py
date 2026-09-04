@@ -1221,7 +1221,7 @@ class ApiTest(unittest.TestCase):
                 forwarded.server_close()
                 thread.join(timeout=5)
 
-    def test_cli_capture_forwards_and_direct_writer_fails_while_server_runs(self):
+    def test_cli_capture_and_ordinary_writer_forward_through_the_running_owner(self):
         packet_path = CONTRACTS / "capture-packet-v1.manual.fixture.json"
         command = [
             sys.executable,
@@ -1245,23 +1245,45 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(len(self.stack.list_captures("all")), 1)
 
         before = len(self.stack.list_tasks(status="all"))
+        ordinary = [
+            sys.executable,
+            "run_work_stack.py",
+            "--data-dir",
+            str(self.store.root),
+            "backlog",
+            "add",
+            "Written through the running owner",
+        ]
+        # Ordinary CLI writers are routed through the advertised running owner
+        # (T2 legacy owner compatibility ruling; 706bbfe / ac9a4c7): the write
+        # succeeds, is committed by the owner, and never takes the local lease.
+        owned = subprocess.run(
+            ordinary,
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            timeout=15,
+        )
+        self.assertEqual(owned.returncode, 0, owned.stderr.decode(errors="replace"))
+        self.assertEqual(owned.stderr, b"")
+        created = json.loads(owned.stdout.decode("utf-8"))
+        self.assertEqual(created["title"], "Written through the running owner")
+        self.assertEqual(created["status"], "open")
+        tasks = self.stack.list_tasks(status="all")
+        self.assertEqual(len(tasks), before + 1)
+        self.assertIn(created["id"], {task["id"] for task in tasks})
+
+        # Without owner metadata the legacy direct path is taken and is still
+        # refused by the server-held writer lease; nothing is written locally.
+        self.store.server_info_path.unlink()
         blocked = subprocess.run(
-            [
-                sys.executable,
-                "run_work_stack.py",
-                "--data-dir",
-                str(self.store.root),
-                "backlog",
-                "add",
-                "Must not be written",
-            ],
+            ordinary,
             cwd=Path(__file__).resolve().parents[1],
             capture_output=True,
             timeout=15,
         )
         self.assertNotEqual(blocked.returncode, 0)
         self.assertIn("already owned", blocked.stderr.decode("utf-8", errors="replace"))
-        self.assertEqual(len(self.stack.list_tasks(status="all")), before)
+        self.assertEqual(len(self.stack.list_tasks(status="all")), before + 1)
 
 
 if __name__ == "__main__":

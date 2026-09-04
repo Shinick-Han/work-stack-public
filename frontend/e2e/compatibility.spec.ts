@@ -6,7 +6,8 @@ test.beforeEach(async ({ page }) => {
 })
 
 test('Board selection and deselection share the authoritative Task drawer', async ({ page }) => {
-  const card = page.locator('article[aria-label^="T-0001:"]')
+  await expect(page.getByRole('tabpanel', { name: 'board workspace view' })).toBeVisible()
+  const card = page.locator('article.wsv-task-card:not(.is-overlay)[aria-label^="T-0001:"]')
   await expect(card).toBeVisible()
 
   await card.click()

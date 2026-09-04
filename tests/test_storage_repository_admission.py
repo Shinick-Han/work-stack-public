@@ -55,7 +55,7 @@ class StorageRepositoryAdmissionTests(unittest.TestCase):
                 "format": "workstack.ssot",
                 "schema_version": 4,
                 "schema_set": "workstack.ssot.v4",
-                "workspace_uid": "11111111-1111-1111-1111-111111111111",
+                "workspace_uid": "11111111-1111-4111-8111-111111111111",
                 "created_at": "2026-09-01T00:00:00Z",
             }
             workspace = {

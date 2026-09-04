@@ -29,6 +29,7 @@ for import_root in (SCRIPT_DIRECTORY, APPLICATION_ROOT):
         sys.path.insert(0, str(import_root))
 
 from workstack import __version__ as WORKSTACK_VERSION
+from brand_assets import BrandAssetMissing, has_mark_ico, inline_mark_markup, mark_ico_path
 from native_theme import (
     load_persisted_theme,
     normalize_theme,
@@ -55,8 +56,18 @@ from ssh_profile_metadata import run_remote_profile_metadata_check
 from connection_registry import ConnectionProfile, ConnectionRegistry, SshConnectionProfile
 from connection_registry_compat import (
     export_active_legacy_mirror,
+    rebind_active_local_workspace,
     rebind_active_remote_workspace,
 )
+from local_workspace_rebind import read_confirmed_local_rebind
+
+
+class LocalRebindMirrorError(RuntimeError):
+    """The registry authority was committed but its derived mirror was not.
+
+    Distinguishes partial completion from a pre-commit refusal, so the host can
+    report that the identity IS saved instead of implying nothing persisted.
+    """
 from connection_registry_mutations import (
     ConnectionRegistryMutationService,
     RegistryConflictError,
@@ -73,6 +84,7 @@ from connection_registry_startup import (
     LocalStartupSelection,
     SshStartupSelection,
     ensure_connection_registry,
+    fresh_local_store_required,
     select_active_profile_for_startup,
 )
 from connection_registry_host_contract import (
@@ -231,10 +243,10 @@ STARTUP_HTML = """<!doctype html>
 <style>
 html,body{height:100%;margin:0;background:__WS_BG__;color:__WS_TEXT__;font:14px system-ui,sans-serif}
 body{display:grid;place-items:center}.shell{display:flex;align-items:center;gap:16px}
-.mark{width:42px;height:42px;border-radius:12px;background:__WS_ACCENT__;color:__WS_INK__;display:grid;
-place-items:center;font-size:24px;font-weight:900}.copy{display:grid;gap:5px}.title{font-size:20px;font-weight:750}
+.mark{width:42px;height:42px;display:grid;place-items:center}
+.mark svg{width:42px;height:42px;display:block}.copy{display:grid;gap:5px}.title{font-size:20px;font-weight:750}
 .status{color:__WS_MUTED__}.pulse{animation:pulse 1.1s ease-in-out infinite}@keyframes pulse{50%{opacity:.45}}
-</style></head><body><div class="shell"><div class="mark">|||</div><div class="copy">
+</style></head><body><div class="shell">__WS_MARK__<div class="copy">
 <div class="title">Work Stack</div><div class="status pulse">Preparing your workspace…</div>
 </div></div></body></html>"""
 
@@ -243,6 +255,7 @@ def build_startup_html(theme: str) -> str:
     normalized = normalize_theme(theme)
     return (
         STARTUP_HTML
+        .replace("__WS_MARK__", inline_mark_markup())
         .replace("__WS_THEME__", normalized)
         .replace("__WS_BG__", theme_color(normalized, "bg.app"))
         .replace("__WS_TEXT__", theme_color(normalized, "text.primary"))
@@ -338,6 +351,76 @@ class NativeStartupSplash:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._hwnd = 0
+
+    @staticmethod
+    def _declare_mark_icon_prototypes(user32) -> None:
+        """Declare pointer-sized signatures before any handle crosses ctypes.
+
+        Without these the default ``c_int`` return truncates a 64-bit HICON,
+        so the handle drawn and destroyed would not be the handle Windows
+        returned. Declaring is idempotent, so repeated paints are safe.
+        """
+
+        from ctypes import wintypes
+
+        user32.LoadImageW.argtypes = [
+            wintypes.HINSTANCE,
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.LoadImageW.restype = wintypes.HANDLE
+        user32.DrawIconEx.argtypes = [
+            wintypes.HDC,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.HICON,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+            wintypes.HBRUSH,
+            wintypes.UINT,
+        ]
+        user32.DrawIconEx.restype = wintypes.BOOL
+        user32.DestroyIcon.argtypes = [wintypes.HICON]
+        user32.DestroyIcon.restype = wintypes.BOOL
+
+    @staticmethod
+    def _load_mark_icon(user32):
+        """Load the packaged versioned mark as an owned HICON, or None.
+
+        The caller destroys the returned handle. A missing or unloadable asset
+        returns None so the surface stays plain; no stale icon is searched for
+        and no user file is touched.
+        """
+
+        if not has_mark_ico():
+            return None
+        try:
+            NativeStartupSplash._declare_mark_icon_prototypes(user32)
+            # IMAGE_ICON with LR_LOADFROMFILE.
+            handle = user32.LoadImageW(None, str(mark_ico_path()), 1, 56, 56, 0x0010)
+        except Exception:
+            return None
+        return handle or None
+
+    @staticmethod
+    def _draw_mark_icon(user32, hdc, left: int, top: int, handle) -> bool:
+        """Draw the loaded mark and always release the handle exactly once.
+
+        Returns whether the draw itself reported success. The handle is
+        destroyed on both paths, and it is the same handle that was passed in.
+        """
+
+        if handle is None:
+            return False
+        try:
+            # DI_NORMAL: image and mask together.
+            return bool(user32.DrawIconEx(hdc, left, top, handle, 56, 56, 0, None, 0x0003))
+        finally:
+            user32.DestroyIcon(handle)
 
     def start(self) -> None:
         if os.name != "nt" or self._thread is not None:
@@ -487,11 +570,16 @@ class NativeStartupSplash:
                     content_left + 56,
                     content_top + 56,
                 )
-                user32.FillRect(hdc, ctypes.byref(mark), accent)
+                # The packaged versioned mark, drawn through the existing Win32
+                # path. The handle is owned here and destroyed below; when the
+                # asset is missing the accent tile is left plain rather than
+                # falling back to a glyph or a stale icon.
+                mark_icon = self._load_mark_icon(user32)
+                if not self._draw_mark_icon(user32, hdc, content_left, content_top, mark_icon):
+                    user32.FillRect(hdc, ctypes.byref(mark), accent)
                 gdi32.SetBkMode(hdc, 1)
                 gdi32.SetTextColor(hdc, theme_colorref(self.theme, "brand.ink"))
                 old_font = gdi32.SelectObject(hdc, title_font)
-                gdi32.TextOutW(hdc, content_left + 14, content_top + 14, "|||", 3)
                 gdi32.SetTextColor(hdc, theme_colorref(self.theme, "text.primary"))
                 gdi32.TextOutW(hdc, content_left + 78, content_top + 1, "Work Stack", 10)
                 gdi32.SelectObject(hdc, status_font)
@@ -736,6 +824,8 @@ class WorkStackDesktopHost:
         if not isinstance(local_data_dir, str) or not local_data_dir:
             raise RuntimeError(f"Work Stack data directory is invalid: {config_path}")
         installation_identity = str(self.state_root).casefold()
+        if fresh_local_store_required(self.state_root, local_data_dir):
+            self._initialize_fresh_local_store(Path(local_data_dir).resolve())
         migrated = ensure_connection_registry(
             self.state_root,
             installation_identity=installation_identity,
@@ -792,6 +882,48 @@ class WorkStackDesktopHost:
             expected_registry_digest=self.connection_registry_digest,
         )
 
+    def _initialize_fresh_local_store(self, data_path: Path) -> None:
+        """Create the first local workspace of a wholly fresh installation.
+
+        The desktop host never constructs a Store.  The product's own offline
+        maintenance entry does, in the bundled runtime, exactly as the pre-launch
+        backup runs.  ``maintenance initialize`` refuses unless the directory is
+        absent or empty, so it can never repair, migrate or overwrite planning
+        data; the registry step that follows binds the identity it created like
+        any other existing local Store.
+        """
+
+        python_path = self.install_root / "runtime" / "python.exe"
+        entry_path = self.install_root / "run_work_stack.py"
+        if not python_path.is_file() or not entry_path.is_file():
+            raise RuntimeError("Work Stack installation is incomplete. Re-run the installer.")
+        log_path = self.state_root / "logs"
+        log_path.mkdir(parents=True, exist_ok=True)
+        receipt_path = log_path / "initialize.out.log"
+        error_path = log_path / "initialize.err.log"
+        with receipt_path.open("wb") as receipt, error_path.open("wb") as error_log:
+            completed = subprocess.run(
+                [
+                    str(python_path),
+                    str(entry_path),
+                    "--data-dir",
+                    str(data_path),
+                    "maintenance",
+                    "initialize",
+                ],
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                stdin=subprocess.DEVNULL,
+                stdout=receipt,
+                stderr=error_log,
+            )
+        if completed.returncode != 0:
+            detail = error_path.read_text(encoding="utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"Work Stack could not create its first workspace: {detail or 'unknown error'}"
+            )
+        self._trace(f"first local workspace created by the bundled runtime at {data_path}")
+
     def _observe_connection_registry_activation(
         self, registry: ConnectionRegistry, digest: str
     ) -> None:
@@ -811,9 +943,44 @@ class WorkStackDesktopHost:
         pending = pending_activation_for_registry(self.state_root, digest)
         if pending is None:
             return
+        expected_workspace_id = self._runtime_expected_workspace_id()
+        if not self._server_sync_matches_expected(expected_workspace_id):
+            raise RuntimeError(
+                "Connection activation remains pending because the running server is not "
+                "in sync with the selected workspace. Review workspace synchronization "
+                "before confirming this connection."
+            )
         self.connection_registry_mutations.confirm(
             pending.activation_id,
             expected_registry_digest=digest,
+        )
+
+    def _runtime_expected_workspace_id(self) -> str:
+        selection = self.local_startup_selection
+        if selection is not None:
+            return selection.expected_workspace_id
+        profile = self.remote_profile
+        if profile is not None:
+            return profile.workspace_id
+        raise RuntimeError("The running connection does not identify an expected workspace")
+
+    def _server_sync_matches_expected(
+        self, expected_workspace_id: str, *, timeout: float = 1.5
+    ) -> bool:
+        sync_url = urllib.parse.urljoin(self.workstack_url, "/api/v1/sync/status")
+        try:
+            with urllib.request.urlopen(sync_url, timeout=timeout) as response:
+                if response.status != 200:
+                    return False
+                payload = json.loads(response.read(64 * 1024).decode("utf-8"))
+        except (OSError, UnicodeError, ValueError, urllib.error.URLError):
+            return False
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict) or data.get("state") != "in-sync":
+            return False
+        return (
+            data.get("workspace_id") == expected_workspace_id
+            and data.get("candidate_workspace_id") == expected_workspace_id
         )
 
     @staticmethod
@@ -1483,10 +1650,111 @@ class WorkStackDesktopHost:
     def _begin_remote_workspace_rebind(self, workspace_id: str) -> None:
         target = self._validated_rebound_workspace_id(workspace_id)
         if self.remote_profile is None:
+            self._begin_local_workspace_rebind(target)
             return
         with self._remote_authority_guard():
             self.remote_rebind_target = target
             self.remote_rebind_deadline = time.monotonic() + REMOTE_REBIND_COORDINATION_SECONDS
+
+    def _begin_local_workspace_rebind(self, workspace_id: str) -> None:
+        """Record the local rebind candidate without changing any authority.
+
+        Nothing is adopted here. The candidate, the profile that was selected at
+        start, the identity it currently carries, its directory and the registry
+        digest the host is bound to are captured so that completion can prove it
+        is completing the same rebind against unchanged state.
+        """
+
+        target = self._validated_rebound_workspace_id(workspace_id)
+        selection = getattr(self, "local_startup_selection", None)
+        if selection is None:
+            raise RuntimeError("Local workspace rebind requires an active local profile")
+        if target == selection.expected_workspace_id:
+            raise RuntimeError("Local workspace rebind requires a changed workspace identity")
+        with self._remote_authority_guard():
+            self.local_rebind_start = {
+                "candidate_workspace_id": target,
+                "profile_id": selection.profile_id,
+                "previous_workspace_id": selection.expected_workspace_id,
+                "data_dir": str(selection.data_dir),
+                "registry_digest": self.connection_registry_digest,
+                "deadline": time.monotonic() + REMOTE_REBIND_COORDINATION_SECONDS,
+            }
+
+    def _local_rebind_start_locked(self, workspace_id: str) -> dict[str, object]:
+        start = getattr(self, "local_rebind_start", None)
+        if not isinstance(start, dict):
+            raise RuntimeError("Local workspace rebind was not started")
+        if time.monotonic() > float(start["deadline"]):
+            self.local_rebind_start = None
+            raise RuntimeError("Local workspace rebind coordination expired; start it again")
+        if start["candidate_workspace_id"] != workspace_id:
+            raise RuntimeError(
+                f"Local workspace rebind completed for {workspace_id}, "
+                f"but coordination expected {start['candidate_workspace_id']}"
+            )
+        return start
+
+    def _complete_local_workspace_rebind(self, workspace_id: str) -> None:
+        """Persist the confirmed local identity, or refuse without writing.
+
+        Completion is admitted only when a matching start exists and the Store's
+        own persisted rebind evidence, re-read independently here, shows that the
+        confirmed rebind really happened for exactly this previous and candidate
+        identity. The registry update itself is a digest compare-and-swap under
+        the existing mutation lock, so a newer profile selection or metadata edit
+        refuses instead of being overwritten.
+        """
+
+        expected = self._validated_rebound_workspace_id(workspace_id)
+        with self._remote_authority_guard():
+            start = self._local_rebind_start_locked(expected)
+            # Pre-CAS. Anything that fails here has written nothing.
+            confirmed = read_confirmed_local_rebind(
+                start["data_dir"],
+                expected_previous_workspace_id=str(start["previous_workspace_id"]),
+                expected_candidate_workspace_id=expected,
+            )
+            result = rebind_active_local_workspace(
+                self.state_root,
+                expected_registry_digest=str(start["registry_digest"]),
+                expected_profile_id=str(start["profile_id"]),
+                expected_previous_workspace_id=confirmed.previous_workspace_id,
+                # Bind the directory that was actually verified, not merely the
+                # one recorded at start.
+                expected_data_dir=str(confirmed.verified_data_dir),
+                observed_workspace_id=confirmed.candidate_workspace_id,
+                confirmation_workspace_id=expected,
+            )
+            # Past this point the registry is committed and is the authority.
+            # Align host state with it and consume the coordination BEFORE any
+            # derived artefact is written, so a later failure cannot leave the
+            # host describing an authority that no longer exists.
+            self._adopt_committed_local_rebind(result)
+            try:
+                export_active_legacy_mirror(
+                    self.state_root, expected_registry_digest=result.registry_digest
+                )
+            except (RuntimeError, OSError) as error:
+                raise LocalRebindMirrorError(
+                    "The workspace identity was saved to the connection registry, "
+                    "but the generated legacy connection mirror could not be "
+                    f"rewritten ({error}). The saved identity is in effect; restart "
+                    "Work Stack, and the mirror is regenerated on the next "
+                    "successful registry write."
+                ) from error
+
+    def _adopt_committed_local_rebind(self, result: object) -> None:
+        """Make host state describe the registry that was just committed."""
+
+        self.connection_registry_snapshot = result.registry
+        self.connection_registry_digest = result.registry_digest
+        selection = getattr(self, "local_startup_selection", None)
+        if selection is not None:
+            self.local_startup_selection = replace(
+                selection, expected_workspace_id=result.current_workspace_id
+            )
+        self.local_rebind_start = None
 
     def _post_remote_rebind_ready(self, workspace_id: str) -> None:
         core = self.workstack_webview.CoreWebView2 if self.workstack_webview is not None else None
@@ -1769,6 +2037,37 @@ class WorkStackDesktopHost:
 
     def _start_remote_workspace_rebind(self, workspace_id: str) -> None:
         if self.remote_profile is None:
+            # A local completion is a bounded local file operation, not a tunnel
+            # round trip, so it runs inline and its outcome is reported to the
+            # frontend rather than being deferred to a worker thread.
+            try:
+                self._complete_local_workspace_rebind(workspace_id)
+            except LocalRebindMirrorError as error:
+                # Partial completion: the authority IS saved. Say so, and still
+                # require the restart that activates it, rather than implying
+                # nothing was persisted.
+                self._post_ssot_status(self._ssot_status_payload(
+                    self.active_connection_draft,
+                    "error",
+                    message=str(error),
+                    restart_required=True,
+                ))
+                return
+            except (RuntimeError, OSError, ValueError) as error:
+                # Refused before the registry write: nothing was persisted.
+                self._post_ssot_status(self._ssot_status_payload(
+                    self.active_connection_draft,
+                    "error",
+                    message=str(error),
+                    restart_required=False,
+                ))
+                return
+            self._post_ssot_status(self._ssot_status_payload(
+                self.active_connection_draft,
+                "saved",
+                message="Workspace identity confirmed. Restart Work Stack to use it.",
+                restart_required=True,
+            ))
             return
         threading.Thread(
             target=self._run_remote_workspace_rebind,
@@ -2902,47 +3201,19 @@ class WorkStackDesktopHost:
             return
         self.form.Text = NATIVE_WINDOW_TITLE
         try:
-            from System.Drawing import Bitmap, Color, Graphics, Icon, Rectangle, SolidBrush
-            from System.Drawing.Drawing2D import GraphicsPath, SmoothingMode
+            from System.Drawing import Icon
 
-            installed_icon = self.install_root / "WorkStack.ico"
-            if installed_icon.is_file():
-                icon = Icon(str(installed_icon))
-                self.native_icon = icon
-                self._set_native_window_icon(icon)
-                return
-
-            bitmap = Bitmap(32, 32)
-            graphics = Graphics.FromImage(bitmap)
-            path = GraphicsPath()
-            accent = SolidBrush(Color.FromArgb(*theme_rgb("dark", "brand.accent")))
-            ink = SolidBrush(Color.FromArgb(*theme_rgb("dark", "brand.ink")))
-            try:
-                graphics.SmoothingMode = SmoothingMode.AntiAlias
-                graphics.Clear(Color.Transparent)
-                path.AddArc(2, 2, 9, 9, 180, 90)
-                path.AddArc(21, 2, 9, 9, 270, 90)
-                path.AddArc(21, 21, 9, 9, 0, 90)
-                path.AddArc(2, 21, 9, 9, 90, 90)
-                path.CloseFigure()
-                graphics.FillPath(accent, path)
-                graphics.FillRectangle(ink, Rectangle(8, 10, 3, 12))
-                graphics.FillRectangle(ink, Rectangle(13, 7, 3, 17))
-                graphics.FillRectangle(ink, Rectangle(18, 9, 3, 13))
-                handle = bitmap.GetHicon()
-                icon = Icon.FromHandle(handle).Clone()
-                ctypes.windll.user32.DestroyIcon(ctypes.c_void_p(int(handle.ToInt64())))
-                self.native_icon = icon
-                self._set_native_window_icon(icon)
-            finally:
-                ink.Dispose()
-                accent.Dispose()
-                path.Dispose()
-                graphics.Dispose()
-                bitmap.Dispose()
+            # The packaged, versioned mark is the only source. A stale
+            # install-root WorkStack.ico is deliberately not consulted, and no
+            # separate GDI geometry is drawn as a fallback: if the packaged
+            # asset is missing the window simply keeps its default icon.
+            if not has_mark_ico():
+                raise BrandAssetMissing("the packaged Work Stack icon is unavailable")
+            icon = Icon(str(mark_ico_path()))
+            self.native_icon = icon
+            self._set_native_window_icon(icon)
         except Exception as error:
             self._trace(f"native Work Stack icon is unavailable: {type(error).__name__}: {error}")
-
     def _set_native_window_icon(self, icon) -> None:
         self.form.Icon = icon
         if os.name != "nt":

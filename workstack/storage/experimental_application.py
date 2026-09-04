@@ -313,6 +313,7 @@ def create_experimental_v4_application(
     projection_root: Path | str | None = None,
     task_note_source_indexes: Mapping[str, int] | None = None,
     fault_hook: FaultHook | None = None,
+    checkpoint_facts: Callable[..., Mapping[str, Any]] | None = None,
 ) -> ExperimentalV4Application:
     """Compose an HTTP-capable v4 canary without touching released startup."""
 
@@ -329,6 +330,7 @@ def create_experimental_v4_application(
             projection_root=projection_root,
             task_note_source_indexes=task_note_source_indexes,
             fault_hook=fault_hook,
+            checkpoint_facts=checkpoint_facts,
         )
     except V4DomainCompositionError as error:
         raise ExperimentalV4ApplicationError(error.code) from error

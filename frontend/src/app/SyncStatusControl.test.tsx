@@ -155,10 +155,33 @@ test('requires exact candidate identity before workspace rebind', async () => {
       rebind_available: true,
     }}
   />)
+  expect(screen.getByRole('dialog', { name: 'Review different workspace identity' })).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'SSOT revision comparison' })).toHaveTextContent('Different workspace identity')
+  expect(screen.getByRole('region', { name: 'SSOT revision comparison' })).toHaveTextContent('Explicit review required')
+  expect(screen.getByText(/configured path now identifies a different workspace/i)).toBeVisible()
+  expect(screen.queryByText('Rejected external candidate')).not.toBeInTheDocument()
+  expect(screen.queryByText('Validation failed')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Accept reviewed candidate' })).not.toBeInTheDocument()
   const action = screen.getByRole('button', { name: 'Back up and reconnect workspace' })
   expect(action).toBeDisabled()
   await userEvent.type(screen.getByLabelText('Type the candidate identity to confirm'), candidate)
   expect(action).toBeEnabled()
   await userEvent.click(action)
   expect(onRebind).toHaveBeenCalledOnce()
+})
+
+test('labels a recoverable workspace identity change as an explicit review action', async () => {
+  const onReview = vi.fn()
+  render(<SyncStatusControl
+    error={null}
+    isFetching={false}
+    onRefresh={vi.fn()}
+    onReview={onReview}
+    status={{ ...baseStatus, state: 'invalid', rebind_available: true }}
+  />)
+
+  const action = screen.getByRole('button', { name: 'Review workspace identity' })
+  expect(action).toHaveTextContent('Different workspace identity · review required')
+  await userEvent.click(action)
+  expect(onReview).toHaveBeenCalledOnce()
 })

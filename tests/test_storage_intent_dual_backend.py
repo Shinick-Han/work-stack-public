@@ -24,6 +24,7 @@ from workstack.storage.reader import read_v4
 from workstack.storage.runtime import resolve_runtime_authority
 from workstack.storage.task_repository import TaskRepositoryError
 from workstack.storage.work_session_v4_repository import V4WorkSessionRepository
+from workstack.checkpoint_change import CheckpointChangeError, build_checkpoint_facts
 
 
 NOW = "2026-09-01T12:00:00Z"
@@ -56,6 +57,18 @@ def _write_conversion(root: Path, conversion) -> None:
             for event in sorted(events, key=lambda item: item["sequence"])
         )
         write(f"streams/{kind}/{month}.ndjson", body)
+
+
+class _RejectingCheckpointFacts:
+    """A checkpoint facts builder that records its call and refuses with one error."""
+
+    def __init__(self, failure: Exception) -> None:
+        self.failure = failure
+        self.calls: list[dict] = []
+
+    def __call__(self, **arguments):
+        self.calls.append(arguments)
+        raise self.failure
 
 
 class StorageIntentDualBackendTest(unittest.TestCase):
@@ -95,6 +108,7 @@ class StorageIntentDualBackendTest(unittest.TestCase):
         self.v4 = V4IntentRepository(
             self.runtime,
             enable_v4_intents=True,
+            checkpoint_facts=build_checkpoint_facts,
             now=lambda: self.clock[0],
             uid_factory=lambda: next(uids),
         )
@@ -466,6 +480,100 @@ class StorageIntentDualBackendTest(unittest.TestCase):
                 now=lambda: NOW,
                 uid_factory=lambda: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             )
+
+    def _worklog_body(self) -> dict:
+        return {
+            "date": TODAY,
+            "task_id": self.task["id"],
+            "done": ["shipped"],
+            "next": ["verify"],
+            "blockers": [],
+        }
+
+    def _v4_state(self) -> tuple:
+        physical = read_v4(self.v4_root)
+        return (
+            read_runtime_manifest(self.runtime.manifest_path).generation,
+            self.runtime.idempotency_path.read_bytes(),
+            tuple(physical.streams["worklog"]),
+            tuple(physical.streams["activity"]),
+        )
+
+    def test_worklog_entry_refuses_without_checkpoint_facts_builder_and_writes_nothing(self) -> None:
+        # Seed one accepted entry so the streams the refusal must leave alone are non-empty.
+        self.v4.add_worklog(self._worklog_body(), "worklog.facts.0001")
+        before = self._v4_state()
+        unwired = V4IntentRepository(
+            self.runtime,
+            enable_v4_intents=True,
+            now=lambda: self.clock[0],
+            uid_factory=lambda: "bbbbbbbb-bbbb-4bbb-8bbb-000000000001",
+        )
+        body = self._worklog_body()
+
+        with self.assertRaises(V4IntentRepositoryError) as caught:
+            unwired.add_worklog(body, "worklog.facts.0002")
+        self.assertEqual("CHECKPOINT_FACTS_UNAVAILABLE", caught.exception.code)
+        self.assertEqual(before, self._v4_state())
+
+        # The key never reached the ledger: the wired backend commits it fresh instead of replaying.
+        committed = self.v4.add_worklog(body, "worklog.facts.0002")
+        self.assertEqual(201, committed["status"])
+        self.assertFalse(committed["body"]["meta"]["replayed"])
+
+        # Only worklog entries need the builder; a check-in on the unwired backend still commits.
+        checkin = unwired.checkin({"date": TODAY, "time": "09:30"}, "checkin.facts.0001")
+        self.assertEqual(201, checkin["status"])
+
+    def test_worklog_entry_maps_builder_value_errors_to_checkpoint_facts_invalid(self) -> None:
+        self.v4.add_worklog(self._worklog_body(), "worklog.facts.0001")
+        before = self._v4_state()
+        body = self._worklog_body()
+        failures = (
+            ("worklog.facts.0002", ValueError("builder refused the entry")),
+            ("worklog.facts.0003", CheckpointChangeError()),
+        )
+        for key, failure in failures:
+            with self.subTest(error=type(failure).__name__):
+                builder = _RejectingCheckpointFacts(failure)
+                rejecting = V4IntentRepository(
+                    self.runtime,
+                    enable_v4_intents=True,
+                    now=lambda: self.clock[0],
+                    uid_factory=lambda: "bbbbbbbb-bbbb-4bbb-8bbb-000000000001",
+                    checkpoint_facts=builder,
+                )
+                with self.assertRaises(V4IntentRepositoryError) as caught:
+                    rejecting.add_worklog(body, key)
+                self.assertEqual("CHECKPOINT_FACTS_INVALID", caught.exception.code)
+                self.assertIs(failure, caught.exception.__cause__)
+                self.assertEqual(
+                    [
+                        {
+                            "workspace_uid": str(self.conversion.store["workspace_uid"]),
+                            "idempotency_key": key,
+                            "date": TODAY,
+                            "entry": {
+                                "task_id": self.task["id"],
+                                "task": self.task["title"],
+                                "done": ["shipped"],
+                                "next": ["verify"],
+                                "blockers": [],
+                            },
+                            "ordinal": 1,
+                            "prior_entries": [{"task_id": self.task["id"]}],
+                            "origin": None,
+                        }
+                    ],
+                    builder.calls,
+                )
+                self.assertEqual(before, self._v4_state())
+
+        # Neither refused key reached the ledger: both commit fresh (201, not a 200 replay).
+        for key, _ in failures:
+            committed = self.v4.add_worklog(body, key)
+            self.assertEqual(201, committed["status"])
+            self.assertFalse(committed["body"]["meta"]["replayed"])
 
 
 if __name__ == "__main__":

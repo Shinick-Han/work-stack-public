@@ -1,3 +1,11 @@
+import {
+  decodeCheckpointTransition,
+  decodeWorkspaceChange,
+  WORKSPACE_CHANGE_EVENT,
+  type CheckpointCommittedEvent,
+  type CheckpointTransitionEvent,
+} from './workspaceChangeEvents'
+
 export interface SyncStatusSignal {
   generation?: number
   state?: string
@@ -21,10 +29,15 @@ function decodeSignal(value: string): SyncStatusSignal | null {
  * event-driven compatibility fallbacks; this client never introduces a polling
  * loop. Every hint triggers an authoritative HTTP refetch in the caller.
  */
-export function subscribeSyncStatusEvents(onChange: (signal?: SyncStatusSignal) => void): () => void {
+export function subscribeSyncStatusEvents(
+  onChange: (signal?: SyncStatusSignal) => void,
+  onCheckpoint?: (event: CheckpointCommittedEvent) => void,
+  onTransition?: (event: CheckpointTransitionEvent) => void,
+): () => void {
   if (typeof window === 'undefined') return () => undefined
 
-  const onFallback = () => onChange()
+  let active = true
+  const onFallback = () => { if (active) onChange() }
   window.addEventListener('focus', onFallback)
   window.addEventListener('online', onFallback)
 
@@ -34,11 +47,22 @@ export function subscribeSyncStatusEvents(onChange: (signal?: SyncStatusSignal) 
       source = new EventSource('/api/v1/events', { withCredentials: true })
       const receive = (event: MessageEvent<string>) => {
         const signal = decodeSignal(event.data)
-        if (signal) onChange(signal)
+        if (active && signal) onChange(signal)
       }
       source.addEventListener('message', receive as EventListener)
       source.addEventListener('generation', receive as EventListener)
       source.addEventListener('sync', receive as EventListener)
+      source.addEventListener(WORKSPACE_CHANGE_EVENT, ((event: MessageEvent<string>) => {
+        // Each variant is decoded by its own strict schema. A committed
+        // notice never satisfies the transition branch and vice versa.
+        const checkpoint = decodeWorkspaceChange(event.data, event.lastEventId)
+        if (active && checkpoint) {
+          onCheckpoint?.(checkpoint)
+          return
+        }
+        const transition = decodeCheckpointTransition(event.data, event.lastEventId)
+        if (active && transition) onTransition?.(transition)
+      }) as EventListener)
     } catch {
       // Manual review/refresh plus focus and online events remain available.
       source = null
@@ -46,6 +70,7 @@ export function subscribeSyncStatusEvents(onChange: (signal?: SyncStatusSignal) 
   }
 
   return () => {
+    active = false
     window.removeEventListener('focus', onFallback)
     window.removeEventListener('online', onFallback)
     source?.close()

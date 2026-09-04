@@ -32,6 +32,9 @@ import {
 } from "../../../domain/taskRelationships";
 import { useLocalToday } from "../../focus/useLocalToday";
 import { TaskDueTiming } from "./TaskDueTiming";
+import { TaskOutcomeChipList, type OutcomeSelection } from "./KeyResultPresentation";
+import { outcomeChipsForTask } from "./keyResultViewModel";
+import type { KeyResultProjection } from "./keyResultModel";
 
 interface BoardViewProps {
   tasks: readonly WorkspaceTask[];
@@ -39,6 +42,8 @@ interface BoardViewProps {
   selectedTaskId?: string | null;
   onSelectTask: (taskId: string) => void;
   onSelectObjective?: (objectiveId: string) => void;
+  keyResultProjection?: KeyResultProjection;
+  onSelectOutcome?: (selection: OutcomeSelection) => void;
   today?: string;
   onChangeTaskStatus: (
     taskId: string,
@@ -57,6 +62,8 @@ interface TaskCardProps {
   onSelect: () => void;
   onSelectTask: (taskId: string) => void;
   onSelectObjective?: (objectiveId: string) => void;
+  keyResultProjection?: KeyResultProjection;
+  onSelectOutcome?: (selection: OutcomeSelection) => void;
   onChangeStatus: (status: TaskStatus) => void;
 }
 
@@ -71,6 +78,8 @@ function TaskCard({
   onSelect,
   onSelectTask,
   onSelectObjective,
+  keyResultProjection,
+  onSelectOutcome,
   onChangeStatus,
 }: TaskCardProps) {
   const draggable = useDraggable({
@@ -166,6 +175,12 @@ function TaskCard({
           ) : <span key={objectiveId}>{objectiveId}</span>
         ))}
         {(task.objective_ids?.length ?? 0) > 2 ? <span>+{task.objective_ids!.length - 2}</span> : null}
+        {keyResultProjection ? (
+          <TaskOutcomeChipList
+            chips={outcomeChipsForTask(keyResultProjection, task.id).chips}
+            onSelectOutcome={onSelectOutcome}
+          />
+        ) : null}
         {task.context_count ? (
           <span title="Linked context">↗ {task.context_count}</span>
         ) : null}
@@ -204,6 +219,8 @@ function BoardColumn({
   pendingIds,
   onSelectTask,
   onSelectObjective,
+  keyResultProjection,
+  onSelectOutcome,
   blockersByTaskId,
   today,
   onChangeStatus,
@@ -214,6 +231,8 @@ function BoardColumn({
   pendingIds: ReadonlySet<string>;
   onSelectTask: (taskId: string) => void;
   onSelectObjective?: (objectiveId: string) => void;
+  keyResultProjection?: KeyResultProjection;
+  onSelectOutcome?: (selection: OutcomeSelection) => void;
   blockersByTaskId: ReadonlyMap<string, readonly TaskBlocker[]>;
   today: string;
   onChangeStatus: (task: WorkspaceTask, status: TaskStatus) => void;
@@ -243,6 +262,8 @@ function BoardColumn({
             onSelect={() => onSelectTask(task.id)}
             onSelectTask={onSelectTask}
             onSelectObjective={onSelectObjective}
+            keyResultProjection={keyResultProjection}
+            onSelectOutcome={onSelectOutcome}
             onChangeStatus={(nextStatus) => onChangeStatus(task, nextStatus)}
           />
         ))}
@@ -258,6 +279,8 @@ export function BoardView({
   selectedTaskId,
   onSelectTask,
   onSelectObjective,
+  keyResultProjection,
+  onSelectOutcome,
   today: providedToday,
   onChangeTaskStatus,
 }: BoardViewProps) {
@@ -398,6 +421,8 @@ export function BoardView({
               pendingIds={pendingIds}
               onSelectTask={onSelectTask}
               onSelectObjective={onSelectObjective}
+            keyResultProjection={keyResultProjection}
+            onSelectOutcome={onSelectOutcome}
               blockersByTaskId={blockersByTaskId}
               today={today}
               onChangeStatus={(task, nextStatus) => void changeStatus(task, nextStatus)}

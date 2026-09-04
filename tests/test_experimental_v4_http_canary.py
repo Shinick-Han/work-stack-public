@@ -23,6 +23,7 @@ from workstack.storage.manifest_store import publish_runtime_manifest
 from workstack.storage.migration_conversion import convert_v3_documents
 from workstack.storage.reader import read_v4
 from workstack.storage.runtime import resolve_runtime_authority
+from workstack.checkpoint_change import build_checkpoint_facts
 
 
 NOW = "2026-09-01T12:00:00Z"
@@ -106,7 +107,7 @@ class ExperimentalV4HTTPCanaryTest(unittest.TestCase):
         return create_experimental_v4_application(
             self.authority,
             self.runtime,
-            enable_v4_application=True,
+            enable_v4_application=True, checkpoint_facts=build_checkpoint_facts,
             clock=lambda: NOW,
             uid_factory=lambda: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             today=lambda: NOW[:10],

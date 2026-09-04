@@ -1,3 +1,4 @@
+import { matchesOutcomeFilter, normalizeOutcomeFilter } from "./keyResultModel";
 import {
   TASK_PRIORITIES,
   TASK_STATUSES,
@@ -63,6 +64,7 @@ export function filterWorkspaceTasks(
   const objectiveId = normalizedFilter(filters.objectiveId);
   const readiness = normalizedFilter(filters.readiness);
   const timing = normalizedFilter(filters.timing);
+  const outcome = normalizeOutcomeFilter(filters.outcome ?? { kind: "all" });
   const dependencyIndex = readiness === "all" ? null : indexDependencyTasks(tasks);
 
   return tasks.filter((task) => {
@@ -74,6 +76,7 @@ export function filterWorkspaceTasks(
     ) {
       return false;
     }
+    if (outcome.kind !== "all" && !matchesOutcomeFilter(task, outcome)) return false;
     if (readiness !== "all") {
       const taskStatus = asTaskStatus(task.status);
       if (taskStatus !== "open" && taskStatus !== "started") return false;

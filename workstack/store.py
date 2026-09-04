@@ -15,6 +15,28 @@ import threading
 import uuid
 import zipfile
 from collections import deque
+
+# The one typed change record kind carried beside the legacy sync records.
+CHANGE_NOTICE_TYPE = "workstack.change.v1"
+
+# The most events ONE successful _commit_prepared_locked can emit. Derived
+# from the three successful branches of that method, not guessed:
+#
+#   1. the undisturbed branch reaches _write_committed_manifest_locked, which
+#      emits one store.committed;
+#   2. an unrelated external change seen by _commit_race_groups goes to
+#      _commit_local_with_external_candidate_locked, which emits one
+#      store.committed through _write_local_baseline_locked and then one
+#      external-state observation through _inspect_sync_locked;
+#   3. an unrelated external change arriving later makes
+#      _write_committed_manifest_locked raise, which first emits an
+#      external-state observation, and the resolution then runs branch 2.
+#
+# An external writer need not hold the process lock, so branches 2 and 3 are
+# ordinary successful outcomes rather than faults. Capacity is reserved for
+# the worst of them, and tests drive each real branch instead of asserting a
+# constant.
+MAX_COMMIT_EVENTS = 3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -747,6 +769,59 @@ class Store:
             "changed_files": changed_files,
         })
         self._event_condition.notify_all()
+
+    def projected_change_event_id(
+        self, *, pending_commit_events: int = MAX_COMMIT_EVENTS
+    ) -> int:
+        """A conservative ceiling for the id a post-commit notice could receive.
+
+        A committed save does NOT always emit exactly one event: an external
+        writer that does not hold the process lock makes the commit resolve
+        through a late-external branch that still succeeds while emitting two or
+        three. ``MAX_COMMIT_EVENTS`` records where those come from, so the
+        default reserves room for the worst successful branch rather than the
+        best one. The real published id is never higher than this ceiling, which
+        is what makes it safe to preflight against.
+
+        Callers that commit nothing may pass zero. Reading under the lock keeps
+        this consistent with the sequence the publisher will use; it allocates
+        nothing and advances nothing.
+        """
+
+        if type(pending_commit_events) is not int or pending_commit_events < 0:
+            raise ValueError("pending commit events must be a non-negative integer")
+        with self._process_lock:
+            return self._event_sequence + pending_commit_events + 1
+
+    def publish_change_notice(self, build: Any) -> int:
+        """Append one typed change record to the SAME bounded event sequence.
+
+        Callers hold the outer transaction lock already. ``_process_lock`` is an
+        RLock, so this reentrant acquisition is the same holder: the record
+        therefore lands while that transaction is still held and before the
+        caller serializes any HTTP response.
+
+        The id comes from the one Store sequence the legacy sync records use, so
+        ids stay unique and strictly ascending across both kinds and both share
+        the existing 128-record retention bound. The sequence is advanced only
+        after ``build`` returns, so a rejected notice neither consumes an id nor
+        leaves a partial record in the deque.
+        """
+
+        with self._process_lock:
+            sequence = self._event_sequence + 1
+            notice = build(sequence)
+            if not isinstance(notice, Mapping):
+                raise ValueError("change notice must be a mapping")
+            record = {
+                "id": sequence,
+                "type": CHANGE_NOTICE_TYPE,
+                "notice": dict(notice),
+            }
+            self._event_sequence = sequence
+            self._events.append(record)
+            self._event_condition.notify_all()
+            return sequence
 
     def _write_committed_manifest_locked(
         self,

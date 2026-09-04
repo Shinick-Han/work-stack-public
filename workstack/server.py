@@ -15,8 +15,10 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
 from .capture import CaptureValidationError, canonical_digest
+from .sse_events import SseEncodingError, encode_sync_stream
 from .store import StoreAdoptionConflictError, StoreExternalChangeError
 from .service import (
+    CheckpointTransitionConflictError,
     DomainError,
     IdempotencyConflictError,
     NotFoundError,
@@ -48,6 +50,11 @@ class PostRoute:
         return self.pattern.fullmatch(path)
 
 
+# The exact attributed client header and its only accepted value.
+AGENT_CLIENT_HEADER = "X-WorkStack-Client"
+AGENT_CLIENT_VALUE = "agent-cli-v1"
+
+
 def _post_route(name: str, path_pattern: str, handler: str) -> PostRoute:
     return PostRoute(name, re.compile(path_pattern), handler)
 
@@ -66,7 +73,17 @@ V1_POST_ROUTES = (
     _post_route("key_result_create", r"/api/v1/objectives/([^/]+)/key-results", "_post_key_result_create"),
     _post_route("note_create", r"/api/v1/notes", "_post_note_create"),
     _post_route("review_checkin", r"/api/v1/review/checkin", "_post_review_checkin"),
+    _post_route("cli_checkin", r"/api/v1/cli/worklog/checkin", "_post_cli_checkin"),
+    _post_route("cli_worklog_entry", r"/api/v1/cli/worklog/add", "_post_cli_worklog_entry"),
+    _post_route("cli_backlog_add", r"/api/v1/cli/backlog/add", "_post_cli_backlog_add"),
+    _post_route("cli_okr_link", r"/api/v1/cli/okr/link", "_post_cli_okr_link"),
+    _post_route("cli_okr_progress", r"/api/v1/cli/okr/progress", "_post_cli_okr_progress"),
     _post_route("review_entry", r"/api/v1/review/entries", "_post_review_entry"),
+    _post_route(
+        "checkpoint_transition",
+        r"/api/v1/review/checkpoints/([^/]+)/transitions",
+        "_post_checkpoint_transition",
+    ),
     _post_route("capture_ingest", r"/api/v1/captures", "_post_capture_ingest"),
     _post_route("capture_link", r"/api/v1/captures/([^/]+)/link", "_post_capture_link"),
     _post_route("capture_action_task", r"/api/v1/captures/([^/]+)/actions/([^/]+)/task", "_post_capture_action_task"),
@@ -89,6 +106,7 @@ IDEMPOTENT_POST_ROUTES = frozenset({
     "note_create",
     "review_checkin",
     "review_entry",
+    "checkpoint_transition",
     "reply_create",
     "reply_receipt",
 })
@@ -101,6 +119,11 @@ class GetRoute:
 
     def match(self, path: str) -> re.Match[str] | None:
         return self.pattern.fullmatch(path)
+
+
+_CHECKPOINT_TRANSITION_PATH = re.compile(
+    r"/api/v1/review/checkpoints/([^/]+)/transitions"
+)
 
 
 def _get_route(path_pattern: str, handler: str) -> GetRoute:
@@ -117,6 +140,7 @@ V1_GET_ROUTES = (
     _get_route(r"/api/v1/storage", "_get_storage"),
     _get_route(r"/api/v1/workspace", "_get_workspace"),
     _get_route(r"/api/v1/search", "_get_search"),
+    _get_route(r"/api/v1/review/checkpoints", "_get_checkpoint_audit"),
     _get_route(r"/api/v1/review", "_get_review"),
     _get_route(r"/api/v1/work-sessions", "_get_work_sessions"),
     _get_route(r"/api/v1/objectives/([^/]+)", "_get_objective"),
@@ -290,22 +314,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_sync_event(self, after: int) -> None:
         payload = self.stack.store.wait_for_sync_events(after)
-        body = (
-            "retry: 3000\n"
-            "id: {event_id}\n"
-            "event: sync\n"
-            "data: {data}\n\n"
-        ).format(
-            event_id=payload["latest_event_id"],
-            data=json.dumps(
-                {
-                    "generation": payload["generation"],
-                    "state": payload["state"],
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-        ).encode("utf-8")
+        try:
+            # One frame per retained id, in order, instead of collapsing the
+            # batch onto latest_event_id. The whole batch is encoded before any
+            # header is written, so a bad record can never produce a partial
+            # body that is then abandoned mid-stream.
+            body = encode_sync_stream(payload, after)
+        except SseEncodingError:
+            # The batch came from this process, not from the request, so this is
+            # an internal fault rather than a client cursor error. The reason is
+            # deliberately not echoed: it would carry payload detail.
+            self.send_api_error(
+                "internal_error",
+                "sync event stream could not be encoded",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -317,6 +341,26 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
+
+    def _agent_client_origin(self) -> str | None:
+        """The attributed Agent CLI origin, or None when the header is absent.
+
+        A missing header is ordinary and yields no origin and no Agent notice.
+        Anything present must be exactly one occurrence of the exact frozen
+        value: `_header_once` alone would accept a padded or unknown value, so
+        the value is compared exactly rather than trimmed or folded.
+        """
+
+        values = self.headers.get_all(AGENT_CLIENT_HEADER, [])
+        if not values:
+            return None
+        if len(values) != 1 or values[0] != AGENT_CLIENT_VALUE:
+            raise RequestError(
+                "invalid_header",
+                "{} must occur once with its exact value".format(AGENT_CLIENT_HEADER),
+                400,
+            )
+        return AGENT_CLIENT_VALUE
 
     def _header_once(self, name: str) -> str | None:
         values = self.headers.get_all(name, [])
@@ -428,6 +472,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_api_error(error.code, str(error), error.status, error.details)
         elif isinstance(error, NotFoundError):
             self.send_api_error(error.code, str(error), 404, error.details)
+        elif isinstance(error, CheckpointTransitionConflictError):
+            # The closed pure code travels in details; the message is constant.
+            self.send_api_error(error.code, str(error), 409, error.details)
         elif isinstance(
             error,
             (
@@ -543,6 +590,40 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, DomainError) as error:
             raise RequestError("invalid_query", str(error), 400) from error
         self.send_json({"data": result})
+
+    def _patch_task(
+        self, task_id: str, body: dict[str, Any], request_digest: str
+    ) -> None:
+        """One PATCH route, two branches, selected by the key's PRESENCE.
+
+        A duplicate Idempotency-Key header refuses here through the existing
+        once-only rule, so a caller can never smuggle two keys past this point.
+        An absent key leaves the ordinary general PATCH exactly as it was,
+        including its experimental-v4 behaviour: no existing caller gains a
+        header or a receipt by accident.
+        """
+
+        if self._header_once("Idempotency-Key") is None:
+            self.send_json({"data": self.stack.patch_task(task_id, body)})
+            return
+        self._send_service_result(
+            self.stack.set_task_status_v1(
+                task_id,
+                body,
+                self._idempotency_key(),
+                path="/api/v1/tasks/{}".format(task_id),
+                request_digest=request_digest,
+            )
+        )
+
+    def _get_checkpoint_audit(self, parsed: Any, match: re.Match[str]) -> None:
+        """The complete audit view. No query parameter is accepted."""
+
+        if parse_qs(parsed.query, keep_blank_values=True):
+            raise RequestError(
+                "invalid_query", "checkpoint audit accepts no query parameters", 400
+            )
+        self.send_json({"data": self.stack.list_checkpoint_audit()})
 
     def _get_review(self, parsed: Any, match: re.Match[str]) -> None:
         query = parse_qs(parsed.query, keep_blank_values=True)
@@ -672,7 +753,22 @@ class Handler(BaseHTTPRequestHandler):
         # Consume the bounded JSON body before returning an authorization
         # error. Closing a Windows socket with unread request bytes can reset
         # the connection before the client receives the JSON error.
-        body, request_digest = self.read_json(maximum)
+        try:
+            body, request_digest = self.read_json(maximum)
+        except UnicodeEncodeError:
+            # A JSON-escaped lone surrogate decodes fine but cannot be encoded
+            # canonically, so the digest raises here, BEFORE any handler runs.
+            # Only the new D5 route is given this narrow refusal: every other
+            # route keeps its existing parsing policy exactly, and the constant
+            # message echoes none of the input.
+            if _CHECKPOINT_TRANSITION_PATH.fullmatch(path) is None:
+                raise
+            # The approved malformed taxonomy for this route is
+            # invalid_request; the message stays constant and echoes no input.
+            self.send_api_error(
+                "invalid_request", "the request body is invalid", 400
+            )
+            return
         is_agent_ingest = (
             route is not None
             and route.name == "capture_ingest"
@@ -948,6 +1044,56 @@ class Handler(BaseHTTPRequestHandler):
             self.stack.create_note_v1(body, idempotency_key, path=path)
         )
 
+    def _post_cli_backlog_add(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if self.headers.get_all("Idempotency-Key") is not None:
+            raise RequestError(
+                "unsupported_idempotency_key", "CLI backlog add does not accept Idempotency-Key", 400
+            )
+        self.send_json({"data": self.stack.add_task_cli(body)})
+
+    def _post_cli_okr_link(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if self.headers.get_all("Idempotency-Key") is not None:
+            raise RequestError(
+                "unsupported_idempotency_key", "CLI OKR link does not accept Idempotency-Key", 400
+            )
+        self.send_json({"data": self.stack.link_task_cli(body)})
+
+    def _post_cli_okr_progress(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if self.headers.get_all("Idempotency-Key") is not None:
+            raise RequestError(
+                "unsupported_idempotency_key", "CLI OKR progress does not accept Idempotency-Key", 400
+            )
+        self.send_json({"data": self.stack.set_key_result_progress_cli(body)})
+
+    def _post_cli_checkin(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if self.headers.get_all("Idempotency-Key") is not None:
+            raise RequestError(
+                "unsupported_idempotency_key", "CLI checkin does not accept Idempotency-Key", 400
+            )
+        self.send_json({"data": self.stack.checkin_cli(body)})
+
+    def _post_cli_worklog_entry(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if self.headers.get_all("Idempotency-Key") is not None:
+            raise RequestError(
+                "unsupported_idempotency_key", "CLI worklog add does not accept Idempotency-Key", 400
+            )
+        self.send_json({"data": self.stack.add_worklog_cli(body)})
+
     def _post_review_checkin(
         self, path: str, match: re.Match[str], body: dict[str, Any],
         request_digest: str, idempotency_key: str,
@@ -986,8 +1132,30 @@ class Handler(BaseHTTPRequestHandler):
                 "review entry requires date, task_id, and string arrays for done, next, and blockers",
                 400,
             )
+        # Parsed only on this route, and refused BEFORE any mutation. Empty,
+        # unknown, padded and repeated values all refuse, including repeated
+        # identical values. Attribution is provenance, not authentication.
+        origin = self._agent_client_origin()
         self._send_service_result(
-            self.stack.add_worklog_v1(body, idempotency_key, path=path)
+            self.stack.add_worklog_v1(body, idempotency_key, path=path, origin=origin)
+        )
+
+    def _post_checkpoint_transition(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        # The server derives the physical locator; the caller supplies only
+        # state, revision and reason. The digest is the RAW parsed-body digest
+        # read_json already computed, so a caller cannot supply its own.
+        self._send_service_result(
+            self.stack.apply_checkpoint_transition_v1(
+                match.group(1),
+                body,
+                idempotency_key,
+                path=path,
+                request_digest=request_digest,
+                origin=self._agent_client_origin(),
+            )
         )
 
     def _post_capture_ingest(
@@ -1094,7 +1262,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._validate_host()
             if path.startswith("/api/v1/"):
-                body, _ = self.read_json()
+                body, request_digest = self.read_json()
                 self._require_browser_mutation()
                 subtask_match = re.fullmatch(
                     r"/api/v1/tasks/([^/]+)/subtasks/([^/]+)", path
@@ -1175,7 +1343,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not match:
                     self.send_api_error("not_found", "API endpoint not found", 404)
                     return
-                self.send_json({"data": self.stack.patch_task(unquote(match.group(1)), body)})
+                self._patch_task(unquote(match.group(1)), body, request_digest)
                 return
             self.read_json()
             self._require_browser_mutation()

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$SourceRoot = '',
     [string]$InstallRoot = "$env:LOCALAPPDATA\Programs\WorkStack",
@@ -52,6 +52,41 @@ if ([string]::IsNullOrWhiteSpace($BackupDir)) { $BackupDir = Join-Path $statePat
 if (-not [IO.Path]::IsPathRooted($BackupDir)) { throw 'BackupDir must be an absolute path.' }
 $backupRoot = [IO.Path]::GetFullPath($BackupDir)
 
+function Get-InstallerAuthority {
+    param([Parameter(Mandatory = $true)][string]$RuntimeRoot)
+    $authorityPython = Join-Path $RuntimeRoot 'runtime\python.exe'
+    $authorityResolver = Join-Path $RuntimeRoot 'scripts\windows\Resolve-WorkStackInstallerAuthority.py'
+    if (-not (Test-Path -LiteralPath $authorityPython -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $authorityResolver -PathType Leaf)) {
+        throw 'Bundled installer authority reader is unavailable.'
+    }
+    $authorityOutput = & $authorityPython -B $authorityResolver --state-root $statePath 2>$null
+    $authorityExit = $LASTEXITCODE
+    try { $authority = ($authorityOutput -join "`n") | ConvertFrom-Json }
+    catch { throw 'Bundled installer authority response is invalid.' }
+    if ($authorityExit -ne 0) {
+        $code = [string]$authority.code
+        if ($code -notmatch '^[a-z_]{1,64}$') { $code = 'unavailable' }
+        throw "Local installer authority refused ($code)."
+    }
+    if ($authority.status -notin @('selected', 'absent-registry') -or
+        [string]$authority.binding -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        throw 'Bundled installer authority response is invalid.'
+    }
+    return $authority
+}
+
+$initialAuthority = Get-InstallerAuthority -RuntimeRoot $sourcePath
+if ($initialAuthority.status -eq 'selected') {
+    $selectedDataPath = [IO.Path]::GetFullPath([string]$initialAuthority.data_dir)
+    if ($PSBoundParameters.ContainsKey('DataDir') -and
+        -not $dataPath.Equals($selectedDataPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Explicit DataDir conflicts with the selected local connection profile.'
+    }
+    $dataPath = $selectedDataPath
+    Write-Host "Using selected local connection profile $($initialAuthority.profile_id)."
+}
+
 function Write-BytesAtomic {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -65,6 +100,27 @@ function Write-BytesAtomic {
     } finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
     }
+}
+
+function Remove-DirectoryWithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [int]$Attempts = 20,
+        [int]$DelayMilliseconds = 250
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            if (-not (Test-Path -LiteralPath $Path)) { return $true }
+            Remove-Item -LiteralPath $Path -Recurse -Force
+            return $true
+        } catch {
+            if ($attempt -eq $Attempts) { return $false }
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }
+    }
+    return $false
 }
 
 function Write-Utf8NoBomAtomic {
@@ -131,54 +187,27 @@ function Resolve-AvailableLoopbackPort {
     throw "No available loopback port was found between $PreferredPort and $lastCandidate."
 }
 
-function New-WorkStackIcon {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    Add-Type -AssemblyName System.Drawing
-    $bitmap = New-Object System.Drawing.Bitmap 64, 64
-    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $shape = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $accent = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(184, 242, 75))
-    $ink = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(25, 34, 16))
-    $icon = $null
-    $stream = $null
-    try {
-        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-        $graphics.Clear([System.Drawing.Color]::Transparent)
-        $shape.AddArc(4, 4, 16, 16, 180, 90)
-        $shape.AddArc(44, 4, 16, 16, 270, 90)
-        $shape.AddArc(44, 44, 16, 16, 0, 90)
-        $shape.AddArc(4, 44, 16, 16, 90, 90)
-        $shape.CloseFigure()
-        $graphics.FillPath($accent, $shape)
-        $graphics.FillRectangle($ink, 18, 22, 7, 20)
-        $graphics.FillRectangle($ink, 29, 15, 7, 34)
-        $graphics.FillRectangle($ink, 40, 20, 7, 25)
-        $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon()).Clone()
-        $stream = [IO.File]::Open($Path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
-        $icon.Save($stream)
-    } finally {
-        if ($stream) { $stream.Dispose() }
-        if ($icon) { $icon.Dispose() }
-        $ink.Dispose()
-        $accent.Dispose()
-        $shape.Dispose()
-        $graphics.Dispose()
-        $bitmap.Dispose()
-    }
-}
-
 Assert-PathsDisjoint -First $installPath -Second $statePath -Description 'install/state'
 Assert-PathsDisjoint -First $installPath -Second $dataPath -Description 'install/data'
 Assert-PathsDisjoint -First $installPath -Second $backupRoot -Description 'install/backup'
 Assert-PathsDisjoint -First $dataPath -Second $backupRoot -Description 'data/backup'
 
+. (Join-Path $PSScriptRoot 'WorkStack-Shortcuts.ps1')
+
 $localPrograms = [IO.Path]::GetFullPath("$env:LOCALAPPDATA\Programs")
-if (-not $installPath.StartsWith($localPrograms + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and -not $NoShortcut) {
-    throw 'The default interactive installer only writes under LOCALAPPDATA\Programs.'
+Assert-WorkStackShortcutInstallPath -InstallPath $installPath -LocalProgramsPath $localPrograms -OriginalNoShortcut ([bool]$NoShortcut)
+foreach ($required in @('workstack', 'frontend\dist', 'run_work_stack.py', 'requirements.txt', 'requirements-windows-desktop.txt', 'scripts\windows', 'desktop\python-webview-shell\workstack_desktop.py', 'runtime\python.exe', 'runtime\pythonw.exe', 'runtime\python312.dll', 'WorkStack.exe')) {
+    $requiredPath = Join-Path $sourcePath $required
+    if (-not (Test-Path -LiteralPath $requiredPath)) { throw "Installer source is missing $required" }
+    if ($required -in @('run_work_stack.py', 'desktop\python-webview-shell\workstack_desktop.py', 'runtime\python.exe', 'runtime\pythonw.exe', 'runtime\python312.dll', 'WorkStack.exe') -and
+        -not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+        # A directory carrying a critical file's name is not that file.
+        throw "Installer source is not a file: $required"
+    }
 }
-foreach ($required in @('workstack', 'frontend\dist', 'run_work_stack.py', 'requirements.txt', 'requirements-windows-desktop.txt', 'scripts\windows', 'desktop\python-webview-shell\workstack_desktop.py', 'runtime\python.exe', 'runtime\pythonw.exe')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $sourcePath $required))) { throw "Installer source is missing $required" }
-}
+# The packaged icon must be a real leaf in the source before any destructive
+# effect, so a missing asset refuses here rather than after the payload moves.
+Assert-WorkStackShortcutIconAsset -IconPath (Get-WorkStackShortcutIconPath -InstallPath $sourcePath)
 $parent = Split-Path -Parent $installPath
 New-Item -ItemType Directory -Force -Path $parent | Out-Null
 $staging = [IO.Path]::GetFullPath("$installPath.staging-$PID")
@@ -193,7 +222,9 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $staging 'frontend'), (Join-Path $staging 'scripts') | Out-Null
     Copy-Item -LiteralPath (Join-Path $sourcePath 'frontend\dist') -Destination (Join-Path $staging 'frontend\dist') -Recurse
     Copy-Item -LiteralPath (Join-Path $sourcePath 'scripts\windows') -Destination (Join-Path $staging 'scripts\windows') -Recurse
-    foreach ($file in @('run_work_stack.py', 'requirements.txt', 'requirements-windows-desktop.txt', 'README.md', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md')) {
+    foreach ($file in @('run_work_stack.py', 'requirements.txt', 'requirements-windows-desktop.txt', 'README.md', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md', 'WorkStack.exe')) {
+        # The installation-root host is staged by this loop; without it the staged
+        # guard below can never be satisfied by a genuine payload.
         Copy-Item -LiteralPath (Join-Path $sourcePath $file) -Destination (Join-Path $staging $file)
     }
 
@@ -203,18 +234,36 @@ try {
         throw 'Bundled 64-bit Python 3.12 runtime smoke test failed.'
     }
 
+    # Revalidate the complete authority binding with staged code before effects.
+    $revalidatedAuthority = Get-InstallerAuthority -RuntimeRoot $staging
+    if ($revalidatedAuthority.binding -cne $initialAuthority.binding) {
+        throw 'Local installer authority changed during staging; installation was not changed.'
+    }
+
+    # The source was validated before staging, but the source can lose the
+    # asset between that check and the recursive copy. Validate the STAGED
+    # leaf as well, after the copy and before Stop, the pre-upgrade backup and
+    # the payload moves, so an incomplete stage refuses before any destructive
+    # effect. The transactional install's forced -NoShortcut suppresses links,
+    # not asset integrity, so this guard runs regardless of that switch.
+    Assert-WorkStackShortcutIconAsset -IconPath (Get-WorkStackShortcutIconPath -InstallPath $staging)
+    foreach ($stagedLeaf in @('WorkStack.exe', 'desktop\python-webview-shell\workstack_desktop.py', 'runtime\python312.dll')) {
+        # Revalidated on the staged tree, before Stop-WorkStack, the pre-upgrade
+        # backup or any payload move can change the installation.
+        if (-not (Test-Path -LiteralPath (Join-Path $staging $stagedLeaf) -PathType Leaf)) {
+            throw "The staged Work Stack desktop host is incomplete: $stagedLeaf"
+        }
+    }
+
     if (Test-Path -LiteralPath $installPath) {
         $stopScript = Join-Path $staging 'scripts\windows\Stop-WorkStack.ps1'
         if (Test-Path -LiteralPath $stopScript) { & $stopScript -InstallRoot $installPath }
-        $installedPython = Join-Path $installPath 'runtime\python.exe'
-        if (-not (Test-Path -LiteralPath $installedPython -PathType Leaf)) {
-            # One-time compatibility for upgrades from the earlier venv-based prototype.
-            $legacyPython = Join-Path $installPath '.venv\Scripts\python.exe'
-            if (Test-Path -LiteralPath $legacyPython -PathType Leaf) { $installedPython = $legacyPython }
-        }
-        $installedEntry = Join-Path $installPath 'run_work_stack.py'
-        if ((Test-Path -LiteralPath (Join-Path $dataPath 'workspace.json')) -and (Test-Path -LiteralPath $installedPython)) {
-            & $installedPython $installedEntry --data-dir $dataPath maintenance backup --out $backupRoot | Out-Null
+        $stagedEntry = Join-Path $staging 'run_work_stack.py'
+        if (Test-Path -LiteralPath (Join-Path $dataPath 'workspace.json')) {
+            # The installed runtime may be incomplete or damaged, which is one of
+            # the conditions an upgrade must be able to repair.  Use the already
+            # smoke-tested staged runtime to create the read-only safety backup.
+            & $stagedPython $stagedEntry --data-dir $dataPath maintenance backup --out $backupRoot | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Pre-upgrade backup failed; installation was not changed.' }
         }
         Move-Item -LiteralPath $installPath -Destination $rollback
@@ -261,33 +310,13 @@ try {
     }
 
     if (-not $NoShortcut) {
-        $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
-        $shell = New-Object -ComObject WScript.Shell
-        $windowLauncher = Join-Path $installPath 'runtime\pythonw.exe'
-        $desktopEntry = Join-Path $installPath 'desktop\python-webview-shell\workstack_desktop.py'
-        $iconPath = Join-Path $installPath 'WorkStack.ico'
-        New-WorkStackIcon -Path $iconPath
-        $desktopFolder = [Environment]::GetFolderPath('Desktop')
-        foreach ($shortcutPath in @(
-            (Join-Path $startMenu 'Work Stack.lnk'),
-            (Join-Path $desktopFolder 'Work Stack.lnk')
-        )) {
-            $shortcut = $shell.CreateShortcut($shortcutPath)
-            $shortcut.TargetPath = $windowLauncher
-            $shortcut.Arguments = "`"$desktopEntry`" --install-root `"$installPath`" --state-root `"$statePath`""
-            $shortcut.WorkingDirectory = $installPath
-            $shortcut.IconLocation = "$iconPath,0"
-            $shortcut.Save()
-        }
-
-        $maintenanceShortcutPath = Join-Path $startMenu 'Work Stack Maintenance.lnk'
-        $maintenanceShortcut = $shell.CreateShortcut($maintenanceShortcutPath)
-        $maintenanceShortcut.TargetPath = 'powershell.exe'
-        $maintenanceShortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $installPath 'scripts\windows\Maintain-WorkStack.ps1')`" -InstallRoot `"$installPath`" -StateRoot `"$statePath`""
-        $maintenanceShortcut.WorkingDirectory = $installPath
-        $maintenanceShortcut.Save()
+        # Standalone install finalizes at its ordinary shortcut stage, through
+        # the same helper the update path uses after its commit boundary.
+        Invoke-WorkStackShortcutFinalization -InstallPath $installPath -StatePath $statePath | Out-Null
     }
-    if (Test-Path -LiteralPath $rollback) { Remove-Item -LiteralPath $rollback -Recurse -Force }
+    if (-not (Remove-DirectoryWithRetry -Path $rollback)) {
+        Write-Warning "Work Stack was installed, but the previous runtime is still locked and could not be removed: $rollback. It is safe to remove this rollback directory after Work Stack processes have exited."
+    }
     Write-Host "Work Stack installed at $installPath"
     Write-Host "Planning data remains at $dataPath"
     Write-Host "Local endpoint: http://127.0.0.1:$resolvedPort/"

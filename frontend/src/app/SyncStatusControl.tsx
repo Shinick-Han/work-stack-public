@@ -35,6 +35,7 @@ function statusCopy(status: SyncStatus | undefined, isFetching: boolean, error: 
   if (isFetching || status.state === 'refreshing' || status.state.startsWith('agent-update')) {
     return { label: status.state.startsWith('agent-update') ? 'Agent update' : 'Refreshing', tone: 'progress', action: '' }
   }
+  if (status.rebind_available) return { label: 'Different workspace identity · review required', tone: 'danger', action: 'Review workspace identity' }
   if (status.state === 'in-sync') return { label: 'SSOT in sync', tone: 'ok', action: '' }
   if (status.state === 'external-change-detected') return { label: 'SSOT update ready', tone: 'warning', action: 'Sync / review SSOT changes' }
   if (status.state === 'invalid' || status.state === 'external-change-invalid') return { label: 'SSOT conflict · writes blocked', tone: 'danger', action: 'Review SSOT conflict' }
@@ -71,6 +72,7 @@ export function SyncStatusControl({ error, isFetching, onConfigureSsot, onRefres
 }
 
 function dialogTitle(status: SyncStatus) {
+  if (status.rebind_available) return 'Review different workspace identity'
   if (status.state === 'external-change-detected') return 'Review SSOT update'
   if (status.state === 'stale') return 'Refresh stale SSOT review'
   if (status.state === 'invalid' || status.state === 'external-change-invalid') return 'Resolve SSOT conflict'
@@ -78,19 +80,27 @@ function dialogTitle(status: SyncStatus) {
 }
 
 function candidateLabel(status: SyncStatus) {
+  if (status.rebind_available) return 'Different workspace identity'
   if (status.state === 'external-change-detected') return 'Detected external candidate'
   if (status.state === 'stale') return 'Expired candidate review'
   return 'Rejected external candidate'
 }
 
 function candidateRevision(status: SyncStatus) {
+  if (status.rebind_available) return 'Explicit review required'
   if (status.state === 'stale') return 'Refresh required'
   if (status.state === 'invalid' || status.state === 'external-change-invalid') return 'Validation failed'
   return status.manifest_digest ? `Revision ${status.manifest_digest.slice(7, 19)}` : 'Revision unavailable'
 }
 
 function digestLabel(status: SyncStatus) {
+  if (status.rebind_available) return 'Candidate workspace digest'
   return status.state === 'external-change-detected' ? 'Candidate digest' : 'Reported manifest digest'
+}
+
+function dialogIntroduction(status: SyncStatus) {
+  if (status.rebind_available) return 'Review is read-only. The configured path now identifies a different workspace; nothing changes until you explicitly confirm reconnection.'
+  return 'Review is read-only. Nothing is copied, merged, or overwritten until you explicitly accept the currently validated candidate.'
 }
 
 function RevisionComparison({ status }: { status: SyncStatus }) {
@@ -198,7 +208,7 @@ export function SyncStatusDialog({ adoptError, adopting, onAdopt, onClose, onReb
   useEffect(() => {
     dialogRef.current?.showModal()
   }, [])
-  const canAdopt = status.state === 'external-change-detected' && Boolean(status.manifest_digest)
+  const canAdopt = !status.rebind_available && status.state === 'external-change-detected' && Boolean(status.manifest_digest)
 
   return (
     <dialog aria-labelledby="sync-review-title" className="dialog dialog--small" onClose={onClose} ref={dialogRef}>
@@ -206,7 +216,7 @@ export function SyncStatusDialog({ adoptError, adopting, onAdopt, onClose, onReb
         <header className="dialog__header">
           <div>
             <h2 id="sync-review-title">{dialogTitle(status)}</h2>
-            <p>Review is read-only. Nothing is copied, merged, or overwritten until you explicitly accept the currently validated candidate.</p>
+            <p>{dialogIntroduction(status)}</p>
           </div>
           <IconButton icon="close" label="Close SSOT review" onClick={() => dialogRef.current?.close()} variant="ghost" />
         </header>
@@ -217,7 +227,7 @@ export function SyncStatusDialog({ adoptError, adopting, onAdopt, onClose, onReb
             <div><dt>Workspace</dt><dd>{status.workspace_id}</dd></div>
             <div><dt>{digestLabel(status)}</dt><dd><code>{status.manifest_digest ?? 'Not available'}</code></dd></div>
           </dl>
-          {status.reason ? <p className="sync-review__reason">{status.reason}</p> : null}
+          {status.reason && !status.rebind_available ? <p className="sync-review__reason">{status.reason}</p> : null}
           <ChangedFiles status={status} />
           <ReviewGuidance status={status} />
           <AdoptionError error={adoptError} />

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Background,
   BaseEdge,
@@ -16,6 +16,8 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { GraphContextPopover } from "./GraphContextPopover";
+import "./GraphContextPopover.css";
 
 import type {
   WorkspaceEdge,
@@ -29,14 +31,28 @@ import {
   buildWorkspaceEdges,
   noteTitle,
   objectiveTitle,
+  type CanonicalEdgeKind,
 } from "./viewModels";
 import {
+  DERIVED_KEY_RESULT_OBJECTIVE,
+  DERIVED_TASK_KEY_RESULT,
+  deriveOutcomeEdges,
+  keyResultCatalog,
+  keyResultEndpointKey,
+  objectiveEndpointKey,
+  taskEndpointKey,
+  type DerivedEdgeKind,
+  type DerivedOutcomeEdge,
+} from "./keyResultViewModel";
+import type { KeyResultNode, KeyResultProjection, OutcomeFilter } from "./keyResultModel";
+import {
+  GRAPH_NODE_SIZES,
   layoutPlanningGraph,
   type GraphEdgeRoute,
   type GraphRoutePoint,
 } from "./graphLayout";
 
-type GraphNodeKind = "objective" | "task" | "note";
+type GraphNodeKind = "objective" | "task" | "note" | "key-result";
 
 export type GraphNodeData = Record<string, unknown> & {
   id: string;
@@ -48,18 +64,50 @@ export type GraphNodeData = Record<string, unknown> & {
   status?: string;
   selected: boolean;
   related: boolean;
+  /** Key-result presentation only; never canonical Task or Objective data. */
+  outcome?: {
+    objectiveId: string;
+    keyResultId: string;
+    /** Recorded value, or null when the workspace never recorded one. */
+    recordedProgress: number | null;
+    target: string | null;
+    status: string | null;
+    linkedTotal: number;
+    visibleTotal: number;
+  };
   onActivate?: () => void;
+  onOpenContext?: (trigger: HTMLButtonElement) => void;
 };
 
 type WorkspaceFlowNode = FlowNode<GraphNodeData, "workspace">;
 
 interface GraphViewProps {
+  /** Already-projected, visible Tasks. Never filtered again here. */
   tasks: readonly WorkspaceTask[];
+  /**
+   * Canonical Tasks. Popup identity resolves against these, so completion or a
+   * filter cannot dismiss an open popup. Defaults to tasks for isolated callers;
+   * the real Workspace path always supplies the canonical array.
+   */
+  referenceTasks?: readonly WorkspaceTask[];
   objectives: readonly WorkspaceObjective[];
   notes: readonly WorkspaceNote[];
   edges: readonly WorkspaceEdge[];
+  emptyKind?: string;
   selectedTaskId?: string | null;
   selectedObjectiveId?: string | null;
+  contextTargetTaskId?: string | null;
+  focusPinnedTaskId?: string | null;
+  onContextTargetChange?: (taskId: string | null) => void;
+  onFocusPinChange?: (taskId: string | null) => void;
+  /** Page-owned prerequisite controls rendered inside the context modal. */
+  renderPopupPrerequisites?: (taskId: string) => ReactNode;
+  /** Supplied outcome projection; this view never builds its own. */
+  keyResultProjection?: KeyResultProjection | null;
+  /** The already-normalized scoped coordinate; selection display only. */
+  outcome?: OutcomeFilter | null;
+  /** The exact scoped outcome-filter callback. No other effect. */
+  onSelectOutcome?: (selection: { objectiveId: string; keyResultId: string }) => void;
   onSelectTask: (taskId: string) => void;
   onSelectObjective: (objectiveId: string) => void;
 }
@@ -72,7 +120,8 @@ const EDGE_COLORS = {
 } as const;
 
 type GraphEdgeData = Record<string, unknown> & {
-  kind: keyof typeof EDGE_COLORS;
+  /** Canonical relationship kinds plus the separate derived presentation kinds. */
+  kind: keyof typeof EDGE_COLORS | DerivedEdgeKind;
   route?: GraphEdgeRoute;
 };
 
@@ -147,6 +196,11 @@ function PlanningEdge({
   );
 }
 
+const OUTCOME_EDGE_COLORS = {
+  [DERIVED_TASK_KEY_RESULT]: "var(--wsv-relation-outcome-task)",
+  [DERIVED_KEY_RESULT_OBJECTIVE]: "var(--wsv-relation-outcome-objective)",
+} as const;
+
 const EDGE_TYPES = { planning: PlanningEdge };
 
 export function GraphNodeFrame({
@@ -161,9 +215,6 @@ export function GraphNodeFrame({
   const actionable = Boolean(data.onActivate);
   return (
     <div
-      aria-label={actionable
-        ? `${data.kind === "objective" ? "Focus" : "Open"} ${data.kind} ${data.id}`
-        : undefined}
       className={[
         "wsv-graph-node",
         `wsv-graph-node--${data.kind}`,
@@ -172,36 +223,88 @@ export function GraphNodeFrame({
       ]
         .filter(Boolean)
         .join(" ")}
-      onKeyDown={actionable ? (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        event.stopPropagation();
-        data.onActivate?.();
-      } : undefined}
-      role={actionable ? "button" : undefined}
-      tabIndex={actionable ? 0 : undefined}
     >
       {before}
-      <div className="wsv-graph-node__eyebrow">{data.eyebrow}</div>
-      <div className="wsv-graph-node__title" title={data.title}>
-        {data.title}
-      </div>
-      {data.kind === "task" ? (
-        <div className="wsv-graph-node__meta">
-          <span className={`wsv-priority wsv-priority--${data.priority}`}>
-            {data.priority}
-          </span>
-          <span>{data.status}</span>
-          {data.contextCount > 0 ? (
-            <span
-              className="wsv-context-badge"
-              aria-label={`${data.contextCount} linked context items`}
-              title={`${data.contextCount} linked context items`}
-            >
-              ↗ {data.contextCount}
-            </span>
-          ) : null}
+      <div
+        className="wsv-graph-node__action"
+        aria-label={actionable
+          ? data.outcome
+            // Naming says what activation does: it selects a filter.
+            ? `Filter by key result ${data.outcome.objectiveId} ${data.outcome.keyResultId}`
+            : `${data.kind === "objective" ? "Focus" : "Open"} ${data.kind} ${data.id}`
+          : undefined}
+        onClick={actionable ? (event) => {
+          event.stopPropagation();
+          data.onActivate?.();
+        } : undefined}
+        onKeyDown={actionable ? (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          event.stopPropagation();
+          data.onActivate?.();
+        } : undefined}
+        role={actionable ? "button" : undefined}
+        tabIndex={actionable ? 0 : undefined}
+      >
+        <div className="wsv-graph-node__eyebrow">{data.eyebrow}</div>
+        <div className="wsv-graph-node__title" title={data.title}>
+          {data.title}
         </div>
+        {data.kind === "task" ? (
+          <div className="wsv-graph-node__meta">
+            <span className={`wsv-priority wsv-priority--${data.priority}`}>
+              {data.priority}
+            </span>
+            <span>{data.status}</span>
+          </div>
+        ) : null}
+      </div>
+      {data.kind === "task" && data.contextCount > 0 ? (
+        <button
+          type="button"
+          className="wsv-context-badge wsv-graph-context-trigger nodrag nopan"
+          aria-label={`Open context for task ${data.id}: ${data.contextCount} linked context items`}
+          aria-haspopup="dialog"
+          onPointerDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            data.onOpenContext?.(event.currentTarget);
+          }}
+        >
+          ↗ {data.contextCount}
+        </button>
+      ) : null}
+      {data.outcome ? (
+        <dl className="wsv-graph-node__outcome">
+          <div>
+            <dt>Progress</dt>
+            <dd>
+              {data.outcome.recordedProgress === null
+                ? "Unrecorded"
+                : String(data.outcome.recordedProgress)}
+            </dd>
+          </div>
+          {data.outcome.target !== null ? (
+            <div>
+              <dt>Target</dt>
+              <dd>{data.outcome.target}</dd>
+            </div>
+          ) : null}
+          {data.outcome.status !== null ? (
+            <div>
+              <dt>Status</dt>
+              <dd>{data.outcome.status}</dd>
+            </div>
+          ) : null}
+          <div>
+            <dt>Tasks</dt>
+            <dd>
+              {`${data.outcome.linkedTotal} linked`}
+              {` · ${data.outcome.visibleTotal} of ${data.outcome.linkedTotal} visible`}
+            </dd>
+          </div>
+        </dl>
       ) : null}
       {after}
     </div>
@@ -224,11 +327,18 @@ const INITIAL_NODE_DIMENSIONS = {
   objective: { initialWidth: 221, initialHeight: 78 },
   task: { initialWidth: 216, initialHeight: 82 },
   note: { initialWidth: 232, initialHeight: 78 },
+  // GN3: one policy. The first paint uses exactly the geometry graphLayout
+  // hands ELK, so the frame never has to grow after the layout returns.
+  "key-result": {
+    initialWidth: GRAPH_NODE_SIZES["key-result"].width,
+    initialHeight: GRAPH_NODE_SIZES["key-result"].height,
+  },
 } as const;
 
 export function miniMapNodeColor(node: WorkspaceFlowNode) {
   if (node.data.kind === "objective") return "var(--wsv-minimap-node-objective)";
   if (node.data.kind === "note") return "var(--wsv-minimap-node-note)";
+  if (node.data.kind === "key-result") return "var(--wsv-minimap-node-key-result)";
   return "var(--wsv-minimap-node-task)";
 }
 
@@ -279,11 +389,125 @@ export function shouldVirtualizeGraph(nodeCount: number) {
 function nodePosition(kind: GraphNodeKind, index: number, count: number) {
   if (kind === "objective") return { x: 24, y: 56 + index * 150 };
   if (kind === "note") return { x: 1_150, y: 56 + index * 140 };
+  if (kind === "key-result") return { x: 186, y: 56 + index * 128 };
 
   const columns = count > 16 ? 3 : 2;
   const column = index % columns;
   const row = Math.floor(index / columns);
   return { x: 350 + column * 268, y: 34 + row * 118 };
+}
+
+/**
+ * Derived presentation edges. They never go through canonicalEdgeKind and
+ * workspace.edges is not mutated. An endpoint with no live node is dropped
+ * rather than fabricating a resolved one.
+ */
+/**
+ * GR02: live Flow identity is a typed presentation value, not a canonical ID.
+ * A schema-valid Objective ID may literally equal an escaped key-result
+ * endpoint string, so every kind is namespaced and every segment escaped.
+ * Canonical IDs, relationships and callback values are untouched.
+ */
+function flowNodeId(kind: "task" | "objective" | "note" | "key-result", raw: string) {
+  const escaped = raw.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+  return ["flow", kind, escaped].join("|");
+}
+
+/**
+ * GN1: a canonical endpoint is resolved to its live presentation node by the
+ * entity kind the relationship itself implies, never by raw string identity.
+ * Canonical relationships, their count and their kinds are untouched.
+ */
+type GraphEntityKind = "task" | "objective" | "note";
+
+/**
+ * GC-F1: each relationship states which entity kinds its endpoints may be.
+ * A dependency or parent endpoint is a Task and nothing else; an alignment
+ * runs Task -> Objective.
+ *
+ * TE-F1: a Note reference is genuinely general. buildWorkspaceEdges emits one
+ * reference per Note link with no restriction on the target's kind, so a link
+ * to another already-live Note is as legitimate as one to a Task or Objective.
+ * Its target keeps the ordered Task/Objective/Note lookup; this is the existing
+ * precedence, not a new ambiguity rule or an unknown-kind fallback.
+ */
+function endpointKindsFor(kind: CanonicalEdgeKind): readonly [readonly GraphEntityKind[], readonly GraphEntityKind[]] {
+  if (kind === "alignment") return [["task"], ["objective"]];
+  if (kind === "reference") return [["note"], ["task", "objective", "note"]];
+  return [["task"], ["task"]];
+}
+
+/**
+ * Resolve one endpoint to a live presentation node of an ALLOWED kind. A
+ * required kind that is not on the canvas yields null: the presentation edge
+ * is then omitted rather than redirected onto an unrelated same-ID node. No
+ * node is manufactured and no canonical relationship is rewritten.
+ */
+function presentationEndpoint(
+  rawId: string,
+  allowed: readonly GraphEntityKind[],
+  live: { tasks: ReadonlySet<string>; objectives: ReadonlySet<string>; notes: ReadonlySet<string> },
+) {
+  for (const kind of allowed) {
+    const known = kind === "task" ? live.tasks : kind === "objective" ? live.objectives : live.notes;
+    if (known.has(rawId)) return flowNodeId(kind, rawId);
+  }
+  return null;
+}
+
+/** GN2: relatedness travels on typed identities, so no raw ID leaks across kinds. */
+function relatedPresentationIds(
+  selectionFlowId: string | null,
+  edges: readonly { source: string; target: string }[],
+) {
+  const related = new Set<string>();
+  if (!selectionFlowId) return related;
+  related.add(selectionFlowId);
+  for (const edge of edges) {
+    if (edge.source === selectionFlowId) related.add(edge.target);
+    if (edge.target === selectionFlowId) related.add(edge.source);
+  }
+  return related;
+}
+
+function buildOutcomeFlowEdges(
+  outcomeEdges: readonly DerivedOutcomeEdge[],
+  nodes: readonly WorkspaceFlowNode[],
+  visibleObjectives: readonly WorkspaceObjective[],
+  sortedTasks: readonly WorkspaceTask[],
+  keyResults: readonly KeyResultNode[],
+): WorkspaceFlowEdge[] {
+  const liveNodeIds = new Set(nodes.map((node) => node.id));
+  const nodeIdForEndpoint = new Map<string, string>();
+  for (const objective of visibleObjectives) {
+    nodeIdForEndpoint.set(objectiveEndpointKey(objective.id), flowNodeId("objective", objective.id));
+  }
+  for (const task of sortedTasks) {
+    nodeIdForEndpoint.set(taskEndpointKey(task.id), flowNodeId("task", task.id));
+  }
+  for (const node of keyResults) {
+    nodeIdForEndpoint.set(keyResultEndpointKey(node.key), flowNodeId("key-result", node.key));
+  }
+
+  const derived: WorkspaceFlowEdge[] = [];
+  for (const outcomeEdge of outcomeEdges) {
+    const source = nodeIdForEndpoint.get(outcomeEdge.source);
+    const target = nodeIdForEndpoint.get(outcomeEdge.target);
+    if (!source || !target) continue;
+    if (!liveNodeIds.has(source) || !liveNodeIds.has(target)) continue;
+    const color = OUTCOME_EDGE_COLORS[outcomeEdge.kind];
+    derived.push({
+      id: outcomeEdge.id,
+      source,
+      target,
+      type: "planning",
+      animated: false,
+      markerEnd: { type: MarkerType.ArrowClosed, color, width: 12, height: 12 },
+      style: { stroke: color, strokeWidth: 1.2, strokeDasharray: "2 4", opacity: 0.6 },
+      data: { kind: outcomeEdge.kind },
+    });
+  }
+  return derived;
 }
 
 export function makeGraphModel(
@@ -293,6 +517,8 @@ export function makeGraphModel(
   edges: readonly WorkspaceEdge[],
   selectedTaskId: string | null | undefined,
   selectedObjectiveId: string | null | undefined = null,
+  keyResultProjection: KeyResultProjection | null = null,
+  outcome: OutcomeFilter | null = null,
 ) {
   const sortedTasks = [...tasks].sort((left, right) => {
     const objectiveDelta = (left.objective_ids?.[0] || "ZZZ").localeCompare(
@@ -303,9 +529,16 @@ export function makeGraphModel(
   const taskIds = new Set(sortedTasks.map((task) => task.id));
   const activeTaskSelection =
     selectedTaskId && taskIds.has(selectedTaskId) ? selectedTaskId : null;
-  const objectiveIds = new Set(
-    sortedTasks.flatMap((task) => [...(task.objective_ids || [])]),
-  );
+  const displayedKeyResults: KeyResultNode[] = keyResultProjection
+    ? keyResultCatalog(keyResultProjection)
+    : [];
+  const objectiveIds = new Set([
+    ...sortedTasks.flatMap((task) => [...(task.objective_ids || [])]),
+    // GR01: a displayed Key Result keeps its real parent Objective node, so its
+    // derived KR -> Objective edge always has a live endpoint. Only uniquely
+    // resolvable parents reach this set; nothing is fabricated.
+    ...displayedKeyResults.map((node) => node.objectiveId),
+  ]);
   const visibleObjectives = [...objectives]
     .filter((objective) => objectiveIds.has(objective.id))
     .sort((left, right) => left.id.localeCompare(right.id));
@@ -332,19 +565,74 @@ export function makeGraphModel(
     (edge) => knownIds.has(edge.source) && knownIds.has(edge.target),
   );
 
-  const relatedIds = new Set<string>();
-  if (activeSelection) {
-    relatedIds.add(activeSelection);
-    for (const edge of graphEdges) {
-      if (edge.source === activeSelection) relatedIds.add(edge.target);
-      if (edge.target === activeSelection) relatedIds.add(edge.source);
-    }
-  }
+  const selectionFlowId = activeTaskSelection
+    ? flowNodeId("task", activeTaskSelection)
+    : activeObjectiveSelection
+      ? flowNodeId("objective", activeObjectiveSelection)
+      : null;
+  const liveEntities = { tasks: taskIds, objectives: visibleObjectiveIds, notes: visibleNoteIds };
+  // GN1: the ordinary relationship layer now maps endpoints exactly the way the
+  // derived layer already does. Nothing is dropped to make endpoints match.
+  const presentationEdges = graphEdges
+    .map((edge) => {
+      const [sourceKinds, targetKinds] = endpointKindsFor(edge.kind);
+      return {
+        ...edge,
+        source: presentationEndpoint(edge.source, sourceKinds, liveEntities),
+        target: presentationEndpoint(edge.target, targetKinds, liveEntities),
+      };
+    })
+    // GC-F1: an edge whose required typed endpoint is absent is not drawn. The
+    // canonical arrays, counts and readiness data above are untouched.
+    .filter((edge): edge is typeof edge & { source: string; target: string } =>
+      edge.source !== null && edge.target !== null);
+  const relatedIds = relatedPresentationIds(selectionFlowId, presentationEdges);
   const isRelated = (id: string) => !activeSelection || relatedIds.has(id);
 
+  // Presentation-only outcome layer. It reuses the admitted pure helpers
+  // and never re-derives filter, readiness, status or progress data.
+  const keyResults: KeyResultNode[] = displayedKeyResults;
+  const outcomeEdges = keyResultProjection
+    ? deriveOutcomeEdges(keyResultProjection, sortedTasks)
+    : [];
+
   const nodes: WorkspaceFlowNode[] = [
+    ...keyResults.map((node, index) => ({
+      // Collision-safe scoped identity: the same local KR under a different
+      // Objective, and delimiter-bearing IDs, stay distinct nodes.
+      id: flowNodeId("key-result", node.key),
+      type: "workspace" as const,
+      position: nodePosition("key-result", index, keyResults.length),
+      ...INITIAL_NODE_DIMENSIONS["key-result"],
+      draggable: false,
+      data: {
+        id: node.keyResultId,
+        kind: "key-result" as const,
+        title: node.text,
+        eyebrow: `${node.objectiveId} · ${node.keyResultId}`,
+        contextCount: 0,
+        // GR05: derived from the existing coordinate; only an exact scoped pair
+        // selects, and the same local ID under another parent stays unselected.
+        selected: Boolean(
+          outcome
+            && outcome.kind === "pair"
+            && outcome.objectiveId === node.objectiveId
+            && outcome.keyResultId === node.keyResultId,
+        ),
+        related: isRelated(flowNodeId("key-result", node.key)),
+        outcome: {
+          objectiveId: node.objectiveId,
+          keyResultId: node.keyResultId,
+          recordedProgress: node.recordedProgress,
+          target: node.target,
+          status: node.status,
+          linkedTotal: node.counts.total,
+          visibleTotal: node.visibleCounts.total,
+        },
+      },
+    })),
     ...visibleObjectives.map((objective, index) => ({
-      id: objective.id,
+      id: flowNodeId("objective", objective.id),
       type: "workspace" as const,
       position: nodePosition("objective", index, visibleObjectives.length),
       ...INITIAL_NODE_DIMENSIONS.objective,
@@ -357,11 +645,11 @@ export function makeGraphModel(
         eyebrow: `${objective.id} · ${objective.quarter || "Objective"}`,
         contextCount: 0,
         selected: objective.id === activeObjectiveSelection,
-        related: isRelated(objective.id),
+        related: isRelated(flowNodeId("objective", objective.id)),
       },
     })),
     ...sortedTasks.map((task, index) => ({
-      id: task.id,
+      id: flowNodeId("task", task.id),
       type: "workspace" as const,
       position: nodePosition("task", index, sortedTasks.length),
       ...INITIAL_NODE_DIMENSIONS.task,
@@ -374,12 +662,12 @@ export function makeGraphModel(
         contextCount: Math.max(0, task.context_count || 0),
         priority: asTaskPriority(task.priority),
         status: asTaskStatus(task.status),
-        selected: task.id === activeSelection,
-        related: isRelated(task.id),
+        selected: task.id === activeTaskSelection,
+        related: isRelated(flowNodeId("task", task.id)),
       },
     })),
     ...visibleNotes.map((note, index) => ({
-      id: note.id,
+      id: flowNodeId("note", note.id),
       type: "workspace" as const,
       position: nodePosition("note", index, visibleNotes.length),
       ...INITIAL_NODE_DIMENSIONS.note,
@@ -392,15 +680,15 @@ export function makeGraphModel(
         eyebrow: `${note.id} · ${note.created || "Context card"}`,
         contextCount: 0,
         selected: false,
-        related: isRelated(note.id),
+        related: isRelated(flowNodeId("note", note.id)),
       },
     })),
   ];
 
-  const flowEdges: WorkspaceFlowEdge[] = graphEdges.map((edge) => {
+  const flowEdges: WorkspaceFlowEdge[] = presentationEdges.map((edge) => {
     const hot =
-      !!activeSelection &&
-      (edge.source === activeSelection || edge.target === activeSelection);
+      !!selectionFlowId &&
+      (edge.source === selectionFlowId || edge.target === selectionFlowId);
     return {
       id: edge.id,
       source: edge.source,
@@ -428,19 +716,67 @@ export function makeGraphModel(
     };
   });
 
-  return { nodes, edges: flowEdges };
+  const derivedEdges = buildOutcomeFlowEdges(
+    outcomeEdges,
+    nodes,
+    visibleObjectives,
+    sortedTasks,
+    keyResults,
+  );
+
+  return { nodes, edges: [...flowEdges, ...derivedEdges] };
 }
 
 export function GraphView({
   tasks,
   objectives,
+  referenceTasks,
   notes,
   edges,
+  emptyKind = "none",
   selectedTaskId,
   selectedObjectiveId,
+  contextTargetTaskId = null,
+  focusPinnedTaskId = null,
+  onContextTargetChange,
+  onFocusPinChange,
+  renderPopupPrerequisites,
+  keyResultProjection = null,
+  outcome = null,
+  onSelectOutcome,
   onSelectTask,
   onSelectObjective,
 }: GraphViewProps) {
+  const canonicalTasks = referenceTasks ?? tasks;
+  // Each popup open is a distinct interaction lifetime. A release callback may
+  // only end the lifetime that created it, so an older popup's blur can never
+  // clear a pin a newer popup just acquired for the same trigger.
+  const pinGenerationRef = useRef(0);
+  // Liveness for deferred restoration work owned by this Graph.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
+  // The DOM trigger stays local to Graph; only the Task id crosses the boundary.
+  const [contextTrigger, setContextTrigger] = useState<HTMLButtonElement | null>(null);
+  const [localContextTaskId, setLocalContextTaskId] = useState<string | null>(null);
+  const contextTargetId = onContextTargetChange ? contextTargetTaskId : localContextTaskId;
+  const setContextTargetId = useCallback((taskId: string | null) => {
+    setLocalContextTaskId(taskId);
+    onContextTargetChange?.(taskId);
+  }, [onContextTargetChange]);
+
+  // Popup identity is canonical: hiding or completing a Task must not close it.
+  const contextTask = canonicalTasks.find((task) => task.id === contextTargetId);
+  useEffect(() => {
+    // Canonical deletion, not visibility filtering, dismisses the popup.
+    if (contextTargetId && !contextTask) {
+      setLocalContextTaskId(null);
+      onContextTargetChange?.(null);
+      setContextTrigger(null);
+    }
+  }, [contextTargetId, contextTask, onContextTargetChange]);
   const model = useMemo(
     () => makeGraphModel(
       tasks,
@@ -449,61 +785,150 @@ export function GraphView({
       edges,
       selectedTaskId,
       selectedObjectiveId,
+      keyResultProjection,
+      outcome,
     ),
-    [tasks, objectives, notes, edges, selectedTaskId, selectedObjectiveId],
+    [
+      tasks,
+      objectives,
+      notes,
+      edges,
+      selectedTaskId,
+      selectedObjectiveId,
+      keyResultProjection,
+      outcome,
+    ],
   );
-  const [layout, setLayout] = useState({ nodes: model.nodes, edgeRoutes: {} as Record<string, GraphEdgeRoute> });
+  // Layout is keyed by the model it was computed for. Rendered membership and
+  // task data always come from the CURRENT model; a layout result contributes
+  // positions and routes only while it is still compatible, so a stale result
+  // can never restore a hidden node or route an obsolete edge.
+  const [layout, setLayout] = useState<{
+    model: typeof model | null;
+    nodes: WorkspaceFlowNode[];
+    edgeRoutes: Record<string, GraphEdgeRoute>;
+  }>({ model: null, nodes: [], edgeRoutes: {} });
   useEffect(() => {
     let cancelled = false;
-    setLayout({ nodes: model.nodes, edgeRoutes: {} });
     void layoutPlanningGraph(model.nodes, model.edges).then((result) => {
-      if (!cancelled) setLayout(result);
+      if (!cancelled) setLayout({ model, nodes: result.nodes, edgeRoutes: result.edgeRoutes });
     }).catch(() => {
-      if (!cancelled) setLayout({ nodes: model.nodes, edgeRoutes: {} });
+      if (!cancelled) setLayout({ model, nodes: model.nodes, edgeRoutes: {} });
     });
     return () => { cancelled = true; };
-  }, [model.edges, model.nodes]);
+  }, [model]);
+
+  const compatibleLayout = layout.model === model ? layout : null;
+  const positionsById = useMemo(() => new Map(
+    (compatibleLayout?.nodes ?? []).map((node) => [node.id, node]),
+  ), [compatibleLayout]);
+
+  // Synchronous: membership and data are the current model's, in its order.
+  const positionedNodes = useMemo(
+    () => model.nodes.map((node) => {
+      const laid = positionsById.get(node.id);
+      return laid ? { ...node, position: laid.position } : node;
+    }),
+    [model.nodes, positionsById],
+  );
+
   const interactiveNodes = useMemo(
-    () => layout.nodes.map((node) => ({
+    () => positionedNodes.map((node) => ({
       ...node,
       data: {
         ...node.data,
         onActivate: node.data.kind === "task"
-          ? () => onSelectTask(node.id)
+          ? () => onSelectTask(node.data.id)
           : node.data.kind === "objective"
-            ? () => onSelectObjective(node.id)
-            : undefined,
+            ? () => onSelectObjective(node.data.id)
+            : node.data.kind === "key-result" && node.data.outcome && onSelectOutcome
+              // Filter selection only: never Task or Objective selection,
+              // the context dialog, a write or a camera action.
+              ? () => onSelectOutcome({
+                  objectiveId: node.data.outcome!.objectiveId,
+                  keyResultId: node.data.outcome!.keyResultId,
+                })
+              : undefined,
+        onOpenContext: node.data.kind === "task"
+          ? (trigger: HTMLButtonElement) => {
+              setContextTrigger(trigger);
+              setContextTargetId(node.data.id);
+              // The focus pin is independent of both shell selection and popup.
+              pinGenerationRef.current += 1;
+              onFocusPinChange?.(node.data.id);
+            }
+          : undefined,
       },
     })),
-    [layout.nodes, onSelectObjective, onSelectTask],
+    [
+      positionedNodes,
+      onSelectObjective,
+      onSelectTask,
+      onSelectOutcome,
+      setContextTargetId,
+      onFocusPinChange,
+    ],
   );
   const routedEdges = useMemo(() => model.edges.map((edge) => ({
     ...edge,
     data: {
       ...edge.data,
-      route: layout.edgeRoutes[edge.id],
+      // Routes only from a layout computed for this exact model.
+      route: compatibleLayout?.edgeRoutes[edge.id],
     },
-  })), [layout.edgeRoutes, model.edges]);
+  })), [compatibleLayout, model.edges]);
 
-  if (!tasks.length) {
-    return (
-      <div className="wsv-empty" role="status">
-        <strong>No work matches these filters</strong>
-        <span>Clear a filter to bring tasks and their relationships back.</span>
-      </div>
-    );
-  }
+  // Bound to the generation that was current when the popup opened.
+  const releaseFocusPinFor = (generation: number) => () => {
+    if (pinGenerationRef.current !== generation) return;
+    onFocusPinChange?.(null);
+  };
+
+  // GR01: emptiness is about rendered content. A zero-Task workspace with a
+  // real Key Result still has a usable graph, so no overlay covers it.
+  const empty = !model.nodes.length;
 
   return (
-    <div className="wsv-graph" aria-label="Task relationship graph">
+    <div className="wsv-graph" aria-label="Task relationship graph" data-graph-empty={empty ? "true" : "false"}>
+      {contextTargetId && contextTask ? (
+        <GraphContextPopover
+          key={contextTargetId}
+          taskId={contextTargetId}
+          taskTitle={contextTask.title}
+          trigger={contextTrigger}
+          focusFallbackSelector="[data-workspace-focus-fallback]"
+          ownerAliveRef={aliveRef}
+          prerequisites={renderPopupPrerequisites?.(contextTargetId)}
+          onClose={() => {
+            setContextTargetId(null);
+            setContextTrigger(null);
+          }}
+          onFocusReturned={releaseFocusPinFor(pinGenerationRef.current)}
+          onOpenTask={() => {
+            const openedId = contextTargetId;
+            setContextTargetId(null);
+            setContextTrigger(null);
+            onFocusPinChange?.(null);
+            onSelectTask(openedId);
+          }}
+        />
+      ) : null}
+      {empty ? (
+        // Overlay, not an early return: the mounted canvas and its viewport
+        // survive a nonempty -> empty -> nonempty projection change.
+        <div className="wsv-graph-empty-overlay" role="status">
+          <strong>{graphEmptyTitle(emptyKind)}</strong>
+          <span>{graphEmptyDetail(emptyKind)}</span>
+        </div>
+      ) : null}
       <ReactFlow
         nodes={interactiveNodes}
         edges={routedEdges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
         onNodeClick={(_, node) => {
-          if (node.data.kind === "task") onSelectTask(node.id);
-          if (node.data.kind === "objective") onSelectObjective(node.id);
+          if (node.data.kind === "task") onSelectTask(node.data.id);
+          if (node.data.kind === "objective") onSelectObjective(node.data.id);
         }}
         nodesDraggable={false}
         nodesFocusable={false}
@@ -546,4 +971,16 @@ export function GraphView({
       </div>
     </div>
   );
+}
+
+function graphEmptyTitle(emptyKind: string) {
+  if (emptyKind === "no-tasks") return "No tasks yet";
+  if (emptyKind === "all-complete") return "All matching tasks are completed";
+  return "No work matches these filters";
+}
+
+function graphEmptyDetail(emptyKind: string) {
+  if (emptyKind === "no-tasks") return "Create a Task to start planning this workspace.";
+  if (emptyKind === "all-complete") return "Show completed tasks to bring them back into view.";
+  return "Clear a filter to bring tasks and their relationships back.";
 }

@@ -1,10 +1,31 @@
-import { render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, test, vi } from 'vitest'
 import { capture, task, workspace } from '../../test/fixtures'
 import { verifiedMicrosoftProviderGates } from '../../test/providerGates'
 import type { Capture } from '../../domain/types'
 import { CaptureDrawer } from './CaptureDrawer'
+
+test('capture calendar keeps date-only intent, clears to null and disables during submission', async () => {
+  let finish!: () => void
+  const onCreateTask = vi.fn(() => new Promise<typeof task>((resolve) => { finish = () => resolve(task) }))
+  render(<CaptureDrawer capture={capture} onClose={vi.fn()} onCreateTask={onCreateTask} workspace={workspace} />)
+  await userEvent.click(screen.getByRole('button', { name: 'Create task from this source' }))
+  const due = screen.getByLabelText('Due')
+  fireEvent.change(due, { target: { value: '2024-02-28' } })
+  await userEvent.click(screen.getByRole('button', { name: 'Choose date' }))
+  await userEvent.click(screen.getByRole('button', { name: 'February 29, 2024' }))
+  expect(onCreateTask).not.toHaveBeenCalled()
+  await userEvent.click(screen.getByRole('button', { name: 'Create linked task' }))
+  expect(onCreateTask).toHaveBeenLastCalledWith(expect.objectContaining({ due: '2024-02-29' }))
+  expect(due).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Choose date' })).toBeDisabled()
+  await act(async () => finish())
+  await userEvent.click(within(due.closest('.date-input-control')! as HTMLElement).getByRole('button', { name: 'Clear date' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Create linked task' }))
+  expect(onCreateTask).toHaveBeenLastCalledWith(expect.objectContaining({ due: null }))
+  await act(async () => finish())
+})
 
 test('creates a generic task with source title and sanitized context prefilled', async () => {
   const onCreateTask = vi.fn().mockResolvedValue(task)

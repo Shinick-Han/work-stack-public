@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { projectKeyResults } from "./keyResultModel";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -266,5 +267,59 @@ describe("BoardView due timing", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+
+function outcomeTask(id: string, extra: Record<string, unknown> = {}) {
+  return { id, title: "Task " + id, status: "open", priority: "P2", due: null, tags: [], objective_ids: [], dependencies: [], subtasks: [], context_count: 0, revision: 1, ...extra } as never;
+}
+
+const outcomeProjection = projectKeyResults({
+  workspaceId: "W1",
+  tasks: [
+    outcomeTask("T-1", { uid: "u1", notes: [], objective_ids: ["O-A"], key_result_refs: [{ objective_id: "O-A", key_result_id: "KR-1" }] }),
+    outcomeTask("T-2", { uid: "u2", notes: [], objective_ids: ["O-A"], key_result_refs: [{ objective_id: "O-A", key_result_id: "KR-9" }] }),
+    outcomeTask("T-3", { uid: "u3", notes: [] }),
+  ],
+  objectives: [
+    { id: "O-A", objective: "Objective A", revision: 1, key_results: [{ id: "KR-1", text: "A outcome" }] } as never,
+  ],
+});
+
+describe("outcome chips", () => {
+  it("renders one card per Task with resolved, unresolved and unassigned labels", () => {
+    render(
+      <BoardView
+        tasks={[task("T-1"), task("T-2"), task("T-3")]}
+        keyResultProjection={outcomeProjection}
+        onChangeTaskStatus={vi.fn()}
+        onSelectTask={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "Filter by outcome O-A KR-1" })).toBeInTheDocument();
+    expect(screen.getByText("Unresolved outcome")).toBeInTheDocument();
+    expect(screen.getByText("Unassigned outcome")).toBeInTheDocument();
+  });
+
+  it("chip activation chooses the pair without selecting the card", async () => {
+    const onSelectOutcome = vi.fn();
+    const onSelectTask = vi.fn();
+    render(
+      <BoardView
+        tasks={[task("T-1")]}
+        keyResultProjection={outcomeProjection}
+        onSelectOutcome={onSelectOutcome}
+        onChangeTaskStatus={vi.fn()}
+        onSelectTask={onSelectTask}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Filter by outcome O-A KR-1" }));
+
+    expect(onSelectOutcome).toHaveBeenCalledExactlyOnceWith({ objectiveId: "O-A", keyResultId: "KR-1" });
+    expect(onSelectTask).not.toHaveBeenCalled();
   });
 });

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, createIdempotencyKey } from '../../api/client'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { CheckpointHistory, type FrozenAttempt } from './CheckpointHistory'
+import { CommitUnknownError, api, createIdempotencyKey } from '../../api/client'
 import { Button, ErrorState, LoadingBlock, Pill } from '../../components/Primitives'
-import type { Capture, ReviewEntryInput, WorkspaceProjection } from '../../domain/types'
+import { DateInput } from '../../components/DateInput'
+import type { CheckpointAudit, Capture, ReviewEntryInput, WorkspaceProjection } from '../../domain/types'
 import { getErrorMessage } from '../../utils/format'
 import { LeadershipSignalsPanel } from './LeadershipSignalsPanel'
 
@@ -33,6 +35,159 @@ function formatDuration(totalSeconds: number) {
   return `${totalSeconds}s`
 }
 
+/**
+ * An owner identity that never repeats. The workspace and day coordinate can
+ * come back (A to B to A, or D to E to D), so every observed change - including
+ * a synchronous cache swap with no intermediate render - advances a generation
+ * counter that a returning coordinate cannot reproduce.
+ */
+function useOwnerGeneration(
+  queryClient: QueryClient,
+  workspaceId: string,
+  date: string,
+): { owner: string; currentOwner: () => string } {
+  const coordinate = `${workspaceId}|${date}`
+  // A ref, not state: ownership must already have changed when a control
+  // fires inside the same React batch as the cache write.
+  const generation = useRef(0)
+  const [, forceRender] = useState(0)
+  const lastCoordinate = useRef(coordinate)
+  const lastCached = useRef<string | undefined>(undefined)
+  const identity = useRef(`${coordinate}#0`)
+
+  const advance = (next: string) => {
+    generation.current += 1
+    identity.current = `${next}#${generation.current}`
+  }
+
+  if (lastCoordinate.current !== coordinate) {
+    lastCoordinate.current = coordinate
+    advance(coordinate)
+  }
+
+  useEffect(() => {
+    lastCached.current = queryClient.getQueryData<WorkspaceProjection>(['workspace'])?.workspace.id
+    return queryClient.getQueryCache().subscribe(({ query }) => {
+      if (query.queryKey.length !== 1 || query.queryKey[0] !== 'workspace') return
+      const next = queryClient.getQueryData<WorkspaceProjection>(['workspace'])?.workspace.id
+      if (next === lastCached.current) return
+      // Synchronous: counted before React renders, and counted even when the
+      // Page never renders the intermediate workspace at all.
+      lastCached.current = next
+      advance(lastCoordinate.current)
+      forceRender((value) => value + 1)
+    })
+  }, [queryClient])
+
+  return { owner: identity.current, currentOwner: () => identity.current }
+}
+
+interface TransitionOwnership {
+  audit: ReturnType<typeof useQuery<CheckpointAudit>>
+  conflictMessage: string | null
+  failedExplanation: string | null
+  owner: string
+  pendingRetry: FrozenAttempt | null
+  clearRetry: () => void
+  submit: (attempt: FrozenAttempt) => void
+}
+
+/**
+ * One owner lifetime for every checkpoint transition on this page: a workspace
+ * and a day. A staged or pending attempt never survives a change of owner, and
+ * a late completion belonging to a replaced owner is discarded, not installed.
+ */
+function useCheckpointTransitions(
+  workspaceId: string,
+  date: string,
+  refresh: () => Promise<void> | void,
+): TransitionOwnership {
+  const queryClient = useQueryClient()
+  const auditKey = useMemo(() => ['checkpoint-audit', workspaceId], [workspaceId])
+  // The entire workspace audit is loaded and validated before any day filter.
+  const audit = useQuery({ queryKey: auditKey, queryFn: () => api.getCheckpointAudit() })
+
+  const { owner, currentOwner } = useOwnerGeneration(queryClient, workspaceId, date)
+
+  const [pendingRetry, setPendingRetry] = useState<FrozenAttempt | null>(null)
+  const [conflictMessage, setConflictMessage] = useState<string | null>(null)
+  // The raw explanation of the last failed attempt, kept verbatim and visible.
+  const [failedExplanation, setFailedExplanation] = useState<string | null>(null)
+
+  useEffect(() => {
+    // Owner change cancels, not hides: the dead intent is discarded outright.
+    setPendingRetry(null)
+    setConflictMessage(null)
+    setFailedExplanation(null)
+  }, [owner])
+
+  const mutation = useMutation({
+    mutationFn: (attempt: FrozenAttempt) => (
+      api.transitionCheckpoint(attempt.checkpointId, attempt.body, attempt.idempotencyKey)
+    ),
+    onSuccess: (_result, attempt) => {
+      if (attempt.owner !== currentOwner()) return
+      setPendingRetry(null)
+      setConflictMessage(null)
+      setFailedExplanation(null)
+      void queryClient.invalidateQueries({ queryKey: auditKey })
+      void refresh()
+    },
+    onError: (error: unknown, attempt) => {
+      if (attempt.owner !== currentOwner()) return
+      setFailedExplanation(attempt.body.reason.explanation)
+      if (error instanceof CommitUnknownError) {
+        // Only an explicit retry of this same snapshot and key is offered.
+        setPendingRetry(attempt)
+        setConflictMessage(null)
+        return
+      }
+      // A refusal is shown and the audit refreshed; nothing is resubmitted.
+      setPendingRetry(null)
+      setConflictMessage(getErrorMessage(error))
+      void queryClient.invalidateQueries({ queryKey: auditKey })
+    },
+  })
+
+  const submit = (attempt: FrozenAttempt) => {
+    // A stale explicit retry fails its scope guard before reaching transport.
+    if (attempt.owner !== currentOwner() || mutation.isPending) return
+    setConflictMessage(null)
+    mutation.mutate(attempt)
+  }
+
+  return {
+    audit,
+    conflictMessage,
+    failedExplanation,
+    owner,
+    pendingRetry,
+    clearRetry: () => { setPendingRetry(null); setFailedExplanation(null) },
+    submit,
+  }
+}
+
+/** Mounted only once the whole audit is validated; the day filter is inside. */
+function CheckpointHistorySection(
+  { date, transitions }: { date: string; transitions: TransitionOwnership },
+) {
+  if (!transitions.audit.data) return null
+  return (
+    <CheckpointHistory
+      audit={transitions.audit.data}
+      conflictMessage={transitions.conflictMessage}
+      createIdempotencyKey={createIdempotencyKey}
+      date={date}
+      failedExplanation={transitions.failedExplanation}
+      onClearRetry={transitions.clearRetry}
+      onRetry={transitions.submit}
+      onSubmit={transitions.submit}
+      owner={transitions.owner}
+      pendingRetry={transitions.pendingRetry}
+    />
+  )
+}
+
 export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpenTask, today, workspace }: DailyReviewPageProps) {
   const queryClient = useQueryClient()
   const availableTasks = useMemo(() => [...workspace.tasks].sort((left, right) => (
@@ -58,6 +213,9 @@ export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpen
   })
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['review', date, 7] })
+
+  // The entire workspace audit is loaded and validated before any day filter.
+  const transitions = useCheckpointTransitions(workspace.workspace.id, date, refresh)
 
   const checkinMutation = useMutation({
     mutationFn: ({ date: intentDate, time, key }: { date: string; time: string; key: string }) => (
@@ -121,19 +279,17 @@ export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpen
           <h1 id="review-heading">Turn execution into evidence.</h1>
           <p>Capture what moved, what comes next, and what needs help—without inferring execution state.</p>
         </div>
-        <label className="review-date">
-          <span>Review date</span>
-          <input
-            max={today}
-            onChange={(event) => {
-              setDate(event.target.value)
-              checkinIntent.current = null
-              entryIntentKey.current = null
-            }}
-            type="date"
-            value={date}
-          />
-        </label>
+        <DateInput
+          className="review-date"
+          label="Review date"
+          max={today}
+          onChange={(value) => {
+            setDate(value)
+            checkinIntent.current = null
+            entryIntentKey.current = null
+          }}
+          value={date}
+        />
       </header>
 
       {reviewQuery.isPending ? <LoadingBlock label="Opening the review…" /> : reviewQuery.isError || !review ? (
@@ -158,6 +314,8 @@ export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpen
               <Button disabled={entryMutation.isPending || !taskId || ![done, next, blockers].some((value) => value.trim())} type="submit" variant="primary">{entryMutation.isPending ? 'Saving…' : entryMutation.isError ? 'Retry unchanged entry' : 'Add review entry'}</Button>
               {entryMutation.error ? <p className="form-error" role="alert">{getErrorMessage(entryMutation.error)}</p> : null}
             </form>
+
+            <CheckpointHistorySection date={date} transitions={transitions} />
 
             <section className="review-day-card" aria-labelledby="review-day-heading">
               <header><span>Day record</span><strong id="review-day-heading">{review.day.entries.length ? `${review.day.entries.length} entries` : 'No entries yet'}</strong></header>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -265,6 +266,161 @@ class ProfileInspectionTest(unittest.TestCase):
         )
         with self.assertRaises(RuntimeError):
             MODULE.profile_test_result_to_document(forged)
+
+
+class ProfileInspectionReadBoundTest(unittest.TestCase):
+    """Exercise the public reader over committed fixtures, without constructing Store."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.data = self.root / "data"
+        self.assertTrue(self.data.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()))
+
+    def copy_fixture(self, name: str = "populated") -> None:
+        shutil.copytree(ROOT / "tests" / "fixtures" / "store-v3" / name, self.data)
+
+    def observe_reads(self, target: Path, before_open=None, after_read=None):
+        real_open = Path.open
+        reads: list[tuple[int, int]] = []
+
+        class ObservedFile:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return self.stream.__exit__(*args)
+
+            def read(self, size=-1):
+                payload = self.stream.read(size)
+                reads.append((size, len(payload)))
+                if after_read is not None:
+                    after_read(real_open)
+                return payload
+
+        def open_file(path, mode="r", *args, **kwargs):
+            if path == target and mode == "rb":
+                if before_open is not None:
+                    before_open(real_open, len(reads))
+                return ObservedFile(real_open(path, mode, *args, **kwargs))
+            return real_open(path, mode, *args, **kwargs)
+
+        return mock.patch.object(Path, "open", open_file), reads
+
+    def test_healthy_empty_and_populated_profiles_use_configured_bounded_reads(self) -> None:
+        self.assertEqual(MODULE.MAX_STORE_FILE_BYTES, 64 * 1024 * 1024)
+        self.assertEqual(MODULE.MAX_STORE_TOTAL_BYTES, 128 * 1024 * 1024)
+        for fixture in ("empty", "populated"):
+            with self.subTest(fixture=fixture):
+                self.data = self.root / fixture
+                self.copy_fixture(fixture)
+                before = tree_hashes(self.root)
+                observer, reads = self.observe_reads(self.data / "workspace.json")
+                with observer:
+                    result = MODULE.inspect_profile(local_candidate(self.data))
+                self.assertEqual(result.status, "ready")
+                self.assertEqual(result.actual_workspace_id, WORKSPACE_ID)
+                self.assertEqual(len(reads), 2)
+                self.assertTrue(all(size == MODULE.MAX_STORE_FILE_BYTES + 1 for size, _ in reads))
+                self.assertEqual(tree_hashes(self.root), before)
+
+    def test_file_growing_before_initial_open_is_bounded_and_refused_read_only(self) -> None:
+        self.copy_fixture()
+        target = self.data / "workspace.json"
+        original = target.read_bytes()
+        limit = 4096
+        self.assertLess(len(original), limit)
+        grown = original + b" " * (limit * 4)
+        expected = tree_hashes(self.root)
+        expected[str(target.relative_to(self.root))] = hashlib.sha256(grown).hexdigest()
+
+        def grow(real_open, count):
+            self.assertEqual(count, 0)
+            with real_open(target, "wb") as stream:
+                stream.write(grown)
+
+        observer, reads = self.observe_reads(target, before_open=grow)
+        with mock.patch.object(MODULE, "MAX_STORE_FILE_BYTES", limit), observer:
+            with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                MODULE.inspect_profile(local_candidate(self.data))
+        self.assertEqual(raised.exception.code, "store_changed")
+        self.assertEqual(reads, [(limit + 1, limit + 1)])
+        self.assertEqual(tree_hashes(self.root), expected)
+
+    def test_payload_length_must_match_observed_size_even_if_metadata_is_restored(self) -> None:
+        self.copy_fixture()
+        target = self.data / "workspace.json"
+        original = target.read_bytes()
+        metadata = target.stat()
+        before = tree_hashes(self.root)
+
+        def grow(real_open, count):
+            self.assertEqual(count, 0)
+            with real_open(target, "wb") as stream:
+                stream.write(original + b"not-json")
+
+        def restore(real_open):
+            with real_open(target, "wb") as stream:
+                stream.write(original)
+            os.utime(target, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+
+        observer, reads = self.observe_reads(target, before_open=grow, after_read=restore)
+        with observer, self.assertRaises(MODULE.ProfileInspectionError) as raised:
+            MODULE.inspect_profile(local_candidate(self.data))
+        # Refuse inconsistent bytes before parsing, even when both stats agree.
+        self.assertEqual(raised.exception.code, "store_changed")
+        self.assertEqual(reads, [(MODULE.MAX_STORE_FILE_BYTES + 1, len(original) + 8)])
+        self.assertEqual(tree_hashes(self.root), before)
+
+    def test_total_byte_budget_remains_enforced_without_writes(self) -> None:
+        self.copy_fixture()
+        before = tree_hashes(self.root)
+        total = sum((self.data / name).stat().st_size for name in MODULE.STORE_FILES)
+        with mock.patch.object(MODULE, "MAX_STORE_TOTAL_BYTES", total - 1):
+            with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                MODULE.inspect_profile(local_candidate(self.data))
+        self.assertEqual(raised.exception.code, "store_too_large")
+        self.assertEqual(tree_hashes(self.root), before)
+
+    def test_missing_and_malformed_files_keep_existing_refusal_codes(self) -> None:
+        self.copy_fixture()
+        target = self.data / "workspace.json"
+        for payload, code in ((b"{", "invalid_store"), (None, "partial_store")):
+            with self.subTest(code=code):
+                if payload is None:
+                    target.unlink()
+                else:
+                    target.write_bytes(payload)
+                before = tree_hashes(self.root)
+                with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                    MODULE.inspect_profile(local_candidate(self.data))
+                self.assertEqual(raised.exception.code, code)
+                self.assertEqual(tree_hashes(self.root), before)
+
+    def test_final_stability_pass_still_refuses_changed_authoritative_bytes(self) -> None:
+        self.copy_fixture()
+        target = self.data / "workspace.json"
+        original = target.read_bytes()
+        changed = original.replace(WORKSPACE_ID.encode(), OTHER_WORKSPACE_ID.encode())
+        self.assertNotEqual(original, changed)
+        expected = tree_hashes(self.root)
+        expected[str(target.relative_to(self.root))] = hashlib.sha256(changed).hexdigest()
+
+        def replace_on_second_open(real_open, count):
+            if count == 1:
+                with real_open(target, "wb") as stream:
+                    stream.write(changed)
+
+        observer, reads = self.observe_reads(target, before_open=replace_on_second_open)
+        with observer, self.assertRaises(MODULE.ProfileInspectionError) as raised:
+            MODULE.inspect_profile(local_candidate(self.data))
+        self.assertEqual(raised.exception.code, "store_changed")
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(tree_hashes(self.root), expected)
 
 
 if __name__ == "__main__":

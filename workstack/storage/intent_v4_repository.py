@@ -60,12 +60,18 @@ class V4IntentRepository:
         enable_v4_intents: bool = False,
         now: Callable[[], str],
         uid_factory: Callable[[], str] = lambda: str(uuid.uuid4()),
+        checkpoint_facts: Callable[..., Mapping[str, Any]] | None = None,
     ) -> None:
         if enable_v4_intents is not True:
             raise V4IntentRepositoryError("V4_INTENTS_DISABLED")
         self._runtime = runtime
         self._now = now
         self._uid_factory = uid_factory
+        # The pure checkpoint facts builder lives above this layer
+        # (workstack/checkpoint_change.py); the composition root injects it so
+        # the storage layer never imports upward. Without it a worklog entry
+        # refuses instead of silently diverging from the released v3 record.
+        self._checkpoint_facts = checkpoint_facts
 
     def create_note(
         self,
@@ -144,7 +150,10 @@ class V4IntentRepository:
         event = self._worklog_event(
             physical.workspace_uid, intent, kind="entry", task=task
         )
-        targets = self._stream_targets(physical, (("worklog", event),))
+        recorded = self._recorded_fact(physical, intent, idempotency_key, task=task)
+        targets = self._stream_targets(
+            physical, (("worklog", event), ("activity", recorded))
+        )
         return self._commit(
             physical,
             ledger,
@@ -258,6 +267,72 @@ class V4IntentRepository:
             )
         return event
 
+    def _recorded_fact(
+        self,
+        physical: V4ReadResult,
+        intent: NormalizedIntent,
+        idempotency_key: str,
+        *,
+        task: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Mirror the released-v3 ``worklog.recorded`` Activity fact.
+
+        The released v3 writer records one fact per NEW idempotent checkpoint
+        beside the idempotency receipt (service.add_worklog_v1); the admitted
+        pure builder decides the CP identity, locator and physical-first
+        semantics from the same inputs v3 supplies: the date-local ordinal
+        captured before the append and every previously accepted entry
+        flattened across all dates.
+        """
+
+        value = intent.authority_value
+        entry = {
+            field: copy.deepcopy(value[field])
+            for field in ("task_id", "task", "done", "next", "blockers")
+        }
+        ordinal = 0
+        prior_entries: list[dict[str, Any]] = []
+        for stored in sorted(
+            physical.streams["worklog"],
+            key=lambda item: (item["sequence"], item["event_uid"]),
+        ):
+            if stored.get("kind") != "entry":
+                continue
+            if stored["work_date"] == value["date"]:
+                ordinal += 1
+            prior_entries.append({"task_id": stored["task_display_id"]})
+        if self._checkpoint_facts is None:
+            raise V4IntentRepositoryError("CHECKPOINT_FACTS_UNAVAILABLE")
+        try:
+            facts = self._checkpoint_facts(
+                workspace_uid=physical.workspace_uid,
+                idempotency_key=idempotency_key,
+                date=value["date"],
+                entry=entry,
+                ordinal=ordinal,
+                prior_entries=prior_entries,
+                origin=None,
+            )
+        except ValueError as error:
+            # CheckpointChangeError is a ValueError; the code stays content-free.
+            raise V4IntentRepositoryError("CHECKPOINT_FACTS_INVALID") from error
+        return {
+            "format": "workstack.activity-event",
+            "schema_version": 1,
+            "workspace_uid": physical.workspace_uid,
+            "event_uid": self._uid(),
+            "record_uid": task["uid"],
+            "created_at": self._timestamp(),
+            "actor": "local.user",
+            "provenance": "workstack.intent-v4",
+            "legacy_event_id": _next_event_id(physical),
+            "event_type": facts["recorded"]["type"],
+            "details": copy.deepcopy(facts["recorded"]),
+            "capture_uid": None,
+            "task_uid": task["uid"],
+            "reply_uid": None,
+        }
+
     @staticmethod
     def _task(physical: V4ReadResult, value: object) -> Mapping[str, Any]:
         wanted = value.strip().upper() if isinstance(value, str) else ""
@@ -368,3 +443,13 @@ class V4IntentRepository:
         if parsed.int == 0 or str(parsed) != value:
             raise V4IntentRepositoryError("UID_FACTORY_INVALID")
         return value
+
+
+def _next_event_id(physical: V4ReadResult) -> str:
+    """The next v3-shaped Activity id, mirroring the released ``_next_id``."""
+
+    largest = max(
+        (int(str(event["legacy_event_id"])[2:]) for event in physical.streams["activity"]),
+        default=0,
+    )
+    return f"E-{largest + 1:06d}"

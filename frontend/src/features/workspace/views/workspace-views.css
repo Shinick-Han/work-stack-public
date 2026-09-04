@@ -772,3 +772,168 @@
 @media (prefers-reduced-motion: reduce) {
   .wsv-root * { transition: none !important; }
 }
+
+/* Non-destructive Graph empty state: the canvas below stays mounted so its
+   viewport survives a nonempty -> empty -> nonempty projection change. */
+.wsv-graph-empty-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  text-align: center;
+  padding: 1rem;
+  /* --wsv-surface is not defined anywhere, so the old literal fallback was
+     always used, even on the dark theme. Same 86% translucency, themed. */
+  background: color-mix(in srgb, var(--wsv-panel) 86%, transparent);
+}
+
+.wsv-graph-empty-overlay strong { font-size: 0.95rem; }
+.wsv-graph-empty-overlay span { font-size: 0.82rem; opacity: 0.75; }
+.wsv-graph:focus-visible { outline: 2px solid var(--wsv-relation-alignment, currentColor); outline-offset: -2px; }
+
+/* Shared prerequisite context panel. Presentation only: it owns no state and
+   never changes the projection, filters or canonical data. */
+.wsv-prereq { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem 0; }
+.wsv-prereq__header h3 { font-size: 0.9rem; margin: 0; }
+.wsv-prereq__anchor-title { margin: 0; font-size: 0.82rem; opacity: 0.75; }
+.wsv-prereq__empty { margin: 0; font-size: 0.82rem; opacity: 0.75; }
+.wsv-prereq__counts,
+.wsv-prereq__list { list-style: none; margin: 0; padding: 0; }
+.wsv-prereq__counts { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.78rem; }
+.wsv-prereq__counts li { display: flex; gap: 0.3rem; align-items: baseline; }
+.wsv-prereq__list li { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; font-size: 0.82rem; padding: 0.15rem 0; }
+.wsv-prereq__id { font-variant-numeric: tabular-nums; font-weight: 600; }
+.wsv-prereq__title { opacity: 0.85; }
+.wsv-prereq__reason { font-size: 0.74rem; opacity: 0.7; }
+.wsv-prereq__reason--completed { color: var(--wsv-relation-dependency, currentColor); }
+.wsv-prereq__reason--missing { color: var(--wsv-relation-reference, currentColor); }
+.wsv-prereq__cap { margin: 0; font-size: 0.76rem; opacity: 0.75; }
+
+
+/* T5 outcome presentation. Derived, non-canonical relationships and scoped
+   Key Result chips are styled distinctly from canonical Task relationships. */
+.outcome-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.outcome-catalog__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.outcome-catalog__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.outcome-catalog__select {
+  display: inline-flex;
+  gap: 0.35rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  padding: 0.1rem 0.5rem;
+}
+
+.outcome-catalog__select[aria-pressed="true"] {
+  border-color: currentColor;
+}
+
+.outcome-catalog__counts,
+.outcome-catalog__visible,
+.outcome-catalog__progress,
+.outcome-catalog__target,
+.outcome-catalog__status,
+.outcome-catalog__empty {
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+
+.outcome-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.outcome-chip {
+  display: inline-flex;
+  gap: 0.25rem;
+  align-items: baseline;
+  border: 1px dashed currentColor;
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0 0.4rem;
+}
+
+.outcome-chip--unresolved {
+  border-style: dotted;
+  opacity: 0.75;
+}
+
+.outcome-chip--unassigned {
+  border: none;
+  cursor: default;
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+/* Graph key-result presentation. Scoped to the Graph node so no other
+   view's layout or meaning changes. */
+.wsv-graph-node--key-result { border-style: dashed; }
+.wsv-graph-node__outcome { display: grid; gap: 0.15rem; margin: 0.3rem 0 0; font-size: 0.72rem; }
+.wsv-graph-node__outcome div { display: flex; gap: 0.35rem; }
+.wsv-graph-node__outcome dt { opacity: 0.7; }
+.wsv-graph-node__outcome dd { margin: 0; font-variant-numeric: tabular-nums; }
+.workspace-onboarding-banner { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; justify-content: space-between; padding: 0.5rem 0; }
+.workspace-onboarding-banner p { margin: 0; font-size: 0.84rem; opacity: 0.8; }
+
+
+/* GR03/GR04: one geometry and colour contract for the presentation layer.
+   The key-result frame matches GRAPH_NODE_SIZES['key-result'] exactly, and its
+   rows clamp long legitimate title, target and status values instead of
+   growing the node past the size the layout engine was given. */
+:root,
+.wsv-root {
+  --wsv-relation-outcome-task: var(--ws-relation-alignment, currentColor);
+  --wsv-relation-outcome-objective: var(--ws-relation-reference, currentColor);
+  --wsv-minimap-node-key-result: var(--ws-relation-alignment, currentColor);
+}
+
+.wsv-graph-node--key-result {
+  width: 236px;
+  height: 132px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.wsv-graph-node--key-result .wsv-graph-node__title,
+.wsv-graph-node--key-result .wsv-graph-node__eyebrow,
+.wsv-graph-node--key-result .wsv-graph-node__outcome {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+}
+
+.wsv-graph-node--key-result .wsv-graph-node__outcome div {
+  -webkit-line-clamp: 1;
+  white-space: nowrap;
+}

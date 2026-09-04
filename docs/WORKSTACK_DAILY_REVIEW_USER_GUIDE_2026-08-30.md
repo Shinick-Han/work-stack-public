@@ -2,7 +2,7 @@
 
 ## Record today’s execution evidence
 
-1. Open Work Stack and choose **Daily Review** in the left navigation, or press `6` while
+1. Open Work Stack and choose **Daily Review** in the left navigation, or press `7` while
    focus is not inside an input.
 2. Confirm **Review date**. You can select an earlier date, but not a future date.
 3. Choose **Check in now** to record the local start time. **Update time** replaces the

@@ -103,6 +103,14 @@ class CliMainCharacterizationTests(unittest.TestCase):
                 ),
                 {"destination": "new-store", "workspace_id": "workspace", "backup_digest": "digest", "source_preserved": True},
             ),
+            (
+                _arguments("maintenance", "initialize"),
+                "initialize_store",
+                SimpleNamespace(
+                    destination=Path("store"), workspace_id="workspace", store_schema_version=3,
+                ),
+                {"destination": "store", "workspace_id": "workspace", "store_schema_version": 3},
+            ),
         )
         for arguments, function_name, receipt, expected in cases:
             with self.subTest(action=arguments.action):

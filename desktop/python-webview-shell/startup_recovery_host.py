@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
+from brand_assets import inline_mark_markup
 from native_theme import normalize_theme, theme_color
 
 
@@ -118,11 +119,11 @@ def build_startup_recovery_html(
 <style>
 *{{box-sizing:border-box}}html,body{{height:100%;margin:0;background:{theme_color(theme, 'bg.app')};color:{theme_color(theme, 'text.primary')};font:15px system-ui,sans-serif}}
 body{{display:grid;place-items:center;padding:32px}}main{{width:min(620px,100%);padding:32px;border:1px solid {theme_color(theme, 'border.default')};border-radius:18px;background:{theme_color(theme, 'surface.raised')};box-shadow:0 24px 80px {theme_color(theme, 'backdrop')}}}
-.mark{{width:44px;height:44px;display:grid;place-items:center;border-radius:12px;background:{theme_color(theme, 'brand.accent')};color:{theme_color(theme, 'brand.ink')};font-weight:900;font-size:23px}}
+.mark{{width:44px;height:44px;display:grid;place-items:center}}.mark svg{{width:44px;height:44px;display:block}}
 h1{{margin:22px 0 10px;font-size:25px;line-height:1.2}}p{{margin:0;color:{theme_color(theme, 'text.muted')};line-height:1.6}}.note{{margin-top:18px;padding:14px;border-radius:12px;background:{theme_color(theme, 'status.success.surface')};color:{theme_color(theme, 'status.success.text')}}}
 .actions{{display:flex;justify-content:flex-end;gap:10px;margin-top:28px}}button{{min-height:44px;padding:0 18px;border:1px solid {theme_color(theme, 'control.border')};border-radius:11px;background:{theme_color(theme, 'control.bg')};color:{theme_color(theme, 'text.primary')};font:inherit;font-weight:700;cursor:pointer}}
 button.primary{{border-color:{theme_color(theme, 'selection.border')};background:{theme_color(theme, 'brand.accent')};color:{theme_color(theme, 'brand.ink')}}}button:focus-visible{{outline:3px solid {theme_color(theme, 'focus.ring')};outline-offset:3px}}button:disabled{{opacity:.55;cursor:wait}}
-</style></head><body><main><div class="mark" aria-hidden="true">|||</div>
+</style></head><body><main>{inline_mark_markup()}
 <h1>{html.escape(title)}</h1><p>{html.escape(detail)}</p>
 <div class="note">Recovery changes only the connection registry. Work Stack will not edit the previous or failed SSOT.</div>
 <div class="actions"><button id="exit">Exit</button>{restore_button}</div></main>

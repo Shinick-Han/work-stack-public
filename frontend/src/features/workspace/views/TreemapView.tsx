@@ -7,16 +7,21 @@ import type {
   WorkspaceTask,
 } from "./types";
 import { STATUS_LABELS, buildTreemapGroups } from "./viewModels";
+import { buildOutcomeTreemap } from "./keyResultViewModel";
+import type { KeyResultProjection } from "./keyResultModel";
 
 interface TreemapViewProps {
   tasks: readonly WorkspaceTask[];
   objectives: readonly WorkspaceObjective[];
+  /** When supplied, the map groups by outcome instead of Objective alignment. */
+  keyResultProjection?: KeyResultProjection;
   selectedTaskId?: string | null;
   onSelectTask: (taskId: string) => void;
   onSelectObjective: (objectiveId: string) => void;
 }
 
 interface TreemapContentProps {
+  nodeKind?: string;
   depth?: number;
   x?: number;
   y?: number;
@@ -53,13 +58,24 @@ function clipText(value: string, width: number, characterWidth: number) {
   return count > 1 ? `${value.slice(0, count - 1)}…` : "";
 }
 
+/**
+ * GN5: colour identity is a presentation concern. A null Objective is the
+ * Operations bucket and gets a stable colour of its own; no reserved raw
+ * sentinel is written back into the data, and legal IDs keep their colour.
+ */
+function colorIdentity(objectiveId: string | null) {
+  return objectiveId ?? "\u0000operations";
+}
+
 interface TreemapObjectiveGroupProps {
   x: number;
   y: number;
   width: number;
   height: number;
   name: string;
-  objectiveId: string;
+  // GN5: the Operations bucket has no Objective. The typed null reaches the
+  // visual layer and is given its own colour identity there; the data keeps it.
+  objectiveId: string | null;
 }
 
 export function TreemapObjectiveGroup({
@@ -71,7 +87,7 @@ export function TreemapObjectiveGroup({
   objectiveId,
 }: TreemapObjectiveGroupProps) {
   const colorIndex = Math.abs(
-    [...objectiveId].reduce((value, character) => value + character.charCodeAt(0), 0),
+    [...colorIdentity(objectiveId)].reduce((value, character) => value + character.charCodeAt(0), 0),
   );
   return (
     <g>
@@ -102,14 +118,24 @@ export function TreemapObjectiveNavigator({
   groups: readonly TreemapGroup[];
   onSelectObjective: (objectiveId: string) => void;
 }) {
-  const alignedGroups = groups.filter(({ objectiveId }) => objectiveId !== "none" && objectiveId !== "multiple");
+  // NG-R1: a real Objective may legitimately be called "none" or "multiple".
+  // Navigability follows the typed group identity: a top-level Objective node
+  // with an actual Objective ID. The legacy two-level fallback has no nodeKind,
+  // so it keeps excluding its own synthetic buckets by their reserved IDs.
+  const alignedGroups = groups.filter((group) => {
+    const nodeKind = (group as { nodeKind?: string }).nodeKind;
+    if (nodeKind) {
+      return nodeKind === "objective" && typeof group.objectiveId === "string";
+    }
+    return group.objectiveId !== "none" && group.objectiveId !== "multiple";
+  });
   if (!alignedGroups.length) return null;
   return (
     <nav aria-label="Treemap objective navigation" className="wsv-treemap-objectives">
-      {alignedGroups.map(({ objectiveId, name }) => (
+      {alignedGroups.map(({ objectiveId, name, ...group }) => (
         <button
           aria-label={`Focus objective ${objectiveId}`}
-          key={objectiveId}
+          key={(group as { groupKey?: string }).groupKey ?? objectiveId}
           onClick={() => onSelectObjective(objectiveId)}
           title={name}
           type="button"
@@ -122,6 +148,7 @@ export function TreemapObjectiveNavigator({
 }
 
 function TreemapContent({
+  nodeKind,
   depth = 0,
   x = 0,
   y = 0,
@@ -138,7 +165,10 @@ function TreemapContent({
 }: TreemapContentProps) {
   if (width < 2 || height < 2) return null;
 
-  if (depth === 1) {
+  // Typed hierarchies identify their leaves by kind; the legacy two-level
+  // fallback still has its Tasks at depth 2 with no kind supplied.
+  const isTask = nodeKind ? nodeKind === "task" : depth === 2 && Boolean(taskId);
+  if (!isTask && (nodeKind ? nodeKind !== "task" : depth === 1)) {
     return (
       <TreemapObjectiveGroup
         height={height}
@@ -151,7 +181,7 @@ function TreemapContent({
     );
   }
 
-  if (depth !== 2 || !taskId) return null;
+  if (!isTask || !taskId) return null;
   const selected = taskId === selectedTaskId;
   const compact = width < 105 || height < 62;
   const tiny = width < 62 || height < 36;
@@ -205,13 +235,45 @@ function TreemapContent({
 export function TreemapView({
   tasks,
   objectives,
+  keyResultProjection,
   selectedTaskId,
   onSelectTask,
   onSelectObjective,
 }: TreemapViewProps) {
   const groups = useMemo(
-    () => buildTreemapGroups(tasks, objectives),
-    [tasks, objectives],
+    () => {
+      // The legacy grouping is also the source of the existing size formula, so
+      // outcome grouping reuses each Task's already-computed area verbatim.
+      const legacy = buildTreemapGroups(tasks, objectives);
+      if (!keyResultProjection) return legacy;
+      const leafByTaskId = new Map(
+        legacy.flatMap((group) => group.children.map((leaf) => [leaf.taskId, leaf] as const)),
+      );
+      return buildOutcomeTreemap(
+        keyResultProjection,
+        tasks,
+        (task) => leafByTaskId.get(task.id)?.size ?? 1,
+      ).map((objectiveNode) => ({
+        name: objectiveNode.name,
+        nodeKind: objectiveNode.nodeKind,
+        groupKey: objectiveNode.key,
+        // NG-R1: the real nullable identity survives to the navigator. A null
+        // parent is the Operations bucket, never the literal string "none".
+        objectiveId: objectiveNode.objectiveId,
+        children: objectiveNode.children.map((group) => ({
+          name: group.name,
+          nodeKind: group.nodeKind,
+          groupKey: group.key,
+          bucket: group.bucket,
+          objectiveId: group.objectiveId ?? objectiveNode.objectiveId,
+          children: group.children
+            .map((leaf) => leafByTaskId.get(leaf.id))
+            .filter((leaf): leaf is NonNullable<typeof leaf> => Boolean(leaf))
+            .map((leaf) => ({ ...leaf, nodeKind: "task" as const })),
+        })).filter((group) => group.children.length > 0),
+      })).filter((objectiveNode) => objectiveNode.children.length > 0);
+    },
+    [tasks, objectives, keyResultProjection],
   );
 
   if (!groups.length) {
@@ -227,7 +289,9 @@ export function TreemapView({
     <div className="wsv-treemap" aria-label="Tasks grouped by objective">
       <ResponsiveContainer width="100%" height="100%">
         <Treemap
-          data={groups as TreemapGroup[]}
+          // Recharts consumes a plain tree; views/types.ts is not owned here,
+          // so the typed hierarchy crosses that boundary with one narrow cast.
+          data={groups as unknown as TreemapGroup[]}
           dataKey="size"
           nameKey="name"
           aspectRatio={4 / 3}
@@ -240,7 +304,7 @@ export function TreemapView({
           }
         />
       </ResponsiveContainer>
-      <TreemapObjectiveNavigator groups={groups} onSelectObjective={onSelectObjective} />
+      <TreemapObjectiveNavigator groups={groups as unknown as TreemapGroup[]} onSelectObjective={onSelectObjective} />
       <div className="wsv-treemap-legend" aria-label="Priority legend">
         {Object.entries(PRIORITY_COLORS).map(([priority, color]) => (
           <span key={priority}>

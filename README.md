@@ -2,7 +2,7 @@
 
 Work Stack is a local-first, goal-aligned personal execution system. It keeps
 objectives, planning tasks, work logs, notes, and sanitized external context in one
-workspace and presents the same task model through Graph, Board, and Treemap views.
+workspace and presents the same task model through Graph, Board, Treemap, and Table views.
 The Context Inbox lets a user review a sanitized capture, link it to an existing task,
 turn an action item into a new task, or create a task directly from the source.
 
@@ -13,22 +13,18 @@ objectives → planning tasks → daily records → weekly roll-up
 
 ## Download the Windows installer
 
-The current signed-off installer remains the immutable v1.0.5 release:
+The current installer is Work Stack **1.0.7**:
 
-- [`WorkStack-Setup-1.0.5.ps1`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.5/WorkStack-Setup-1.0.5.ps1)
-- [`WorkStack-Setup-1.0.5.ps1.sha256`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.5/WorkStack-Setup-1.0.5.ps1.sha256)
-- [`workstack-update.json`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.5/workstack-update.json)
+- [`WorkStack-Setup-1.0.7.ps1`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/WorkStack-Setup-1.0.7.ps1)
+- [`WorkStack-Setup-1.0.7.ps1.sha256`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/WorkStack-Setup-1.0.7.ps1.sha256)
+- [`workstack-update.json`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/workstack-update.json)
 
-The same verified assets are committed under [`installer/`](installer/). The source
-snapshot on `main` is newer and currently targets v1.0.6; it does not replace the
-published installer until the v1.0.6 release gate and immutable artifact build finish.
-The target machine needs neither Python nor Node.js. This build is not code-signed, so
-the checksum proves transfer integrity rather than publisher identity.
+Installer SHA-256: `c626ad88209585038ca6eca8d94a465cbf548573e01a3a354de652a86bd27edd`
 
-A Korean install and usage guide for the **1.0.7** desktop is
+The same verified assets are committed under [`installer/`](installer/). The target machine needs neither Python nor Node.js. This build is not code-signed, so the checksum proves transfer integrity rather than publisher identity.
+
+A Korean install and usage guide is
 [docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md](docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md).
-This repository does not yet publish a v1.0.7 GitHub Release. Use that guide only with a
-verified `WorkStack-Setup-1.0.7.ps1` and its `.sha256` sidecar.
 
 This prototype is intentionally a thin local product shell. Activepieces and the
 Conduit runtime are not embedded. Work Stack owns `PlanningTask`; a future Conduit
@@ -82,31 +78,42 @@ Snapshot export pins Unicode Standard 17.0.0 through the hash-locked
 
 ## Windows one-file setup
 
+The Korean install, first-launch, desktop usage, connection-registry, CLI, backup, update, and uninstall
+guide for this 1.0.7 product is
+[docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md](docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md).
+
 The current prototype installer bundles the official 64-bit Python 3.12.10 embeddable
 runtime, the hash-locked Unicode wheel, and a pinned pywebview/pythonnet desktop host.
-The Start-menu shortcut launches the bundled PSF-signed `pythonw.exe` directly; the Work Stack UI owns the
-window and Context Inbox owns the embedded Outlook, Teams, or OneNote viewport. Build the React UI, then create one
-self-contained PowerShell setup file:
+The Start-menu and desktop shortcuts target `WorkStack.exe` at the installation root: a branded
+x64 host that the builder compiles from `desktop\python-webview-shell\WorkStackHost.cs` with the
+pinned .NET Framework 4 `csc.exe`, and that runs the bundled CPython desktop entry in-process
+through one `Py_Main` call against `runtime\python312.dll`. It is not a launcher (it never
+spawns `pythonw.exe`), and the build applies no code signature to it, so it is unsigned like
+the setup artifact below. The bundled `runtime\pythonw.exe` stays in the payload only so that
+links written by earlier installations keep working; a newly written link never targets it.
+The Work Stack UI owns the window and Context Inbox owns the embedded Outlook, Teams, or
+OneNote viewport. Build the React UI, then create one self-contained PowerShell setup file:
 
 ```powershell
 npm --prefix frontend run build
 powershell -ExecutionPolicy Bypass -File scripts\windows\Build-WindowsInstaller.ps1
 ```
 
-Run the generated `.artifacts\WorkStack-Setup-1.0.6.ps1`. The target machine needs neither
+Run the generated `.artifacts\WorkStack-Setup-<version>.ps1`, where `<version>` is the
+`__version__` literal in `workstack/__init__.py`. The target machine needs neither
 Python nor Node.js, and installation does not contact the network. It installs the bundled
 runtime under `%LOCALAPPDATA%\Programs\WorkStack`, keeps planning data and versioned backups
 under `%LOCALAPPDATA%\WorkStack`, and adds a Start menu shortcut. Re-running a new setup
 artifact stops only the matching installed Work Stack process, writes a verified pre-upgrade
 backup, and replaces the application while preserving data.
 
-The builder also writes `WorkStack-Setup-1.0.6.ps1.sha256` and `workstack-update.json`. Keep the
+The builder also writes `WorkStack-Setup-<version>.ps1.sha256` and `workstack-update.json`. Keep the
 checksum beside the setup artifact
 and verify both the filename and digest before execution:
 
 ```powershell
 .\scripts\windows\Test-WorkStackSetup.ps1 `
-  -SetupPath .\.artifacts\WorkStack-Setup-1.0.6.ps1
+  -SetupPath .\.artifacts\WorkStack-Setup-<version>.ps1
 ```
 
 This is transfer-integrity evidence, not publisher authentication. The prototype remains unsigned
@@ -118,13 +125,16 @@ Pass `-RemoveData` only when the local data and backups should also be deleted.
 `Update-WorkStack.ps1` requires the adjacent checksum sidecar and runs the strict verifier before
 it reads the installed configuration or invokes the selected setup artifact.
 
-The Windows desktop checks the stable public GitHub release channel once at startup. By default it
-downloads only an exact allowlisted installer whose version, filename, size, SHA-256 digest, and
-sidecar agree with `workstack-update.json`; a verified update is applied after Work Stack closes so
-the local server or SSH tunnel can stop cleanly. The existing pre-upgrade backup and rollback path
-remains authoritative. Automatic checking, download, and install-on-exit can each be disabled from
-the **Work Stack updates** dialog. This prototype integrity chain still does not replace a trusted
-Windows publisher signature.
+The Windows desktop checks the stable public GitHub release channel once at startup. Its three
+settings, **Check automatically**, **Download automatically**, and **Install when Work Stack
+closes**, are all enabled by default. With the defaults it downloads only an exact allowlisted
+installer whose version, filename, size, SHA-256 digest, and sidecar agree with
+`workstack-update.json`; a verified update is applied only after Work Stack closes, so the local
+server or SSH tunnel can stop cleanly, and never while the application is running. The existing
+pre-upgrade backup and rollback path remains authoritative. Each setting can be disabled from the
+**Work Stack updates** dialog, which saves them to `%LOCALAPPDATA%\WorkStack\update-settings.json`;
+an unreadable or malformed settings file disables all three. This prototype integrity chain still
+does not replace a trusted Windows publisher signature.
 
 ## Build and run
 
@@ -203,6 +213,11 @@ same data directory. `WORK_STACK_RUNTIME` may separately override the directory 
 holds ephemeral server discovery metadata and the per-process capture token.
 
 ## Linux SSOT over SSH
+
+On 1.0.7 the desktop **connection registry** is the authority (`Configure SSOT connections`).
+`Configure-WorkStackRemote.ps1` still writes only the generated `remote-connection.json` mirror
+and does not change the active profile. See
+[docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md](docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md) §6.
 
 The Windows desktop can use a protected Linux Work Stack store without mounting it and without
 running a permanent daemon. While the desktop window is open, it owns one strict OpenSSH session,
@@ -315,8 +330,19 @@ its own zoom level across restarts. Capturing content remains an explicit user a
 
 ## Other CLI examples
 
-Run these only while the web server for the same data directory is stopped; the server
-holds the sole writer lease for its lifetime.
+The web server holds the data directory's writer lease for its lifetime and advertises its
+loopback address in `.workstack-server.json` inside that directory. While that file exists,
+the following commands do not open the store locally: they forward the write over HTTP to the
+running owner, and they fail closed (exit 2) instead of writing locally if the advertisement
+is unreadable or the owner refuses: `note`, `okr add-objective`, `okr add-key-result`,
+`okr link`, `okr progress`, `backlog add`, `backlog note`, `backlog start|done|drop|reopen`,
+`backlog subtask add|start|done|drop|reopen`, `worklog checkin`, and `worklog add`. When the
+server is stopped it removes the advertisement, and the same commands write to the local
+store directly under a short-lived lease. Every other command (`backlog list|show`,
+`okr list|rollup`, `worklog list`, `weekly`, `snapshot`, `graph export`, `maintenance ...`)
+still opens the store locally, so while the server runs it refuses with `the Work Stack data
+directory is already owned by another writer`. `worklog checkpoint-state`, `capture`, and
+`agent apply` have no local form and require the running server.
 
 ```powershell
 python run_work_stack.py okr add-objective "Improve delivery quality"

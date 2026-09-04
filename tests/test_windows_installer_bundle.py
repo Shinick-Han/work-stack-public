@@ -84,7 +84,13 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
 
         installer = self.read("Install-WorkStack.ps1")
         self.assertRegex(installer, r"(?i)runtime\\python\.exe")
-        self.assertIn("One-time compatibility", installer)
+
+    def test_upgrade_backup_uses_the_smoke_tested_staged_runtime(self) -> None:
+        installer = self.read("Install-WorkStack.ps1")
+
+        self.assertIn("$stagedEntry = Join-Path $staging 'run_work_stack.py'", installer)
+        self.assertIn("& $stagedPython $stagedEntry --data-dir $dataPath maintenance backup", installer)
+        self.assertNotIn("& $installedPython $installedEntry --data-dir", installer)
 
     def test_stop_launcher_is_compatible_with_windows_powershell_51(self) -> None:
         script = self.read("Stop-WorkStack.ps1")
@@ -92,7 +98,10 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn(".IndexOf($entryPath, [StringComparison]::OrdinalIgnoreCase)", script)
         self.assertIn("runtime\\pythonw.exe", script)
         self.assertIn("desktop\\python-webview-shell\\workstack_desktop.py", script)
-        self.assertIn(".IndexOf($desktopEntryPath, [StringComparison]::OrdinalIgnoreCase)", script)
+        # Desktop ownership is now decided by parsed argv positions rather than an
+        # incidental substring, for both the branded host and the legacy pythonw.
+        self.assertIn("Test-WorkStackDesktopInvocation", script)
+        self.assertIn("-ExpectedEntry $desktopEntryPath", script)
         self.assertIn("$ownsServer -or $ownsDesktop", script)
         self.assertNotIn(".Contains($entryPath, [StringComparison]::OrdinalIgnoreCase)", script)
 
@@ -111,6 +120,18 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
 
         self.assertIn("Join-Path $staging 'scripts\\windows\\Stop-WorkStack.ps1'", script)
         self.assertNotIn("Join-Path $installPath 'scripts\\windows\\Stop-WorkStack.ps1'", script)
+
+    def test_successful_upgrade_retries_locked_rollback_cleanup_without_reverting_install(self) -> None:
+        script = self.read("Install-WorkStack.ps1")
+
+        self.assertIn("function Remove-DirectoryWithRetry", script)
+        self.assertIn("[int]$Attempts = 20", script)
+        self.assertIn("Start-Sleep -Milliseconds $DelayMilliseconds", script)
+        self.assertIn("Work Stack was installed, but the previous runtime is still locked", script)
+        self.assertNotIn(
+            "if (Test-Path -LiteralPath $rollback) { Remove-Item -LiteralPath $rollback -Recurse -Force }",
+            script,
+        )
 
     def test_launcher_reports_exact_server_ownership_and_quotes_paths(self) -> None:
         start = self.read("Start-WorkStack.ps1")
@@ -251,12 +272,38 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertLess(verify_index, restore_index)
 
     def test_installer_and_uninstaller_manage_the_maintenance_shortcut(self) -> None:
+        """The behavioural check is unchanged; the link definitions moved.
+
+        Install now delegates to the extracted shortcut helper, so the
+        maintenance link is declared there rather than inline. The uninstaller
+        still owns its own removal side.
+        """
+
         installer = self.read("Install-WorkStack.ps1")
+        helper = self.read("WorkStack-Shortcuts.ps1")
         uninstaller = self.read("Uninstall-WorkStack.ps1")
 
-        self.assertIn("Work Stack Maintenance.lnk", installer)
-        self.assertIn("Maintain-WorkStack.ps1", installer)
+        self.assertIn("Invoke-WorkStackShortcutFinalization", installer)
+        self.assertIn("Work Stack Maintenance.lnk", helper)
+        self.assertIn("Maintain-WorkStack.ps1", helper)
         self.assertIn("Work Stack Maintenance.lnk", uninstaller)
+
+    def test_uninstaller_only_removes_shortcuts_owned_by_its_install_root(self) -> None:
+        uninstaller = self.read("Uninstall-WorkStack.ps1")
+
+        self.assertIn("function Remove-OwnedShortcut", uninstaller)
+        self.assertIn("$shortcut.TargetPath", uninstaller)
+        self.assertIn("$shortcut.Arguments", uninstaller)
+        self.assertIn("[StringComparison]::OrdinalIgnoreCase", uninstaller)
+        # Both the branded host and the legacy launcher are recognised targets.
+        self.assertIn("-ExpectedTargets $desktopTargets", uninstaller)
+        self.assertIn("-ExpectedArgumentPath $desktopEntry", uninstaller)
+        self.assertIn("-ExpectedArgumentPath $maintenanceScript", uninstaller)
+        self.assertIn("Preserving shortcut whose Work Stack ownership could not be verified", uninstaller)
+        self.assertNotIn(
+            "if (Test-Path -LiteralPath $desktopShortcut) { Remove-Item",
+            uninstaller,
+        )
 
     def test_primary_shortcut_uses_the_signed_windowless_python_host_directly(self) -> None:
         installer = self.read("Install-WorkStack.ps1")
@@ -276,15 +323,27 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn("browser-profile", launcher)
         self.assertGreaterEqual(launcher.count("Open-WorkStackBrowser -Url $url -ProfileRoot $browserProfilePath"), 2)
 
-    def test_primary_shortcuts_use_the_generated_product_icon(self) -> None:
-        installer = self.read("Install-WorkStack.ps1")
+    def test_primary_shortcuts_use_the_packaged_product_icon(self) -> None:
+        """The icon source changed; the behavioural check does not.
 
-        self.assertIn("New-WorkStackIcon", installer)
-        self.assertIn("WorkStack.ico", installer)
-        self.assertIn("IconLocation", installer)
-        self.assertIn("GetFolderPath('Desktop')", installer)
-        self.assertIn("FromArgb(184, 242, 75)", installer)
-        self.assertNotIn("FromArgb(174, 235, 61)", installer)
+        Links still carry an IconLocation and the desktop folder is still
+        resolved. What changed is that the icon is now the packaged versioned
+        asset rather than a GDI-generated root file, and the link definitions
+        live in the extracted helper.
+        """
+
+        installer = self.read("Install-WorkStack.ps1")
+        helper = self.read("WorkStack-Shortcuts.ps1")
+
+        # The obsolete generator and its root output are gone.
+        self.assertNotIn("New-WorkStackIcon", installer)
+        self.assertNotIn("WorkStack.ico", installer)
+        self.assertNotIn("System.Drawing", installer)
+
+        self.assertIn("IconLocation", helper)
+        self.assertIn("GetFolderPath('Desktop')", helper)
+        self.assertIn("WorkStack-Mark-Lime-v2.ico", helper)
+        self.assertIn("'{0},0' -f", helper)
 
     def test_installer_writes_configuration_as_utf8_without_bom(self) -> None:
         installer = self.read("Install-WorkStack.ps1")

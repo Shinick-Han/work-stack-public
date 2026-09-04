@@ -1,4 +1,5 @@
 import { WorkspaceViews } from 'features/workspace/views'
+import { KeyResultCatalog } from './views/KeyResultPresentation'
 import { Button, EmptyState, IconButton, Pill } from '../../components/Primitives'
 import { Icon } from '../../components/Icon'
 import {
@@ -10,7 +11,13 @@ import {
   type WorkspaceProjection,
 } from '../../domain/types'
 import { getObjectiveTitle, statusLabels } from '../../utils/format'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  decodeOutcomeFilter,
+  encodeOutcomeFilter,
+  normalizeOutcomeFilter,
+  projectKeyResults,
+} from './views/keyResultModel'
 import {
   filterCoordinates,
   readSavedFilters,
@@ -18,6 +25,14 @@ import {
   writeSavedFilters,
 } from './savedFilters'
 import { filterWorkspaceTasks } from './views/viewModels'
+import {
+  normalizeDoneVisibility,
+  projectCompletedTaskVisibility,
+  completedVisibilityScopeKey,
+  type CompletedVisibilityReveal,
+  type DoneVisibility,
+} from './views/completedTaskVisibility'
+import { TaskPrerequisiteContext } from './views/TaskPrerequisiteContext'
 import { useLocalToday } from '../focus/useLocalToday'
 
 type SavedViewEditor = {
@@ -108,39 +123,208 @@ export function WorkspacePage({
   )
   const aligned = workspace.tasks.filter((task) => task.objective_ids.length > 0).length
   const selectedView = viewMeta[state.view]
+  // The URL state type keeps the coordinate optional for compatibility; the
+  // Page narrows it once so every reader below sees a concrete value.
+  const outcomeFilter = normalizeOutcomeFilter(state.outcomeFilter)
   const hasActiveFilters = Boolean(
     state.search
     || state.status !== 'all'
     || state.priority !== 'all'
     || state.readiness !== 'all'
     || state.timing !== 'all'
-    || state.objectiveId !== 'all',
+    || state.objectiveId !== 'all'
+    || outcomeFilter.kind !== 'all',
   )
+  // One memoized options projection for this render; Slice B reuses the same
+  // call with the projection's visibleTasks.
   const activeFilterCount = [
     state.status !== 'all',
     state.priority !== 'all',
     state.readiness !== 'all',
     state.timing !== 'all',
     state.objectiveId !== 'all',
+    outcomeFilter.kind !== 'all',
   ].filter(Boolean).length
-  const filteredTaskCount = useMemo(() => filterWorkspaceTasks(workspace.tasks, {
-    search: state.search,
-    status: state.status,
-    priority: state.priority,
-    readiness: state.readiness,
-    timing: state.timing,
-    today,
-    objectiveId: state.objectiveId,
-  }).length, [
+  // Transient Graph interaction identities. They live only here, never in the
+  // URL, storage, Task fields or saved filters.
+  const [contextTargetTaskId, setContextTargetTaskId] = useState<string | null>(null)
+  const [focusPinnedTaskId, setFocusPinnedTaskId] = useState<string | null>(null)
+
+  /**
+   * Focus must never be dropped on the document body when a view-local surface
+   * goes away. This hands it to the active view tab, which survives both a view
+   * change and canonical deletion, and only when focus was actually lost.
+   */
+  const handOffLostFocus = useCallback((force = false) => {
+    if (typeof document === 'undefined') return
+    // A normal click that already focused a surviving control is left alone;
+    // canonical deletion forces the handoff because its target is gone.
+    if (!force && document.activeElement && document.activeElement !== document.body) return
+    const fallback = document.querySelector<HTMLElement>('[data-workspace-focus-fallback]')
+    if (!fallback) return
+    if (!fallback.hasAttribute('tabindex')) fallback.setAttribute('tabindex', '-1')
+    fallback.focus()
+  }, [])
+
+  // Leaving Graph releases its view-local popup and focus identities after a
+  // deliberate handoff. This runs for externally updated view state and history
+  // too, not only the view click handler. The shell selection is untouched.
+  useEffect(() => {
+    if (state.view === 'graph') return
+    if (!contextTargetTaskId && !focusPinnedTaskId) return
+    setContextTargetTaskId(null)
+    setFocusPinnedTaskId(null)
+    handOffLostFocus()
+  }, [state.view, contextTargetTaskId, focusPinnedTaskId, handOffLostFocus])
+
+  // A pinned Task that leaves the canonical set entirely releases its reasons;
+  // completion or visibility filtering alone never reaches here.
+  const canonicalIds = useMemo(
+    () => new Set(workspace.tasks.map((item) => item.id)),
+    [workspace.tasks],
+  )
+  useEffect(() => {
+    const staleContext = contextTargetTaskId && !canonicalIds.has(contextTargetTaskId)
+    const staleFocus = focusPinnedTaskId && !canonicalIds.has(focusPinnedTaskId)
+    if (!staleContext && !staleFocus) return
+    if (staleContext) setContextTargetTaskId(null)
+    if (staleFocus) setFocusPinnedTaskId(null)
+    handOffLostFocus(true)
+  }, [canonicalIds, contextTargetTaskId, focusPinnedTaskId, handOffLostFocus])
+
+  /**
+   * The single authoritative projection. The summary and every renderer read
+   * this same value in the same render, so no second filter or effect-delayed
+   * count reconciliation can disagree with the canvas.
+   */
+  // View-local reasons belong to Graph. Scoping them here, rather than only in
+  // a passive effect, keeps the FIRST committed tree of a new view correct.
+  const activeContextTargetTaskId = state.view === 'graph' ? contextTargetTaskId : null
+  const activeFocusPinnedTaskId = state.view === 'graph' ? focusPinnedTaskId : null
+
+  // Frozen routine decision: an actually open Graph context popup is the
+  // prerequisite anchor, independently of shell selection; otherwise the
+  // selected Task; otherwise there is no anchor.
+  const prerequisiteAnchorTaskId = activeContextTargetTaskId ?? state.taskId ?? null
+
+  // Transient reveal request. It is never written to the URL, storage or a Task,
+  // and the projection normalizes it against the current scope and anchor, so a
+  // stale request is excluded in the FIRST committed render rather than later.
+  const [revealRequest, setRevealRequest] = useState<CompletedVisibilityReveal | null>(null)
+
+  const projection = useMemo(() => projectCompletedTaskVisibility({
+    tasks: workspace.tasks,
+    filters: {
+      search: state.search,
+      status: state.status,
+      priority: state.priority,
+      readiness: state.readiness,
+      timing: state.timing,
+      today,
+      objectiveId: state.objectiveId,
+      outcome: state.outcomeFilter,
+    },
+    view: state.view,
+    doneVisibility: state.doneVisibility,
+    selectedTaskId: state.taskId,
+    contextTargetTaskId: activeContextTargetTaskId,
+    focusPinnedTaskId: activeFocusPinnedTaskId,
+    prerequisiteAnchorTaskId,
+    reveal: revealRequest,
+  }), [
     state.objectiveId,
+    state.outcomeFilter,
     state.priority,
     state.readiness,
     state.timing,
     state.search,
     state.status,
+    state.view,
+    state.doneVisibility,
+    state.taskId,
+    activeContextTargetTaskId,
+    activeFocusPinnedTaskId,
+    prerequisiteAnchorTaskId,
+    revealRequest,
     today,
     workspace.tasks,
   ])
+
+  // Adopt the normalized reveal so a target dropped from eligibility cannot
+  // reappear on its own if it becomes Done again later.
+  const normalizedReveal = projection.reveal
+  useEffect(() => {
+    setRevealRequest((current) => {
+      if (current === normalizedReveal) return current
+      if (!current && !normalizedReveal) return current
+      if (
+        current
+        && normalizedReveal
+        && current.anchorTaskId === normalizedReveal.anchorTaskId
+        && current.scopeKey === normalizedReveal.scopeKey
+        && current.taskIds.length === normalizedReveal.taskIds.length
+        && current.taskIds.every((id, index) => id === normalizedReveal.taskIds[index])
+      ) {
+        return current
+      }
+      return normalizedReveal
+    })
+  }, [normalizedReveal])
+
+  const revealPrerequisites = (taskIds: readonly string[]) => {
+    if (!prerequisiteAnchorTaskId) return
+    setRevealRequest({
+      anchorTaskId: prerequisiteAnchorTaskId,
+      scopeKey: revealScopeKey,
+      taskIds,
+    })
+  }
+
+  const revealScopeKey = completedVisibilityScopeKey(
+    state.view,
+    {
+      search: state.search,
+      status: state.status,
+      priority: state.priority,
+      readiness: state.readiness,
+      timing: state.timing,
+      today,
+      objectiveId: state.objectiveId,
+      outcome: state.outcomeFilter,
+    },
+    normalizeDoneVisibility(state.doneVisibility),
+  )
+  // ONE Page-owned projector for this render: the options list, the shared
+  // catalog and every renderer read the same projection.
+  const keyResultProjection = useMemo(
+    () => projectKeyResults({
+      workspaceId: workspace.workspace.id,
+      tasks: workspace.tasks,
+      // The canonical Tasks that the existing completed projection kept visible.
+      visibleTasks: workspace.tasks.filter(
+        (item) => projection.visibleTasks.some((visible) => visible.id === item.id),
+      ),
+      objectives: workspace.objectives,
+    }),
+    [workspace.workspace.id, workspace.tasks, workspace.objectives, projection.visibleTasks],
+  )
+  // Outcomes exist independently of Tasks: an Objective with key results is
+  // enough to render a useful Graph even before the first Task.
+  const hasOutcomeCatalog = keyResultProjection.keyResults.length > 0
+  const outcomeNodes = keyResultProjection.keyResults
+  const outcomeValue = encodeOutcomeFilter(outcomeFilter) ?? 'all'
+  const selectedPair = outcomeFilter.kind === 'pair' ? outcomeFilter : null
+  // A stored pair with no uniquely resolvable node stays filterable as a
+  // reference rather than becoming Unassigned or a fabricated KR node.
+  const unresolvedSelected = selectedPair && !outcomeNodes.some(
+    (node) => node.objectiveId === selectedPair.objectiveId
+      && node.keyResultId === selectedPair.keyResultId,
+  )
+    ? selectedPair
+    : null
+  const selectOutcome = (selection: { objectiveId: string; keyResultId: string }) => updateUrl({
+    outcomeFilter: { kind: 'pair', ...selection },
+  })
   const [savedFilters, setSavedFilters] = useState(readSavedFilters)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const filterTriggerRef = useRef<HTMLButtonElement>(null)
@@ -228,7 +412,12 @@ export function WorkspacePage({
             label="Refresh workspace"
             onClick={onRefresh}
           />
-          <Button icon="plus" onClick={onCreateTask} variant="primary">New task</Button>
+          <Button
+            data-workspace-focus-fallback=""
+            icon="plus"
+            onClick={onCreateTask}
+            variant="primary"
+          >New task</Button>
         </div>
       </header>
 
@@ -239,7 +428,19 @@ export function WorkspacePage({
         <div className={blocked ? 'metric-attention' : ''}><span>Blocked</span><strong>{blocked}</strong><small>{critical} P0 active tasks</small></div>
       </div>
 
-      {workspace.tasks.length ? <>
+      {/* A zero-Task workspace that already has outcomes still shows the Graph
+          catalog, so no onboarding overlay covers usable key results. The
+          onboarding actions stay reachable in the banner just below. */}
+      {!workspace.tasks.length && hasOutcomeCatalog ? (
+        <div className="workspace-onboarding-banner">
+          <p>No Tasks yet. Your outcomes are shown below.</p>
+          <div className="workspace-onboarding-actions">
+            <Button icon="target" onClick={onOpenObjectives} variant="primary">Define an objective</Button>
+            <Button icon="plus" onClick={onCreateTask}>Create first task</Button>
+          </div>
+        </div>
+      ) : null}
+      {workspace.tasks.length || hasOutcomeCatalog ? <>
       <div className="workspace-toolbar">
         <div className="view-tabs" aria-label="Workspace view" role="tablist">
           {WORKSPACE_VIEWS.map((view) => (
@@ -286,11 +487,37 @@ export function WorkspacePage({
             <span className="sr-only">Filter by status</span>
             <select
               aria-label="Filter by status"
-              onChange={(event) => updateUrl({ status: event.target.value as AppUrlState['status'] })}
+              onChange={(event) => {
+                const status = event.target.value as AppUrlState['status']
+                // Explicit All is the one atomic status+visibility action.
+                updateUrl(status === 'all'
+                  ? { status: 'all', doneVisibility: 'show' }
+                  : { status })
+              }}
               value={state.status}
             >
               <option value="all">All statuses</option>
               {TASK_STATUSES.map((status) => <option key={status} value={status}>{statusLabels[status]}</option>)}
+            </select>
+            <Icon name="chevronDown" size={14} />
+          </label>
+          <label>
+            <span className="sr-only">Completed task visibility</span>
+            <select
+              aria-label="Completed task visibility"
+              onChange={(event) => {
+                const doneVisibility = event.target.value as DoneVisibility
+                // Choosing hide while the status filter is Done would contradict
+                // itself, so that one case moves status back to all atomically.
+                updateUrl(doneVisibility === 'hide' && state.status === 'done'
+                  ? { doneVisibility, status: 'all' }
+                  : { doneVisibility })
+              }}
+              value={normalizeDoneVisibility(state.doneVisibility)}
+            >
+              <option value="default">Completed: hidden by default</option>
+              <option value="hide">Completed: always hidden</option>
+              <option value="show">Completed: shown</option>
             </select>
             <Icon name="chevronDown" size={14} />
           </label>
@@ -350,12 +577,51 @@ export function WorkspacePage({
             </select>
             <Icon name="chevronDown" size={14} />
           </label>
+          <label>
+            <span className="sr-only">Filter by outcome</span>
+            <select
+              aria-label="Filter by outcome"
+              onChange={(event) => updateUrl({
+                outcomeFilter: decodeOutcomeFilter(
+                  event.target.value === 'all' ? null : event.target.value,
+                ),
+              })}
+              value={outcomeValue}
+            >
+              <option value="all">All outcomes</option>
+              <option value="unassigned">Unassigned outcome</option>
+              {outcomeNodes.map((node) => (
+                <option
+                  key={node.key}
+                  value={JSON.stringify(['pair', node.objectiveId, node.keyResultId])}
+                >
+                  {node.objectiveId} · {node.keyResultId} — {node.text}
+                </option>
+              ))}
+              {unresolvedSelected ? (
+                <option value={JSON.stringify(['pair', unresolvedSelected.objectiveId, unresolvedSelected.keyResultId])}>
+                  {unresolvedSelected.objectiveId} · {unresolvedSelected.keyResultId} — unresolved outcome
+                </option>
+              ) : null}
+            </select>
+            <Icon name="chevronDown" size={14} />
+          </label>
           </div> : null}
         </div>
       </div>
 
       <div className="active-filter-row">
-        <span>{hasActiveFilters ? `${filteredTaskCount} of ${workspace.tasks.length}` : workspace.tasks.length} tasks · {workspace.edges.length} relationships</span>
+        <span>
+          {`${projection.counts.visible} of ${projection.counts.canonicalTotal}`} tasks shown
+          {projection.counts.hiddenCompleted
+            ? ` · ${projection.counts.hiddenCompleted} completed hidden`
+            : ''}
+          {projection.counts.retained
+            ? ` · ${projection.counts.retained} kept open`
+            : ''}
+          {' · '}
+          {workspace.edges.length} canonical relationships
+        </span>
         <span className="saved-filter-controls">
           <select
             aria-label="Saved filters"
@@ -417,15 +683,36 @@ export function WorkspacePage({
         {state.status !== 'all' ? <ActiveFilterChip clearLabel={`Clear status filter ${statusLabels[state.status]}`} label={statusLabels[state.status]} onClear={() => updateUrl({ status: 'all' })} tone={state.status} /> : null}
         {state.priority !== 'all' ? <ActiveFilterChip clearLabel={`Clear priority filter ${state.priority}`} label={state.priority} onClear={() => updateUrl({ priority: 'all' })} tone={state.priority.toLowerCase()} /> : null}
         {state.readiness !== 'all' ? <ActiveFilterChip clearLabel={`Clear readiness filter ${readinessLabels[state.readiness]}`} label={readinessLabels[state.readiness]} onClear={() => updateUrl({ readiness: 'all' })} tone={state.readiness === 'blocked' ? 'warning' : 'success'} /> : null}
+        {outcomeFilter.kind !== 'all' ? <ActiveFilterChip
+          clearLabel="Clear outcome filter"
+          label={selectedPair
+            ? `Outcome ${selectedPair.objectiveId} · ${selectedPair.keyResultId}`
+            : 'Unassigned outcome'}
+          onClear={() => updateUrl({ outcomeFilter: { kind: 'all' } })}
+          tone="accent"
+        /> : null}
         {state.timing !== 'all' ? <ActiveFilterChip clearLabel={`Clear due timing filter ${timingLabels[state.timing]}`} label={timingLabels[state.timing]} onClear={() => updateUrl({ timing: 'all' })} tone={state.timing === 'overdue' ? 'warning' : state.timing === 'today' ? 'accent' : 'neutral'} /> : null}
         {hasActiveFilters ? (
           <button
             className="text-button"
-            onClick={() => updateUrl({ search: '', status: 'all', priority: 'all', readiness: 'all', timing: 'all', objectiveId: 'all' })}
+            onClick={() => updateUrl({ search: '', status: 'all', priority: 'all', readiness: 'all', timing: 'all', objectiveId: 'all', outcomeFilter: { kind: 'all' } })}
             type="button"
           >Clear filters</button>
         ) : null}
       </div>
+
+      {/* While the Graph context modal owns the anchor its controls live inside
+          that dialog, so this outside panel is suppressed to avoid a second,
+          inert copy. Both render the same component from the same owner. */}
+      {activeContextTargetTaskId ? null : (
+        <TaskPrerequisiteContext
+          anchorTaskId={prerequisiteAnchorTaskId}
+          onClearReveal={() => setRevealRequest(null)}
+          onOpenTask={(taskId) => updateUrl({ taskId, captureId: null })}
+          onReveal={revealPrerequisites}
+          projection={projection}
+        />
+      )}
 
       <div className="workspace-canvas">
         <WorkspaceViews
@@ -452,6 +739,23 @@ export function WorkspacePage({
           selectedObjectiveId={state.objectiveId === 'all' ? null : state.objectiveId}
           status={state.status}
           tasks={workspace.tasks}
+          projection={projection}
+          keyResultProjection={keyResultProjection}
+          onSelectOutcome={selectOutcome}
+          outcome={outcomeFilter}
+          contextTargetTaskId={activeContextTargetTaskId}
+          focusPinnedTaskId={activeFocusPinnedTaskId}
+          onContextTargetChange={setContextTargetTaskId}
+          onFocusPinChange={setFocusPinnedTaskId}
+          renderPopupPrerequisites={(taskId) => (
+            <TaskPrerequisiteContext
+              anchorTaskId={taskId}
+              onClearReveal={() => setRevealRequest(null)}
+              onOpenTask={(target) => updateUrl({ taskId: target, captureId: null })}
+              onReveal={revealPrerequisites}
+              projection={projection}
+            />
+          )}
           view={state.view}
         />
       </div>
@@ -470,6 +774,11 @@ export function WorkspacePage({
             Objectives describe what success looks like. Tasks carry the next concrete action and
             can be aligned to an Objective now or later. Both remain local planning facts.
           </EmptyState>
+          <KeyResultCatalog
+            keyResults={keyResultProjection.keyResults}
+            onSelectOutcome={selectOutcome}
+            selected={selectedPair}
+          />
         </div>
       )}
     </section>

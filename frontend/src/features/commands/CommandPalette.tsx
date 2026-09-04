@@ -81,23 +81,23 @@ export function CommandPalette({
       run: closeAfter(() => onNavigate({ surface: 'workspace', view: 'treemap' })),
     },
     {
-      id: 'view-table', label: 'Open Table view', description: 'Workspace · shortcut 8', icon: 'table',
+      id: 'view-table', label: 'Open Table view', description: 'Workspace · shortcut 4', icon: 'table',
       run: closeAfter(() => onNavigate({ surface: 'workspace', view: 'table' })),
     },
     {
-      id: 'surface-focus', label: 'Open Focus', description: 'Attention queue · shortcut 4', icon: 'target',
+      id: 'surface-focus', label: 'Open Focus', description: 'Attention queue · shortcut 5', icon: 'target',
       run: closeAfter(() => onNavigate({ surface: 'focus' })),
     },
     {
-      id: 'surface-inbox', label: 'Open Context Inbox', description: 'Sanitized captures · shortcut 5', icon: 'inbox',
+      id: 'surface-inbox', label: 'Open Context Inbox', description: 'Sanitized captures · shortcut 6', icon: 'inbox',
       run: closeAfter(() => onNavigate({ surface: 'inbox' })),
     },
     {
-      id: 'surface-review', label: 'Open Daily Review', description: 'Execution evidence · shortcut 6', icon: 'activity',
+      id: 'surface-review', label: 'Open Daily Review', description: 'Execution evidence · shortcut 7', icon: 'activity',
       run: closeAfter(() => onNavigate({ surface: 'review' })),
     },
     {
-      id: 'surface-objectives', label: 'Open Objective Hub', description: 'Goals and KRs · shortcut 7', icon: 'target',
+      id: 'surface-objectives', label: 'Open Objective Hub', description: 'Goals and KRs · shortcut 8', icon: 'target',
       run: closeAfter(() => onNavigate({ surface: 'objectives' })),
     },
     {

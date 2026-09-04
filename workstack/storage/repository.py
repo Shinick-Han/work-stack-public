@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-from ..store import DEFAULTS
+from ..store import DEFAULTS, StoreReadiness
 from .reader import V4ReadResult
 from .semantic import (
     WorkspaceSnapshot,
@@ -37,6 +37,20 @@ class V4ReadOnlyStoreAdapter:
     def __init__(self, snapshot: WorkspaceSnapshot) -> None:
         self._documents = snapshot.to_v3_documents()
         self.generation = 0
+        # The projected read model is already validated, so the adapter
+        # publishes the same content-free readiness a legacy Store exposes
+        # after initialize(); the shared active readers bind the workspace
+        # identity through it (service._workspace_uid).
+        self._readiness = StoreReadiness(
+            schema_version=3,
+            workspace_uid=self._documents["workspace.json"]["id"],
+            task_count=len(self._documents["backlog.json"]["tasks"]),
+            migration_origin="fresh",
+        )
+
+    @property
+    def readiness(self) -> StoreReadiness | None:
+        return self._readiness
 
     def initialize(self) -> None:
         return None

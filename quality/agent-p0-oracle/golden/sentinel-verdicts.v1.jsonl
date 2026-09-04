@@ -1,0 +1,11 @@
+{"expected_verdict":"pass","expected_violation_ids":[],"file":"fixture_good_authority.py","kind":"good","probe":"authority-preflight"}
+{"expected_verdict":"pass","expected_violation_ids":[],"file":"fixture_good_local.py","kind":"good","probe":"idempotent-replay"}
+{"expected_verdict":"pass","expected_violation_ids":[],"file":"fixture_good_transport.py","kind":"good","probe":"idempotent-replay"}
+{"expected_verdict":"pass","expected_violation_ids":[],"file":"fixture_good_transport.py","kind":"good","probe":"no-local-fallback"}
+{"expected_verdict":"pass","expected_violation_ids":[],"file":"fixture_good_transport.py","kind":"good","probe":"output-canary"}
+{"expected_verdict":"violation","expected_violation_ids":["P0-STORE-BEFORE-PREFLIGHT"],"file":"store_before_preflight.py","kind":"mutant","probe":"authority-preflight"}
+{"expected_verdict":"violation","expected_violation_ids":["P0-PREFLIGHT-TREE-MUTATION"],"file":"refusal_writes.py","kind":"mutant","probe":"authority-preflight"}
+{"expected_verdict":"violation","expected_violation_ids":["P0-FRESH-KEY"],"file":"fresh_key_replay.py","kind":"mutant","probe":"idempotent-replay"}
+{"expected_verdict":"violation","expected_violation_ids":["P0-DUPLICATE-WORKLOG"],"file":"duplicate_entry.py","kind":"mutant","probe":"idempotent-replay"}
+{"expected_verdict":"violation","expected_violation_ids":["P0-NO-FALLBACK"],"file":"online_fallback.py","kind":"mutant","probe":"no-local-fallback"}
+{"expected_verdict":"violation","expected_violation_ids":["P0-STDOUT-SINGLE-JSON","P0-SECRET-CANARY-STDOUT"],"file":"stdout_canary.py","kind":"mutant","probe":"output-canary"}

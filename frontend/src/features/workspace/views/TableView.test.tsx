@@ -1,4 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
+import type { WorkspaceTask } from './types'
+import { projectKeyResults } from './keyResultModel'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, vi } from 'vitest'
 import { task } from '../../../test/fixtures'
@@ -150,4 +152,71 @@ test('persists compact density and sort direction as local Table preferences', a
   render(<TableView {...props} />)
   expect(screen.getByRole('button', { name: 'Compact rows' })).toHaveAttribute('aria-pressed', 'true')
   expect(within(screen.getAllByRole('row')[1]).getByText('Zeta task')).toBeVisible()
+})
+
+
+function outcomeTask(id: string, extra: Partial<WorkspaceTask> = {}): WorkspaceTask {
+  return {
+    id,
+    title: 'Outcome task ' + id,
+    status: 'open',
+    priority: 'P2',
+    due: null,
+    tags: [],
+    objective_ids: [],
+    dependencies: [],
+    subtasks: [],
+    context_count: 0,
+    revision: 1,
+    ...extra,
+  }
+}
+
+const outcomeProjection = projectKeyResults({
+  workspaceId: "W1",
+  tasks: [
+    outcomeTask('T-1', { objective_ids: ['O-A'], key_result_refs: [{ objective_id: 'O-A', key_result_id: 'KR-1' }] }) as never,
+    outcomeTask('T-2', { objective_ids: ['O-A'], key_result_refs: [{ objective_id: 'O-A', key_result_id: 'KR-9' }] }) as never,
+    outcomeTask('T-3') as never,
+  ],
+  objectives: [
+    { id: "O-A", objective: "Objective A", revision: 1, key_results: [{ id: "KR-1", text: "A outcome" }] } as never,
+  ],
+});
+
+describe('outcome chips', () => {
+  it('keeps one row per Task and labels every stored reference', () => {
+    render(
+      <TableView
+        tasks={[outcomeTask('T-1'), outcomeTask('T-2'), outcomeTask('T-3')]}
+        keyResultProjection={outcomeProjection}
+        onChangeTaskStatus={vi.fn()}
+        onSelectTask={vi.fn()}
+      />,
+    )
+
+    expect(screen.getAllByRole('row')).toHaveLength(4)
+    expect(screen.getByRole('button', { name: 'Filter by outcome O-A KR-1' })).toBeInTheDocument()
+    expect(screen.getByText('Unresolved outcome')).toBeInTheDocument()
+    expect(screen.getByText('Unassigned outcome')).toBeInTheDocument()
+  })
+
+  it('chip activation chooses the pair without selecting the row', async () => {
+    const onSelectOutcome = vi.fn()
+    const onSelectTask = vi.fn()
+    render(
+      <TableView
+        tasks={[outcomeTask('T-1')]}
+        keyResultProjection={outcomeProjection}
+        onSelectOutcome={onSelectOutcome}
+        onChangeTaskStatus={vi.fn()}
+        onSelectTask={onSelectTask}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'Filter by outcome O-A KR-1' }))
+
+    expect(onSelectOutcome).toHaveBeenCalledExactlyOnceWith({ objectiveId: 'O-A', keyResultId: 'KR-1' })
+    expect(onSelectTask).not.toHaveBeenCalled()
+  })
 })

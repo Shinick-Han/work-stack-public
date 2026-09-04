@@ -1,0 +1,178 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "workstack/agent-p0-oracle/packet-schema.v1.json",
+  "title": "Work Stack Agent P0 task packet schema (v1)",
+  "description": "Exact-field immutable task packet issued by the supervisor. The union of the logical schema in WORKSTACK-CLI-AGENT-SKILL-ORACLE-GATE-EXECUTION-2026-09-02.md section 5 and the canonical packet in WORKSTACK-CLI-AGENT-SKILL-HEADLESS-WORKER-DIRECTIVES-2026-09-02.md section 7. Unknown fields are rejected. The optional lane field and required_exports are checked against the independently digest-bound M0 interface manifest by the trusted runner.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packet_version",
+    "packet_kind",
+    "role",
+    "packet_id",
+    "base_sha",
+    "oracle_seed_sha",
+    "contract_sha256",
+    "interface_manifest_sha256",
+    "worker_directive_sha256",
+    "owned_paths",
+    "required_outputs",
+    "declared_context_paths",
+    "forbidden_paths",
+    "allowed_change_types",
+    "required_exports",
+    "forbidden_imports",
+    "forbidden_calls",
+    "required_gates",
+    "dependency_receipts",
+    "worker_resource_class",
+    "gate_resource_class",
+    "timeout_seconds"
+  ],
+  "properties": {
+    "packet_version": {
+      "description": "Only packet version 1 exists.",
+      "const": 1
+    },
+    "packet_kind": {
+      "description": "Authoring packets produce commits; evidence packets produce findings only.",
+      "enum": ["authoring", "evidence"]
+    },
+    "role": {
+      "description": "Named role from the packet catalog: production/conformance implementation pairs, Oracle bootstrap authors, read-only evidence workers and integration owners.",
+      "enum": ["production", "conformance", "oracle", "evidence", "integration"]
+    },
+    "packet_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"
+    },
+    "base_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "oracle_seed_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "contract_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "interface_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "worker_directive_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "lane": {
+      "description": "Optional logical lane name from the execution protocol section 5; when present it must equal the M0 lane identifier.",
+      "type": "string",
+      "minLength": 1
+    },
+    "owned_paths": {
+      "description": "Repo-relative POSIX glob allowlist; ** spans path segments, * stays inside one segment.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[^\\\\\\u0000-\\u001f]+$",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "required_outputs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[^\\\\\\u0000-\\u001f]+$",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "declared_context_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[^\\\\\\u0000-\\u001f]+$",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "forbidden_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[^\\\\\\u0000-\\u001f]+$",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "allowed_change_types": {
+      "description": "Git raw-diff status letters map to these names: A add, M modify, D delete, R rename, C copy, T typechange.",
+      "type": "array",
+      "items": {
+        "enum": ["add", "modify", "delete", "rename", "copy", "typechange"]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "required_exports": {
+      "description": "Public names frozen and enforced from the digest-bound M0 interface manifest.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "uniqueItems": true
+    },
+    "forbidden_imports": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"
+      },
+      "uniqueItems": true
+    },
+    "forbidden_calls": {
+      "description": "Dotted call targets; a trailing .* matches any attribute call on the root object.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_.]*(\\.\\*)?$"
+      },
+      "uniqueItems": true
+    },
+    "required_gates": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^G[0-9]{2}(-[A-Za-z0-9]{1,8})?$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "dependency_receipts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "worker_resource_class": {
+      "type": "string",
+      "minLength": 1
+    },
+    "gate_resource_class": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

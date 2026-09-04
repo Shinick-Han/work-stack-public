@@ -407,7 +407,7 @@ test('Workspace readiness filter deep-links blocked and ready active work', asyn
   await page.getByRole('button', { name: 'Filter tasks' }).click()
   await page.getByRole('combobox', { name: 'Filter by readiness' }).selectOption('blocked')
   await expect(page).toHaveURL(/readiness=blocked/)
-  await expect(page.getByText(/^\d+ of \d+ tasks · \d+ relationships$/)).toBeVisible()
+  await expect(page.getByText(/\d+ of \d+ tasks shown · \d+ canonical relationships/)).toBeVisible()
   await expect(page.locator('article[aria-label^="T-0002:"]')).toBeVisible()
   await expect(page.locator('article[aria-label^="T-0001:"]')).toBeHidden()
 
@@ -487,7 +487,10 @@ test('Focus records a human work session without changing planning status', asyn
   await expect(page.getByText('Worklog ready')).toBeHidden()
 
   await page.goto('/?surface=review')
-  await expect(page.getByText(`Playwright completed human session for ${taskId}`)).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Turn execution into evidence.' })).toBeVisible()
+  await expect(
+    page.getByText(`Playwright completed human session for ${taskId}`, { exact: true }),
+  ).toBeVisible()
 })
 
 test('a committed planning change refreshes another open tab', async ({ context, page }) => {
