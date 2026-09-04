@@ -186,10 +186,18 @@ class ImmutableBundleTests(unittest.TestCase):
                 "-BundlePath",
                 str(bundle),
             ]
-            accepted = subprocess.run(command, text=True, capture_output=True)
+            # Windows PowerShell 5.1 writes its localized error trailer to stderr in
+            # the console OEM code page (CP949 on a ko-KR host). Decode leniently so a
+            # non-UTF-8 byte cannot turn a captured stream into None; the ASCII
+            # "hash mismatch" text and the exit code are unaffected.
+            accepted = subprocess.run(
+                command, text=True, capture_output=True, encoding="utf-8", errors="replace"
+            )
             self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
             installer.write_text("tampered", encoding="utf-8")
-            refused = subprocess.run(command, text=True, capture_output=True)
+            refused = subprocess.run(
+                command, text=True, capture_output=True, encoding="utf-8", errors="replace"
+            )
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn("hash mismatch", (refused.stdout + refused.stderr).lower())
 

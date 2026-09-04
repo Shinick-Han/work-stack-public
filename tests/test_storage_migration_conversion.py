@@ -222,3 +222,57 @@ class StorageMigrationConversionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class T5ScopedRefConversionRefusalTest(unittest.TestCase):
+    """Conversion must refuse the unsupported Task field without dropping it."""
+
+    def _documents_with_refs(self, refs: list[dict[str, str]]) -> dict[str, dict]:
+        documents = _load("populated")
+        task = documents["backlog.json"]["tasks"][0]
+        task["key_result_refs"] = refs
+        return documents
+
+    def _assert_refuses_without_mutation(self, refs: list[dict[str, str]]) -> None:
+        documents = self._documents_with_refs(refs)
+        before = copy.deepcopy(documents)
+
+        with self.assertRaises(V3ConversionError) as raised:
+            convert_v3_documents(documents, candidate_created_at=CANDIDATE_CREATED_AT)
+
+        self.assertEqual(raised.exception.code, "SEMANTIC_PARITY_MISMATCH")
+        self.assertEqual(documents, before)
+        self.assertEqual(
+            documents["backlog.json"]["tasks"][0]["key_result_refs"], refs
+        )
+
+    def test_nonempty_scoped_refs_refuse_conversion(self) -> None:
+        objective = _load("populated")["okr.json"]["objectives"][0]
+        self._assert_refuses_without_mutation(
+            [
+                {
+                    "objective_id": objective["id"],
+                    "key_result_id": objective["key_results"][0]["id"],
+                }
+            ]
+        )
+
+    def test_explicit_empty_refs_still_refuse_conversion(self) -> None:
+        self._assert_refuses_without_mutation([])
+
+    def test_v3_snapshot_keeps_the_field_so_parity_cannot_silently_drop_it(self) -> None:
+        documents = self._documents_with_refs([])
+
+        snapshot = snapshot_from_v3_documents(documents).to_dict()
+
+        self.assertIn("key_result_refs", snapshot["tasks"][0])
+
+    def test_legacy_omitted_field_converts_exactly_as_before(self) -> None:
+        documents = _load("populated")
+        self.assertNotIn("key_result_refs", documents["backlog.json"]["tasks"][0])
+
+        conversion = convert_v3_documents(
+            documents, candidate_created_at=CANDIDATE_CREATED_AT
+        )
+
+        self.assertEqual(conversion.conversion_digest, EXPECTED_CONVERSION_DIGEST)

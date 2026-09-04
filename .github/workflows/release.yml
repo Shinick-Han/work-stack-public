@@ -238,6 +238,7 @@ jobs:
           $edge = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
           if (-not (Test-Path -LiteralPath $edge -PathType Leaf)) { $edge = "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe" }
           if (-not (Test-Path -LiteralPath $edge -PathType Leaf)) { throw 'Native Chromium runtime is unavailable.' }
+          Remove-Item Env:__COMPAT_LAYER -ErrorAction SilentlyContinue
           $profile = Join-Path $state 'edge-profile'
           $stdout = Join-Path $state 'edge.stdout.txt'
           $stderr = Join-Path $state 'edge.stderr.txt'
@@ -247,10 +248,10 @@ jobs:
           )
           try {
             $edgeProcess = Start-Process -FilePath $edge -ArgumentList $edgeArguments -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-            $dom = Get-Content -Raw -LiteralPath $stdout
-            if ($edgeProcess.ExitCode -ne 0 -or $dom -notmatch '<html') {
+            $dom = Get-Content -Raw -LiteralPath $stdout -ErrorAction SilentlyContinue
+            if ($edgeProcess.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($dom) -or [string]$dom -notmatch '<html') {
               $diagnostic = Get-Content -Raw -LiteralPath $stderr -ErrorAction SilentlyContinue
-              throw "Native Chromium could not render the installed product (exit=$($edgeProcess.ExitCode), stderr=$diagnostic)."
+              throw "Native Chromium could not render the installed product (exit=$($edgeProcess.ExitCode), bytes=$(([string]$dom).Length), stderr=$diagnostic)."
             }
           } finally {
             & (Join-Path $install 'scripts/windows/Stop-WorkStack.ps1') -InstallRoot $install

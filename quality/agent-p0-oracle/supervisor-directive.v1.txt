@@ -1,0 +1,23 @@
+The supervisor MUST perform these steps; they are not delegated to workers.
+
+1. Record a base commit and create every packet from that Git object. Never copy uncommitted state
+   from the planning worktree into a worker worktree.
+2. Freeze G10 before issuing any production or conformance packet.
+3. Generate one immutable JSON packet per worker with nonoverlapping `owned_paths`. Store packets
+   in the pinned Oracle checkout or supervisor run directory, never in a candidate checkout.
+4. Create one unique disposable clone or isolated worktree and branch from the exact `base_sha` for
+   every packet.
+5. Launch the worker with that checkout as CWD and with unrelated credentials removed.
+6. Never give a worker push, merge, rebase, release, SMTP, cloud or SSH-agent authority.
+7. Capture the complete child process tree, heartbeat, exit code and raw OpenCode JSON event stream.
+8. Verify the returned `head_sha` directly from Git. Never trust a textual SHA.
+9. Run the trusted Oracle from the checkout pinned to `oracle_seed_sha`.
+10. For G21, create a disposable composition of one implementation commit and its independent
+    conformance commit. Neither worker may see the other's branch before completion.
+11. Store a receipt binding both candidate identities, both packet digests, both diffs, the frozen
+    contract and the Oracle seed.
+12. Admit only receipted commits. The integration owner must not repair lane-owned files.
+13. Run heavy regression and final integration under a single heavy-test token.
+14. Place every worker process in an OS Job Object or equivalent process group, terminate the
+    complete process tree on timeout and inspect both the packet checkout and parent repository
+    afterward.

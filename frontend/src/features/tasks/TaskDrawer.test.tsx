@@ -782,3 +782,69 @@ test('does not let a late lower revision rewind newer detail or workspace caches
   expect(client.getQueryData<TaskDetail>(['task', task.id])?.task.revision).toBe(newerTask.revision)
   expect(client.getQueryData<WorkspaceProjection>(['workspace'])?.tasks[0].revision).toBe(newerTask.revision)
 })
+
+
+const outcomeWorkspace: WorkspaceProjection = {
+  ...workspace,
+  objectives: [{ ...workspace.objectives[0], key_results: [{ id: 'KR-1', text: 'First outcome' }] }],
+}
+
+test('links an outcome through the real drawer and never repeats a confirmed ref PATCH', async () => {
+  const aligned: Task = { ...task, objective_ids: ['O-1'] }
+  const patches: Array<Record<string, unknown>> = []
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'PATCH') {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>
+      patches.push(body)
+      const refs = body.key_result_refs as Task['key_result_refs']
+      return jsonResponse({
+        data: {
+          ...aligned,
+          revision: Number(body.revision) + 1,
+          ...(refs ? { key_result_refs: JSON.parse(JSON.stringify(refs)) as Task['key_result_refs'] } : {}),
+          ...(body.priority ? { priority: body.priority } : {}),
+        },
+      })
+    }
+    return jsonResponse({ data: detail(aligned) })
+  }))
+  const client = createClient()
+  renderSavingDrawer(client, outcomeWorkspace)
+
+  await screen.findByDisplayValue(aligned.title)
+  await userEvent.selectOptions(
+    screen.getByRole('combobox', { name: 'Add outcome' }),
+    screen.getByRole('option', { name: /First outcome/ }),
+  )
+
+  await waitFor(() => expect(patches).toHaveLength(1))
+  expect(patches[0]).toEqual({
+    key_result_refs: [{ objective_id: 'O-1', key_result_id: 'KR-1' }],
+    revision: aligned.revision,
+  })
+
+  await userEvent.selectOptions(screen.getByLabelText('Priority'), 'P1')
+  await waitFor(() => expect(patches).toHaveLength(2))
+  expect(patches[1]).not.toHaveProperty('key_result_refs')
+  expect(patches).toHaveLength(2)
+})
+
+test('an unrelated edit on a Task with an omitted field never emits an empty ref list', async () => {
+  const patches: Array<Record<string, unknown>> = []
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'PATCH') {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>
+      patches.push(body)
+      return jsonResponse({ data: { ...task, revision: Number(body.revision) + 1, ...body } })
+    }
+    return jsonResponse({ data: detail(task) })
+  }))
+  const client = createClient()
+  renderSavingDrawer(client, outcomeWorkspace)
+
+  await screen.findByDisplayValue(task.title)
+  await userEvent.selectOptions(screen.getByLabelText('Priority'), 'P1')
+
+  await waitFor(() => expect(patches).toHaveLength(1))
+  expect(patches[0]).toEqual({ priority: 'P1', revision: task.revision })
+})

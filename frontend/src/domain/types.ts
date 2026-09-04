@@ -1,3 +1,7 @@
+import type { DoneVisibility } from './workspaceFilterTypes'
+
+export type { DoneVisibility }
+
 export const TASK_STATUSES = ['open', 'started', 'done', 'dropped'] as const
 export const TASK_PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const
 export const WORKSPACE_VIEWS = ['graph', 'board', 'treemap', 'table'] as const
@@ -26,6 +30,11 @@ export interface Subtask {
   status?: TaskStatus
 }
 
+export interface TaskKeyResultRef {
+  objective_id: string
+  key_result_id: string
+}
+
 export interface Task {
   id: string
   uid: string
@@ -38,6 +47,7 @@ export interface Task {
   estimate_minutes?: number | null
   tags: string[]
   objective_ids: string[]
+  key_result_refs?: TaskKeyResultRef[]
   parent_id: string | null
   dependencies: string[]
   subtasks: Subtask[]
@@ -289,8 +299,21 @@ export interface ReplyCommand {
   updated_at: string
 }
 
+export interface ContextRef {
+  kind: 'note' | 'capture'
+  id: string
+}
+
+export interface ContextConnection {
+  target: { kind: 'task' | 'objective'; id: string }
+  reasons: Array<'note-link' | 'capture-link' | 'capture-conversion'>
+}
+
 export interface ContextItem {
   id?: string
+  ref?: ContextRef
+  connections?: ContextConnection[]
+  date_precision?: 'date' | 'instant' | 'unknown'
   kind?: string
   type?: string
   text?: string
@@ -364,6 +387,7 @@ export interface TaskPatch {
   estimate_minutes?: number | null
   tags?: string[]
   objective_ids?: string[]
+  key_result_refs?: TaskKeyResultRef[]
   parent_id?: string | null
   dependencies?: string[]
   revision: number
@@ -474,6 +498,8 @@ export interface SearchProjection {
   items: SearchItem[]
 }
 
+import type { OutcomeFilter } from './workspaceFilterTypes'
+
 export interface AppUrlState {
   surface: 'workspace' | 'focus' | 'inbox' | 'review' | 'objectives'
   view: WorkspaceView
@@ -483,6 +509,79 @@ export interface AppUrlState {
   readiness: 'all' | 'ready' | 'blocked'
   timing: 'all' | 'overdue' | 'today' | 'soon' | 'unscheduled'
   objectiveId: string
+  outcomeFilter?: OutcomeFilter
   taskId: string | null
   captureId: string | null
+  /**
+   * Durable completed-Task visibility coordinate. Optional on input so every
+   * existing state construction stays valid; each normalized reader/writer
+   * output carries a concrete enum — see NormalizedAppUrlState.
+   */
+  doneVisibility?: DoneVisibility
+}
+
+/** An AppUrlState that has been normalized, so its coordinates are concrete. */
+export type NormalizedAppUrlState = AppUrlState & {
+  doneVisibility: DoneVisibility
+  outcomeFilter: OutcomeFilter
+}
+
+/**
+ * The durable transition event. Unlike the SSE notice it DOES carry reason,
+ * and its eleven fields are a different exact schema.
+ */
+export interface CheckpointTransitionEventRecord {
+  type: 'worklog.superseded' | 'worklog.restored'
+  workspace_uid: string
+  task_id: string
+  checkpoint_id: string
+  date: string
+  ordinal: number
+  entry_digest: string
+  state: 'superseded' | 'active'
+  revision: number
+  reason: { code: string; explanation: string }
+  origin: 'agent-cli-v1' | null
+}
+
+export interface CheckpointAuditLocator {
+  workspace_uid: string
+  task_id: string | null
+  date: string
+  ordinal: number
+  entry_digest: string | null
+}
+
+/** The recorded fact is known metadata: exactly these eight bound fields. */
+export interface CheckpointRecordedFact {
+  type: 'worklog.recorded'
+  workspace_uid: string
+  task_id: string
+  checkpoint_id: string
+  date: string
+  ordinal: number
+  entry_digest: string
+  origin: 'agent-cli-v1' | null
+}
+
+export interface CheckpointAuditEntry {
+  locator: CheckpointAuditLocator
+  checkpoint_id: string | null
+  /** Opaque original payload. Rendered with a fallback, never trusted. */
+  entry: unknown
+  recorded: CheckpointRecordedFact | null
+  state: 'active' | 'superseded'
+  revision: number
+  transitions: CheckpointTransitionEventRecord[]
+}
+
+export interface CheckpointAudit {
+  workspace_uid: string
+  entries: CheckpointAuditEntry[]
+}
+
+export interface CheckpointTransitionInput {
+  state: 'superseded' | 'active'
+  revision: number
+  reason: { code: string; explanation: string }
 }

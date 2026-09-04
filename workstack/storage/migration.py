@@ -341,6 +341,30 @@ def _receipt(
     return receipt
 
 
+UNSUPPORTED_V3_TASK_FIELD = "key_result_refs"
+
+
+def _refuse_unsupported_task_fields(source: Path) -> None:
+    """Refuse known-unconvertible v3 input before any Store or lease side effect.
+
+    The under-lease conversion remains authoritative; this read-only preflight
+    only moves the existing refusal ahead of Store construction and does not
+    close concurrent-writer races.
+    """
+
+    try:
+        raw = (source / "backlog.json").read_bytes()
+        documents = json.loads(raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return
+    tasks = documents.get("tasks") if isinstance(documents, dict) else None
+    if not isinstance(tasks, list):
+        return
+    for task in tasks:
+        if isinstance(task, dict) and UNSUPPORTED_V3_TASK_FIELD in task:
+            raise StorageMigrationError("SEMANTIC_PARITY_MISMATCH")
+
+
 def execute_v3_migration(
     source_root: Path | str,
     *,
@@ -355,6 +379,7 @@ def execute_v3_migration(
     """Create a verified sibling candidate and backup; never activate either."""
 
     source = Path(source_root).expanduser().resolve(strict=True)
+    _refuse_unsupported_task_fields(source)
     staging: Path | None = None
     staging_owned = [False]
     store = Store(source)
@@ -455,6 +480,7 @@ def resume_v3_migration(
     """Finish receipt publication for an already published inactive candidate."""
 
     source = Path(source_root).expanduser().resolve(strict=True)
+    _refuse_unsupported_task_fields(source)
     store = Store(source)
     with store.consistent_read():
         frozen = freeze_v3_source(source, limits=limits)

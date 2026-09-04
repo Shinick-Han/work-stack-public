@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { App } from './App'
@@ -70,18 +70,31 @@ test('blocks writes and opens a read-only review when the SSOT changed externall
 
 test('does not offer a retry that cannot resolve a workspace identity mismatch', async () => {
   let workspaceReads = 0
+  let statusReads = 0
+  let statusGeneration = 4
   vi.stubGlobal('EventSource', AppEventSource)
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
     const url = String(input)
-    if (url.includes('/api/v1/sync/status')) return jsonResponse({ data: {
-      state: 'external-change-detected',
-      workspace_id: 'workspace-test',
-      candidate_workspace_id: 'workspace-test',
-      generation: 4,
+    if (url.includes('/api/v1/sync/status')) {
+      statusReads += 1
+      return jsonResponse({ data: {
+        state: 'invalid',
+        workspace_id: 'workspace-test',
+        candidate_workspace_id: '99999999-9999-4999-8999-999999999999',
+        generation: statusGeneration,
+        manifest_digest: `sha256:${statusGeneration === 4 ? 'a'.repeat(64) : 'b'.repeat(64)}`,
+        changed_files: ['workspace.json', 'tasks.json'],
+        reason: 'authoritative store candidate failed validation',
+        rebind_available: true,
+      } })
+    }
+    if (url.includes('/api/v1/sync/rebind-preview')) return jsonResponse({ data: {
+      state: 'workspace-identity-mismatch',
+      manifest_workspace_id: 'workspace-test',
+      candidate_workspace_id: '99999999-9999-4999-8999-999999999999',
       manifest_digest: `sha256:${'a'.repeat(64)}`,
-      changed_files: ['tasks.json'],
-      reason: 'External edit detected',
-      rebind_available: true,
+      candidate_digest: `sha256:${'b'.repeat(64)}`,
+      changed_files: ['workspace.json', 'tasks.json'],
     } })
     if (url.includes('/api/v1/workspace')) {
       workspaceReads += 1
@@ -99,6 +112,22 @@ test('does not offer a retry that cannot resolve a workspace identity mismatch',
   expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
   expect(document.querySelector('main')).not.toHaveAttribute('inert')
   expect(workspaceReads).toBe(1)
+
+  const firstReview = await screen.findByRole('dialog', { name: 'Review different workspace identity' })
+  expect(firstReview).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+  fireEvent(firstReview, new Event('close'))
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Review different workspace identity' })).not.toBeInTheDocument())
+
+  AppEventSource.instance?.emitSync(4)
+  await waitFor(() => expect(workspaceReads).toBeGreaterThan(1))
+  await waitFor(() => expect(statusReads).toBeGreaterThan(1))
+  expect(screen.queryByRole('dialog', { name: 'Review different workspace identity' })).not.toBeInTheDocument()
+
+  statusGeneration = 5
+  await client.invalidateQueries({ queryKey: ['sync-status'] })
+  expect(client.getQueryData<{ generation: number }>(['sync-status'])?.generation).toBe(5)
+  expect(await screen.findByRole('dialog', { name: 'Review different workspace identity' })).toBeVisible()
 })
 
 test('invalidates authoritative queries from a content-free SSE sync hint', async () => {

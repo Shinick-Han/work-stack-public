@@ -1,7 +1,10 @@
-# Work Stack signed-Python desktop host
+# Work Stack desktop host
 
-This is the Windows desktop entry point for Work Stack. The signed bundled
-`pythonw.exe` owns the process, pywebview supplies its pinned WebView2/pythonnet
+This is the Windows desktop entry point for Work Stack. The installed shortcuts
+target `WorkStack.exe` at the installation root: a branded x64 host, compiled
+from `WorkStackHost.cs` during packaging, that owns the process and runs this
+`workstack_desktop.py` entry in-process through one `Py_Main` call against the
+bundled `runtime\python312.dll`. pywebview supplies its pinned WebView2/pythonnet
 runtime, and the existing React interface remains the permanent application
 surface.
 
@@ -29,8 +32,15 @@ python .\desktop\python-webview-shell\workstack_desktop.py `
   --probe-result .\.runtime\python-desktop-probe.txt
 ```
 
-The shipping shortcut uses `runtime\pythonw.exe`, so no console window or new
-unsigned application executable is introduced.
+The shipping shortcut targets `WorkStack.exe`, a windowless (`/target:winexe`)
+host, so no console window appears. The host is a new compiled executable and
+the build applies no code signature to it: it is unsigned, like the setup
+artifact. It is not a launcher. It never spawns `pythonw.exe`, never falls back
+to another interpreter, and forwards only the GUI options listed in
+`WorkStackHost.cs`. The bundled `runtime\pythonw.exe` stays in the payload only
+for links written by earlier installations; `Stop-WorkStack.ps1` and
+`Uninstall-WorkStack.ps1` still recognise that legacy invocation, but a newly
+written link never targets it.
 
 ## SSH-owned remote SSOT mode
 

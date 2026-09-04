@@ -1,0 +1,3524 @@
+{
+  "format": "workstack.checkpoint-change.golden.v1",
+  "source_commit": "ac9aeb0ab0d9f6e828670987907998c69cba1cc1",
+  "identity_vectors": [
+    {
+      "id": "identity.base",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "canonical_preimage": {
+        "text": "[\"workstack.checkpoint.v1\",\"123e4567-e89b-42d3-a456-426614174000\",\"Agent-Intent-0001\"]",
+        "utf8_hex": "5b22776f726b737461636b2e636865636b706f696e742e7631222c2231323365343536372d653839622d343264332d613435362d343236363134313734303030222c224167656e742d496e74656e742d30303031225d",
+        "sha256": "36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b"
+      },
+      "expected": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b"
+    },
+    {
+      "id": "identity.same-key",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "canonical_preimage": {
+        "text": "[\"workstack.checkpoint.v1\",\"123e4567-e89b-42d3-a456-426614174000\",\"Agent-Intent-0001\"]",
+        "utf8_hex": "5b22776f726b737461636b2e636865636b706f696e742e7631222c2231323365343536372d653839622d343264332d613435362d343236363134313734303030222c224167656e742d496e74656e742d30303031225d",
+        "sha256": "36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b"
+      },
+      "expected": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b"
+    },
+    {
+      "id": "identity.case-distinct",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "agent-intent-0001"
+      },
+      "canonical_preimage": {
+        "text": "[\"workstack.checkpoint.v1\",\"123e4567-e89b-42d3-a456-426614174000\",\"agent-intent-0001\"]",
+        "utf8_hex": "5b22776f726b737461636b2e636865636b706f696e742e7631222c2231323365343536372d653839622d343264332d613435362d343236363134313734303030222c226167656e742d696e74656e742d30303031225d",
+        "sha256": "261353dc4b870a2fbc215efde50852e1e9837877c5d91e4be85e0ffe65832b27"
+      },
+      "expected": "CP-261353dc4b870a2fbc215efde50852e1e9837877c5d91e4be85e0ffe65832b27"
+    },
+    {
+      "id": "identity.next-key",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0002"
+      },
+      "canonical_preimage": {
+        "text": "[\"workstack.checkpoint.v1\",\"123e4567-e89b-42d3-a456-426614174000\",\"Agent-Intent-0002\"]",
+        "utf8_hex": "5b22776f726b737461636b2e636865636b706f696e742e7631222c2231323365343536372d653839622d343264332d613435362d343236363134313734303030222c224167656e742d496e74656e742d30303032225d",
+        "sha256": "a805b240c0eb74bfb7d2f231deb1bf86dfce8e4a7aa48c1b49c8b2a4a83e51a5"
+      },
+      "expected": "CP-a805b240c0eb74bfb7d2f231deb1bf86dfce8e4a7aa48c1b49c8b2a4a83e51a5"
+    },
+    {
+      "id": "identity.workspace-distinct",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174001",
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "canonical_preimage": {
+        "text": "[\"workstack.checkpoint.v1\",\"123e4567-e89b-42d3-a456-426614174001\",\"Agent-Intent-0001\"]",
+        "utf8_hex": "5b22776f726b737461636b2e636865636b706f696e742e7631222c2231323365343536372d653839622d343264332d613435362d343236363134313734303031222c224167656e742d496e74656e742d30303031225d",
+        "sha256": "94bde7686ae256fb2639885c7c6d481ffb4b44a6271e837da4c9104cccaa0e60"
+      },
+      "expected": "CP-94bde7686ae256fb2639885c7c6d481ffb4b44a6271e837da4c9104cccaa0e60"
+    },
+    {
+      "id": "identity.store-domain-v7",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-72d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "canonical_preimage": {
+        "text": "[\"workstack.checkpoint.v1\",\"123e4567-e89b-72d3-a456-426614174000\",\"Agent-Intent-0001\"]",
+        "utf8_hex": "5b22776f726b737461636b2e636865636b706f696e742e7631222c2231323365343536372d653839622d373264332d613435362d343236363134313734303030222c224167656e742d496e74656e742d30303031225d",
+        "sha256": "6bb4aad575adbf27c773ac873ae66dfd2b98fab3992b28c79d727aa3072f12b7"
+      },
+      "expected": "CP-6bb4aad575adbf27c773ac873ae66dfd2b98fab3992b28c79d727aa3072f12b7"
+    },
+    {
+      "id": "identity.minimum-key",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Abcdef12"
+      },
+      "canonical_preimage": {
+        "text": "[\"workstack.checkpoint.v1\",\"123e4567-e89b-42d3-a456-426614174000\",\"Abcdef12\"]",
+        "utf8_hex": "5b22776f726b737461636b2e636865636b706f696e742e7631222c2231323365343536372d653839622d343264332d613435362d343236363134313734303030222c224162636465663132225d",
+        "sha256": "92fe2a76aecfd0dee2f46dda040763c028e3b540329630e2a16ff947562fa317"
+      },
+      "expected": "CP-92fe2a76aecfd0dee2f46dda040763c028e3b540329630e2a16ff947562fa317"
+    },
+    {
+      "id": "identity.maximum-key",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "canonical_preimage": {
+        "text": "[\"workstack.checkpoint.v1\",\"123e4567-e89b-42d3-a456-426614174000\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"]",
+        "utf8_hex": "5b22776f726b737461636b2e636865636b706f696e742e7631222c2231323365343536372d653839622d343264332d613435362d343236363134313734303030222c224141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141225d",
+        "sha256": "0f433ebf1e7aec1c94f20a1aba4c2e3248ac08fc28a2b3268576a0342ba63cbc"
+      },
+      "expected": "CP-0f433ebf1e7aec1c94f20a1aba4c2e3248ac08fc28a2b3268576a0342ba63cbc"
+    },
+    {
+      "id": "identity.allowed-punctuation",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "A.b_c:d-1"
+      },
+      "canonical_preimage": {
+        "text": "[\"workstack.checkpoint.v1\",\"123e4567-e89b-42d3-a456-426614174000\",\"A.b_c:d-1\"]",
+        "utf8_hex": "5b22776f726b737461636b2e636865636b706f696e742e7631222c2231323365343536372d653839622d343264332d613435362d343236363134313734303030222c22412e625f633a642d31225d",
+        "sha256": "807e210b2c061a325f03747c48d7b87253dd96007dee20f68cba023ad3d66d00"
+      },
+      "expected": "CP-807e210b2c061a325f03747c48d7b87253dd96007dee20f68cba023ad3d66d00"
+    },
+    {
+      "id": "identity.invalid-key-leading-space",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": " Agent-Intent-0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-key-trailing-space",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001 "
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-key-embedded-space",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent Intent 0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-key-newline",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001\n"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-key-tab",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001\t"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-key-short",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Abcdef1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-key-long",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-key-unicode",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-意図-0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-key-null",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": null
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-key-bool",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": true
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-key-int",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": 12345678
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-uid-uppercase",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123E4567-E89B-42D3-A456-426614174000",
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-uid-nil",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "00000000-0000-0000-0000-000000000000",
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-uid-braces",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "{123e4567-e89b-42d3-a456-426614174000}",
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-uid-compact",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567e89b42d3a456426614174000",
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-uid-variant",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-7456-426614174000",
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-uid-space",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000 ",
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-uid-bool",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": false,
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "identity.invalid-uid-null",
+      "operation": "derive_checkpoint_id",
+      "input": {
+        "workspace_uid": null,
+        "idempotency_key": "Agent-Intent-0001"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    }
+  ],
+  "facts_vectors": [
+    {
+      "id": "facts.base",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.same-content-new-occurrence",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0002",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 1,
+        "prior_entries": [
+          {
+            "task_id": "T-0001",
+            "task": "Then stored title",
+            "done": [
+              "Finished"
+            ],
+            "next": [
+              "Next"
+            ],
+            "blockers": []
+          }
+        ],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-a805b240c0eb74bfb7d2f231deb1bf86dfce8e4a7aa48c1b49c8b2a4a83e51a5",
+          "date": "2026-09-03",
+          "ordinal": 1,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": false
+      }
+    },
+    {
+      "id": "facts.conflicting-content-same-identity",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Different content"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Different content\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b22446966666572656e7420636f6e74656e74225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "85bfeaaf12f5ddb3cd0350ecac76e4bff71154c50d1fd052e8382e963d28ad0d"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:85bfeaaf12f5ddb3cd0350ecac76e4bff71154c50d1fd052e8382e963d28ad0d",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.legacy-physical-first-false",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [
+          {
+            "task_id": "T-0001",
+            "task": "Old title",
+            "done": [
+              "legacy"
+            ]
+          }
+        ],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": false
+      }
+    },
+    {
+      "id": "facts.browser-physical-first-false",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [
+          {
+            "task_id": "T-0001",
+            "task": "Browser title",
+            "done": [
+              "browser"
+            ],
+            "legacy_source": "browser"
+          }
+        ],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": false
+      }
+    },
+    {
+      "id": "facts.other-task-and-unlinked-first-true",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [
+          {
+            "task_id": "T-0002"
+          },
+          {
+            "task": "Then stored title"
+          },
+          {
+            "task_id": null
+          }
+        ],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.ordinary-no-notice",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": null
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": null
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.store-domain-v7",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-72d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-72d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-6bb4aad575adbf27c773ac873ae66dfd2b98fab3992b28c79d727aa3072f12b7",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.ordinal-maximum",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 9007199254740991,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 9007199254740991,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.leap-day",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2024-02-29",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2024-02-29",
+          "ordinal": 0,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.minimum-date",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "0001-01-01",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "0001-01-01",
+          "ordinal": 0,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.zero-done-positive-next",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b5d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "fb048fb9011fe5492e1630aa23f926ae4ac80e11f2a3e21a0496d039d1c0800e"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:fb048fb9011fe5492e1630aa23f926ae4ac80e11f2a3e21a0496d039d1c0800e",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 0,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.maximum-count-duplicates-preserved",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same",
+            "same"
+          ],
+          "next": [],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\",\"same\"],\"next\":[],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65222c2273616d65225d2c226e657874223a5b5d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "3dfaf3bace07f9f07a00ff983a939eb1cf4bc1e590d336b6115db57e0fac4e5c"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:3dfaf3bace07f9f07a00ff983a939eb1cf4bc1e590d336b6115db57e0fac4e5c",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 20,
+        "next_count": 0,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.then-stored-title-preserved",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "  Then stored title  ",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"  Then stored title  \",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a2220205468656e2073746f726564207469746c652020222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "74de1d7dde168010056c3ea879750a0aba6421068f2f341167f2b316f3570cc5"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:74de1d7dde168010056c3ea879750a0aba6421068f2f341167f2b316f3570cc5",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.unicode",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "한글 café 雪 🚀",
+          "done": [
+            "완료",
+            "café"
+          ],
+          "next": [
+            "é"
+          ],
+          "blockers": [
+            "blocked\nline"
+          ]
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[\"blocked\\nline\"],\"done\":[\"완료\",\"café\"],\"next\":[\"é\"],\"task\":\"한글 café 雪 🚀\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b22626c6f636b65645c6e6c696e65225d2c22646f6e65223a5b22ec9984eba38c222c22636166c3a9225d2c226e657874223a5b2265cc81225d2c227461736b223a22ed959ceab88020636166c3a920e99baa20f09f9a80222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "d3aa750dda0444e414e8d51d5fc7c5fb8a86bd098a95d7966d8d3cf55b487ee3"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:d3aa750dda0444e414e8d51d5fc7c5fb8a86bd098a95d7966d8d3cf55b487ee3",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 2,
+        "next_count": 1,
+        "blocker_count": 1,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.nfc",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "café",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"café\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a22636166c3a9222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "0629181f2bf21392e05605aa6c788f98d9691a3f3e5e87838eef100c0518e368"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:0629181f2bf21392e05605aa6c788f98d9691a3f3e5e87838eef100c0518e368",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.nfd",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "café",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"café\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a2263616665cc81222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "dfd7a6380414dfd01da7f4e13b4a76a2a72e607290065de667540f1cbfabf534"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:dfd7a6380414dfd01da7f4e13b4a76a2a72e607290065de667540f1cbfabf534",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.insertion-order",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "blockers": [],
+          "next": [
+            "Next"
+          ],
+          "done": [
+            "Finished"
+          ],
+          "task": "Then stored title",
+          "task_id": "T-0001"
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"Then stored title\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a225468656e2073746f726564207469746c65222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.invalid-ordinal-negative",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": -1,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-ordinal-bool",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": true,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-ordinal-float",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 1.0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-ordinal-overflow",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 9007199254740992,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-ordinal-string",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": "0",
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-date-nonleap",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-02-29",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-date-unpadded",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-9-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-date-unicode-digits",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "２０２６-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-date-datetime",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03T00:00:00",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-date-year-zero",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "0000-01-01",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-date-null",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": null,
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-origin-empty",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": ""
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-origin-unknown",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "browser"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-origin-bool",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": false
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-origin-array",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": []
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-all-empty",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [],
+          "next": [],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-count21",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-item-empty",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            ""
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-item-untrimmed",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            " x "
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-item1001",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-item-bool",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            true
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-category-scalar",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": "Finished",
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.empty-title-preserved",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "canonical_entry": {
+        "text": "{\"blockers\":[],\"done\":[\"Finished\"],\"next\":[\"Next\"],\"task\":\"\",\"task_id\":\"T-0001\"}",
+        "utf8_hex": "7b22626c6f636b657273223a5b5d2c22646f6e65223a5b2246696e6973686564225d2c226e657874223a5b224e657874225d2c227461736b223a22222c227461736b5f6964223a22542d30303031227d",
+        "sha256": "62b68702dbfa91aeb245f6b01a5ca2f6b6255888df91824af9526c4615c116ed"
+      },
+      "expected": {
+        "recorded": {
+          "type": "worklog.recorded",
+          "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+          "task_id": "T-0001",
+          "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+          "date": "2026-09-03",
+          "ordinal": 0,
+          "entry_digest": "sha256:62b68702dbfa91aeb245f6b01a5ca2f6b6255888df91824af9526c4615c116ed",
+          "origin": "agent-cli-v1"
+        },
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true
+      }
+    },
+    {
+      "id": "facts.invalid-entry-title-bool",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": true,
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-task-lower",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "t-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-task-short",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-task-unicode",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-０００１",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-extra",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": [],
+          "prose": "must never leak"
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-entry-missing",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ]
+        },
+        "ordinal": 0,
+        "prior_entries": [],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-prior-not-list",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": {},
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-prior-not-object",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [
+          1
+        ],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "facts.invalid-prior-bad-task",
+      "operation": "build_checkpoint_facts",
+      "input": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "idempotency_key": "Agent-Intent-0001",
+        "date": "2026-09-03",
+        "entry": {
+          "task_id": "T-0001",
+          "task": "Then stored title",
+          "done": [
+            "Finished"
+          ],
+          "next": [
+            "Next"
+          ],
+          "blockers": []
+        },
+        "ordinal": 0,
+        "prior_entries": [
+          {
+            "task_id": "t-0001"
+          }
+        ],
+        "origin": "agent-cli-v1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    }
+  ],
+  "notice_vectors": [
+    {
+      "id": "notice.base",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected": {
+        "event_id": 1,
+        "kind": "agent.checkpoint.committed",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "task_id": "T-0001",
+        "date": "2026-09-03",
+        "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true,
+        "origin": "agent-cli-v1",
+        "replayed": false
+      },
+      "canonical_notice": {
+        "text": "{\"blocker_count\":0,\"checkpoint_id\":\"CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b\",\"date\":\"2026-09-03\",\"done_count\":1,\"event_id\":1,\"first_for_task\":true,\"kind\":\"agent.checkpoint.committed\",\"next_count\":1,\"origin\":\"agent-cli-v1\",\"replayed\":false,\"task_id\":\"T-0001\",\"workspace_uid\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+        "utf8_hex": "7b22626c6f636b65725f636f756e74223a302c22636865636b706f696e745f6964223a2243502d33366135373236373732313865663764623162663232333630363138396661373532353431623462613134346139343661356535316437663563643432373462222c2264617465223a22323032362d30392d3033222c22646f6e655f636f756e74223a312c226576656e745f6964223a312c2266697273745f666f725f7461736b223a747275652c226b696e64223a226167656e742e636865636b706f696e742e636f6d6d6974746564222c226e6578745f636f756e74223a312c226f726967696e223a226167656e742d636c692d7631222c227265706c61796564223a66616c73652c227461736b5f6964223a22542d30303031222c22776f726b73706163655f756964223a2231323365343536372d653839622d343264332d613435362d343236363134313734303030227d",
+        "sha256": "0041736002ae18a053767ba6a18f29fe0a16132d43f946085bf459819d4bc1e8"
+      }
+    },
+    {
+      "id": "notice.maximum-event-id",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 9007199254740991
+      },
+      "expected": {
+        "event_id": 9007199254740991,
+        "kind": "agent.checkpoint.committed",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "task_id": "T-0001",
+        "date": "2026-09-03",
+        "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true,
+        "origin": "agent-cli-v1",
+        "replayed": false
+      },
+      "canonical_notice": {
+        "text": "{\"blocker_count\":0,\"checkpoint_id\":\"CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b\",\"date\":\"2026-09-03\",\"done_count\":1,\"event_id\":9007199254740991,\"first_for_task\":true,\"kind\":\"agent.checkpoint.committed\",\"next_count\":1,\"origin\":\"agent-cli-v1\",\"replayed\":false,\"task_id\":\"T-0001\",\"workspace_uid\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+        "utf8_hex": "7b22626c6f636b65725f636f756e74223a302c22636865636b706f696e745f6964223a2243502d33366135373236373732313865663764623162663232333630363138396661373532353431623462613134346139343661356535316437663563643432373462222c2264617465223a22323032362d30392d3033222c22646f6e655f636f756e74223a312c226576656e745f6964223a393030373139393235343734303939312c2266697273745f666f725f7461736b223a747275652c226b696e64223a226167656e742e636865636b706f696e742e636f6d6d6974746564222c226e6578745f636f756e74223a312c226f726967696e223a226167656e742d636c692d7631222c227265706c61796564223a66616c73652c227461736b5f6964223a22542d30303031222c22776f726b73706163655f756964223a2231323365343536372d653839622d343264332d613435362d343236363134313734303030227d",
+        "sha256": "30665716bd89697280e12c398db2ee5b7100a1b5576dac7b48a648be018f8da2"
+      }
+    },
+    {
+      "id": "notice.physical-first-false",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": false
+        },
+        "event_id": 2
+      },
+      "expected": {
+        "event_id": 2,
+        "kind": "agent.checkpoint.committed",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "task_id": "T-0001",
+        "date": "2026-09-03",
+        "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": false,
+        "origin": "agent-cli-v1",
+        "replayed": false
+      },
+      "canonical_notice": {
+        "text": "{\"blocker_count\":0,\"checkpoint_id\":\"CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b\",\"date\":\"2026-09-03\",\"done_count\":1,\"event_id\":2,\"first_for_task\":false,\"kind\":\"agent.checkpoint.committed\",\"next_count\":1,\"origin\":\"agent-cli-v1\",\"replayed\":false,\"task_id\":\"T-0001\",\"workspace_uid\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+        "utf8_hex": "7b22626c6f636b65725f636f756e74223a302c22636865636b706f696e745f6964223a2243502d33366135373236373732313865663764623162663232333630363138396661373532353431623462613134346139343661356535316437663563643432373462222c2264617465223a22323032362d30392d3033222c22646f6e655f636f756e74223a312c226576656e745f6964223a322c2266697273745f666f725f7461736b223a66616c73652c226b696e64223a226167656e742e636865636b706f696e742e636f6d6d6974746564222c226e6578745f636f756e74223a312c226f726967696e223a226167656e742d636c692d7631222c227265706c61796564223a66616c73652c227461736b5f6964223a22542d30303031222c22776f726b73706163655f756964223a2231323365343536372d653839622d343264332d613435362d343236363134313734303030227d",
+        "sha256": "b59d6d7ea218072d686562c250b9cb10c556722388072de305f084121f6e4336"
+      }
+    },
+    {
+      "id": "notice.zero-done-positive-next",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:fb048fb9011fe5492e1630aa23f926ae4ac80e11f2a3e21a0496d039d1c0800e",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 0,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 3
+      },
+      "expected": {
+        "event_id": 3,
+        "kind": "agent.checkpoint.committed",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "task_id": "T-0001",
+        "date": "2026-09-03",
+        "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+        "done_count": 0,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true,
+        "origin": "agent-cli-v1",
+        "replayed": false
+      },
+      "canonical_notice": {
+        "text": "{\"blocker_count\":0,\"checkpoint_id\":\"CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b\",\"date\":\"2026-09-03\",\"done_count\":0,\"event_id\":3,\"first_for_task\":true,\"kind\":\"agent.checkpoint.committed\",\"next_count\":1,\"origin\":\"agent-cli-v1\",\"replayed\":false,\"task_id\":\"T-0001\",\"workspace_uid\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+        "utf8_hex": "7b22626c6f636b65725f636f756e74223a302c22636865636b706f696e745f6964223a2243502d33366135373236373732313865663764623162663232333630363138396661373532353431623462613134346139343661356535316437663563643432373462222c2264617465223a22323032362d30392d3033222c22646f6e655f636f756e74223a302c226576656e745f6964223a332c2266697273745f666f725f7461736b223a747275652c226b696e64223a226167656e742e636865636b706f696e742e636f6d6d6974746564222c226e6578745f636f756e74223a312c226f726967696e223a226167656e742d636c692d7631222c227265706c61796564223a66616c73652c227461736b5f6964223a22542d30303031222c22776f726b73706163655f756964223a2231323365343536372d653839622d343264332d613435362d343236363134313734303030227d",
+        "sha256": "d521b11639eb0b64a2eafa96004d6a0a5816b6391529eeb5f20e18025f2645d5"
+      }
+    },
+    {
+      "id": "notice.store-domain-v7",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-72d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-6bb4aad575adbf27c773ac873ae66dfd2b98fab3992b28c79d727aa3072f12b7",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 4
+      },
+      "expected": {
+        "event_id": 4,
+        "kind": "agent.checkpoint.committed",
+        "workspace_uid": "123e4567-e89b-72d3-a456-426614174000",
+        "task_id": "T-0001",
+        "date": "2026-09-03",
+        "checkpoint_id": "CP-6bb4aad575adbf27c773ac873ae66dfd2b98fab3992b28c79d727aa3072f12b7",
+        "done_count": 1,
+        "next_count": 1,
+        "blocker_count": 0,
+        "first_for_task": true,
+        "origin": "agent-cli-v1",
+        "replayed": false
+      },
+      "canonical_notice": {
+        "text": "{\"blocker_count\":0,\"checkpoint_id\":\"CP-6bb4aad575adbf27c773ac873ae66dfd2b98fab3992b28c79d727aa3072f12b7\",\"date\":\"2026-09-03\",\"done_count\":1,\"event_id\":4,\"first_for_task\":true,\"kind\":\"agent.checkpoint.committed\",\"next_count\":1,\"origin\":\"agent-cli-v1\",\"replayed\":false,\"task_id\":\"T-0001\",\"workspace_uid\":\"123e4567-e89b-72d3-a456-426614174000\"}",
+        "utf8_hex": "7b22626c6f636b65725f636f756e74223a302c22636865636b706f696e745f6964223a2243502d36626234616164353735616462663237633737336163383733616536366466643262393866616233393932623238633739643732376161333037326631326237222c2264617465223a22323032362d30392d3033222c22646f6e655f636f756e74223a312c226576656e745f6964223a342c2266697273745f666f725f7461736b223a747275652c226b696e64223a226167656e742e636865636b706f696e742e636f6d6d6974746564222c226e6578745f636f756e74223a312c226f726967696e223a226167656e742d636c692d7631222c227265706c61796564223a66616c73652c227461736b5f6964223a22542d30303031222c22776f726b73706163655f756964223a2231323365343536372d653839622d373264332d613435362d343236363134313734303030227d",
+        "sha256": "97e5bccd8cef78a75013dda3e148ed737bec79fccaca9dbc4ae39374d94cc5c8"
+      }
+    },
+    {
+      "id": "notice.ordinary-refuses",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": null
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-event-id-zero",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 0
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-event-id-negative",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": -1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-event-id-bool",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": true
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-event-id-float",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1.0
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-event-id-overflow",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 9007199254740992
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-event-id-string",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": "1"
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-done_count-bool",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": true,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-done_count-float",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1.0,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-done_count-negative",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": -1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-done_count-overflow",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 21,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-next_count-bool",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": true,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-next_count-float",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1.0,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-next_count-negative",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": -1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-next_count-overflow",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 21,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-blocker_count-bool",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": true,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-blocker_count-float",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 1.0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-blocker_count-negative",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": -1,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-blocker_count-overflow",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 21,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-zero-total",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 0,
+          "next_count": 0,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-first-int",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": 1
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-first-string",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": "true"
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-first-null",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": null
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-extra-prose",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true,
+          "prose": "must never leak"
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-extra-replayed",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true,
+          "replayed": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-extra-idempotency_key",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true,
+          "idempotency_key": "Agent-Intent-0001"
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-recorded-task",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1",
+            "task": "must never leak"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-recorded-type",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.updated",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-recorded-checkpoint_id",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-recorded-entry_digest",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-recorded-date",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-02-29",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-recorded-ordinal",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": true,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-recorded-origin",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": ""
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-recorded-workspace_uid",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123E4567-E89B-42D3-A456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-recorded-task_id",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "t-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-missing-recorded-key",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "next_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    },
+    {
+      "id": "notice.invalid-missing-count",
+      "operation": "build_committed_notice",
+      "input": {
+        "facts": {
+          "recorded": {
+            "type": "worklog.recorded",
+            "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+            "task_id": "T-0001",
+            "checkpoint_id": "CP-36a572677218ef7db1bf223606189fa752541b4ba144a946a5e51d7f5cd4274b",
+            "date": "2026-09-03",
+            "ordinal": 0,
+            "entry_digest": "sha256:ed194107bda52bb5caa3101782a0a28542f63747dc1983f8bfe02dc90cb56f05",
+            "origin": "agent-cli-v1"
+          },
+          "done_count": 1,
+          "blocker_count": 0,
+          "first_for_task": true
+        },
+        "event_id": 1
+      },
+      "expected_error": {
+        "type": "CheckpointChangeError",
+        "code": "invalid_checkpoint_input",
+        "message": "invalid checkpoint input"
+      }
+    }
+  ],
+  "relations": [
+    {
+      "id": "same-key",
+      "left": "identity.base",
+      "right": "identity.same-key",
+      "field": "expected",
+      "comparison": "equal"
+    },
+    {
+      "id": "key-case",
+      "left": "identity.base",
+      "right": "identity.case-distinct",
+      "field": "expected",
+      "comparison": "not_equal"
+    },
+    {
+      "id": "workspace-separation",
+      "left": "identity.base",
+      "right": "identity.workspace-distinct",
+      "field": "expected",
+      "comparison": "not_equal"
+    },
+    {
+      "id": "same-content-different-occurrences-digest",
+      "left": "facts.base",
+      "right": "facts.same-content-new-occurrence",
+      "field": "expected.recorded.entry_digest",
+      "comparison": "equal"
+    },
+    {
+      "id": "same-content-different-occurrences-id",
+      "left": "facts.base",
+      "right": "facts.same-content-new-occurrence",
+      "field": "expected.recorded.checkpoint_id",
+      "comparison": "not_equal"
+    },
+    {
+      "id": "physical-ordinal",
+      "left": "facts.base",
+      "right": "facts.same-content-new-occurrence",
+      "field": "expected.recorded.ordinal",
+      "comparison": "not_equal"
+    },
+    {
+      "id": "identity-excludes-content-service-owns-conflict",
+      "left": "facts.base",
+      "right": "facts.conflicting-content-same-identity",
+      "field": "expected.recorded.checkpoint_id",
+      "comparison": "equal"
+    },
+    {
+      "id": "then-stored-title",
+      "left": "facts.base",
+      "right": "facts.then-stored-title-preserved",
+      "field": "expected.recorded.entry_digest",
+      "comparison": "not_equal"
+    },
+    {
+      "id": "unicode-not-normalized",
+      "left": "facts.nfc",
+      "right": "facts.nfd",
+      "field": "expected.recorded.entry_digest",
+      "comparison": "not_equal"
+    },
+    {
+      "id": "dict-order-not-significant",
+      "left": "facts.base",
+      "right": "facts.insertion-order",
+      "field": "expected.recorded.entry_digest",
+      "comparison": "equal"
+    }
+  ],
+  "normalization_context": [
+    {
+      "source": "workstack/service.py:2453-2471,2547-2553 at ac9aeb0",
+      "request_items": [
+        "  Finished  ",
+        "",
+        "\t",
+        "Next",
+        "Next"
+      ],
+      "already_normalized_items": [
+        "Finished",
+        "Next",
+        "Next"
+      ],
+      "meaning": "Existing service strips and drops blanks, preserves duplicates/order. Builder receives exact stored lists; it never repeats normalization."
+    }
+  ],
+  "notice_keys": [
+    "event_id",
+    "kind",
+    "workspace_uid",
+    "task_id",
+    "date",
+    "checkpoint_id",
+    "done_count",
+    "next_count",
+    "blocker_count",
+    "first_for_task",
+    "origin",
+    "replayed"
+  ],
+  "handwritten_python_cases": [
+    "Reject int/dict/list/str subclasses under strict built-in checks",
+    "Reject tuple and set inputs",
+    "Reject unpaired surrogate strings through content-free error",
+    "Reject cyclic input through content-free error",
+    "Builders leave inputs unchanged and return no mutable aliases",
+    "No clock, IO, Store, HTTP parser or publisher access"
+  ]
+}

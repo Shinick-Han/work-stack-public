@@ -1,6 +1,6 @@
 # Work Stack 1.0.7 설치·사용 안내서
 
-> **문서 상태.** Work Stack **1.0.7** 제품 기준입니다. 이 저장소의 GitHub Releases에는 아직 v1.0.7 설치 파일이 없습니다. 지금 공개된 설치 파일은 [Releases](https://github.com/Shinick-Han/work-stack-public/releases)에서 받고, 옆의 `.sha256` 사이드카로 검증하세요. 검증된 `WorkStack-Setup-1.0.7.ps1`과 사이드카를 따로 가진 경우에만 아래 1.0.7 절차를 따르세요.
+> **문서 상태.** Work Stack **1.0.7** 제품 기준입니다. 공개 GitHub 릴리스는 [v1.0.7](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.7)입니다. 설치 파일은 그 릴리스 자산과 [`installer/`](../installer/)에 있고, 옆의 `.sha256` 사이드카로 검증하세요.
 
 ---
 
@@ -13,7 +13,7 @@ Work Stack은 목표(Objective)·핵심 결과(Key Result)·작업(Task)·일일
 - 데스크톱 창은 Microsoft Edge WebView2 Runtime이 있어야 열립니다. 최신 Windows 10/11에는 대개 포함되어 있습니다. 이 1.0.7 설치본은 64비트 Windows 11에서 WebView2와 함께 창이 열리는 것을 확인했습니다. 그 밖의 OS/WebView2 조합 목록은 이 문서에 없습니다.
 - 설치 파일은 코드 서명되어 있지 않습니다. 체크섬은 "받은 바이트가 사이드카와 같은가"를 확인할 뿐, 게시자 신원을 증명하지 않습니다.
 - 이 안내서는 Linux 데스크톱 GUI를 약속하지 않습니다. Linux는 SSH로 연결되는 원격 SSOT 서버와 명령행(CLI)·에이전트 실행 환경으로만 다룹니다.
-- 소스 버전 리터럴은 `1.0.7`입니다(`workstack/__init__.py`). 설치 파일 이름은 `WorkStack-Setup-1.0.7.ps1`, 사이드카는 `WorkStack-Setup-1.0.7.ps1.sha256`입니다. 설치된 호스트의 파일 버전은 `1.0.7.0`, 제품 버전은 `1.0.7`입니다. **특정 빌드 SHA-256은 이 문서에 적지 않습니다.** 권위는 항상 같은 배포의 사이드카입니다.
+- 소스 버전 리터럴은 `1.0.7`입니다(`workstack/__init__.py`). 설치 파일 이름은 `WorkStack-Setup-1.0.7.ps1`, 사이드카는 `WorkStack-Setup-1.0.7.ps1.sha256`입니다. 설치된 호스트의 파일 버전은 `1.0.7.0`, 제품 버전은 `1.0.7`입니다. 이 게시본 설치 파일 SHA-256은 `c626ad88209585038ca6eca8d94a465cbf548573e01a3a354de652a86bd27edd`입니다. 받은 파일은 항상 같은 배포의 사이드카와 맞춰 검증하세요.
 
 이전 공개 버전은 1.0.6입니다. 참고로 1.0.6의 게시 자산은 `WorkStack-Setup-1.0.6.ps1`(26,402,269바이트, SHA-256 `5a41a4d542ce40662d73d1a769f1c6f5b311da5008a9da7296ed6795008420da`)과 사이드카 `WorkStack-Setup-1.0.6.ps1.sha256`(92바이트)이었고, 공개 저장소 `Shinick-Han/work-stack-public`에는 v1.0.0부터 v1.0.6까지의 릴리스가 있습니다. 1.0.7 자산도 같은 이름 규칙을 따릅니다.
 
@@ -21,11 +21,13 @@ Work Stack은 목표(Objective)·핵심 결과(Key Result)·작업(Task)·일일
 
 같은 버전의 **두 파일**을 함께 받습니다: `WorkStack-Setup-1.0.7.ps1`와 `WorkStack-Setup-1.0.7.ps1.sha256`.
 
-지금은 다음 중 하나입니다.
+공개 릴리스에서 받습니다.
 
-- **소스에서 빌드한 배포 묶음**: 체크아웃에서 `npm --prefix frontend run build` 뒤 `scripts\windows\Build-WindowsInstaller.ps1`을 실행하면 `.artifacts\WorkStack-Setup-1.0.7.ps1`과 사이드카가 생깁니다.
-- **이미 받은 1.0.7 설치 파일**: 파일명과 사이드카가 위와 같으면 같은 절차로 검증합니다.
-- **이후 공개 릴리스**: 자동 업데이트 검사기가 받아들이는 주소 형식은 `https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/WorkStack-Setup-1.0.7.ps1` 입니다. 공개 저장소의 릴리스 목록은 `https://github.com/Shinick-Han/work-stack-public/releases` 입니다. **v1.0.7 태그와 그 자산은 아직 없습니다.** 게시되기 전에는 이 URL을 열어 설치하지 마세요.
+- 설치 파일: `https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/WorkStack-Setup-1.0.7.ps1`
+- 사이드카: `https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/WorkStack-Setup-1.0.7.ps1.sha256`
+- 업데이트 매니페스트: `https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/workstack-update.json`
+
+같은 파일이 저장소 [`installer/`](../installer/)에도 있습니다. 소스에서 다시 빌드하면 `.artifacts\WorkStack-Setup-1.0.7.ps1`이 생기지만, 그 바이트는 이 게시본과 다를 수 있습니다. 설치할 때는 릴리스 자산 또는 `installer/` 복사본과 그 사이드카를 쓰세요.
 
 사이드카의 내용은 정확히 한 줄입니다: `<소문자 64자리 SHA-256>` + 공백 두 개 + `WorkStack-Setup-1.0.7.ps1` + 줄바꿈. (1.0.6 사이드카도 이 형식이었습니다.)
 
@@ -48,7 +50,7 @@ if ($Actual -ne $Expected) { throw "Setup hash mismatch. Expected $Expected, got
 
 ### 2.2 사이드카 다이제스트만 직접 비교
 
-릴리스 페이지에 적힌 해시가 아직 없을 때는 사이드카 한 줄의 64자리만 비교합니다.
+릴리스 페이지의 해시와 사이드카 한 줄의 64자리는 같아야 합니다. 둘 중 하나만 있어도 사이드카가 권위입니다.
 
 ```powershell
 $Expected = ((Get-Content -Raw .\WorkStack-Setup-1.0.7.ps1.sha256).Split(' ', 2)[0]).ToLowerInvariant()

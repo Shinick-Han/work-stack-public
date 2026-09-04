@@ -51,6 +51,15 @@ class RemoteRebindResult:
     current_workspace_id: str
 
 
+@dataclass(frozen=True)
+class LocalRebindResult:
+    registry: ConnectionRegistry
+    registry_digest: str
+    previous_workspace_id: str
+    current_workspace_id: str
+    data_dir: str
+
+
 def _canonical_payload(value: object) -> bytes:
     return (
         json.dumps(value, ensure_ascii=True, separators=(",", ":")) + "\n"
@@ -266,4 +275,90 @@ def rebind_active_remote_workspace(
             registry_digest=connection_registry_digest(saved),
             previous_workspace_id=previous,
             current_workspace_id=observed,
+        )
+
+
+def _registry_with_rebound_active_local(
+    registry: ConnectionRegistry,
+    *,
+    expected_profile_id: str,
+    expected_previous_workspace_id: str,
+    expected_data_dir: str,
+    observed_workspace_id: str,
+) -> tuple[ConnectionRegistry, str]:
+    """Change only ``expected_workspace_id`` on the confirmed active local profile.
+
+    The active profile must still be the same enabled LOCAL profile, still
+    carry the previous identity, and still point at the same directory. Any of
+    those having moved means a newer selection or metadata edit happened after
+    the user confirmed, and the caller must refuse rather than overwrite it.
+    """
+
+    active = _active_profile(registry)
+    if active.profile_id != expected_profile_id:
+        raise RuntimeError("Confirmed rebind profile is not the active profile")
+    if not isinstance(active, LocalConnectionProfile):
+        raise RuntimeError("Only an active local profile can be locally rebound")
+    if active.expected_workspace_id != expected_previous_workspace_id:
+        raise RuntimeError("Active profile workspace changed before rebind")
+    if Path(active.data_dir).resolve() != Path(expected_data_dir).resolve():
+        raise RuntimeError("Active profile data directory changed before rebind")
+    rebound = replace(active, expected_workspace_id=observed_workspace_id)
+    profiles = tuple(
+        rebound if profile.profile_id == active.profile_id else profile
+        for profile in registry.profiles
+    )
+    normalized = registry_from_document(
+        registry_to_document(
+            ConnectionRegistry(
+                schema_version=registry.schema_version,
+                active_profile_id=registry.active_profile_id,
+                profiles=profiles,
+            )
+        )
+    )
+    return normalized, active.data_dir
+
+
+def rebind_active_local_workspace(
+    state_root: Path,
+    *,
+    expected_registry_digest: str,
+    expected_profile_id: str,
+    expected_previous_workspace_id: str,
+    expected_data_dir: str,
+    observed_workspace_id: str,
+    confirmation_workspace_id: str,
+) -> LocalRebindResult:
+    """CAS-update only the confirmed active LOCAL profile authority metadata.
+
+    The local counterpart of :func:`rebind_active_remote_workspace`, using the
+    same mutation lock and the same registry-digest compare-and-swap. The caller
+    is responsible for having independently re-read the Store's own confirmation
+    evidence first; this function performs no adoption of its own.
+    """
+
+    profile_id, previous, observed = _confirmed_rebind_ids(
+        expected_profile_id=expected_profile_id,
+        expected_previous_workspace_id=expected_previous_workspace_id,
+        observed_workspace_id=observed_workspace_id,
+        confirmation_workspace_id=confirmation_workspace_id,
+    )
+    state_root = Path(state_root)
+    with connection_registry_mutation_lock(state_root):
+        current = _load_registry_cas(state_root, expected_registry_digest)
+        candidate, data_dir = _registry_with_rebound_active_local(
+            current,
+            expected_profile_id=profile_id,
+            expected_previous_workspace_id=previous,
+            expected_data_dir=expected_data_dir,
+            observed_workspace_id=observed,
+        )
+        saved = save_connection_registry(state_root, candidate)
+        return LocalRebindResult(
+            registry=saved,
+            registry_digest=connection_registry_digest(saved),
+            previous_workspace_id=previous,
+            current_workspace_id=observed,
+            data_dir=data_dir,
         )

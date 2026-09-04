@@ -1,3 +1,75 @@
+import type { DoneVisibility } from "../../../domain/workspaceFilterTypes";
+
+/**
+ * Q3: the completed-visibility projector's declarations live with the other
+ * Workspace view types instead of being imported back from the projector.
+ * The projector re-exports them, so no consumer import has to change.
+ */
+/** Why a Task stayed visible despite the current filters or the Done rule. */
+export type PinReason = "selected" | "context" | "focus";
+
+export type PrerequisiteReason =
+  | "visible"
+  | "completed"
+  | "other-filter"
+  | "missing";
+
+export type EmptyKind = "none" | "no-tasks" | "all-complete" | "other-filter-empty";
+
+export interface CompletedVisibilityReveal {
+  anchorTaskId: string;
+  scopeKey: string;
+  taskIds: readonly string[];
+}
+
+export interface CompletedVisibilityInput {
+  tasks: readonly WorkspaceTask[];
+  filters: WorkspaceFilters;
+  view: WorkspaceView;
+  doneVisibility?: DoneVisibility;
+  selectedTaskId?: string | null;
+  contextTargetTaskId?: string | null;
+  focusPinnedTaskId?: string | null;
+  prerequisiteAnchorTaskId?: string | null;
+  reveal?: CompletedVisibilityReveal | null;
+}
+
+export interface PrerequisiteClassification {
+  id: string;
+  reason: PrerequisiteReason;
+  revealable: boolean;
+}
+
+export interface CompletedVisibilityCounts {
+  canonicalTotal: number;
+  filterMatchedTotal: number;
+  visible: number;
+  hiddenCompleted: number;
+  hiddenOther: number;
+  retained: number;
+  revealed: number;
+}
+
+export interface CompletedVisibilityProjection {
+  referenceTasks: readonly WorkspaceTask[];
+  visibleTasks: readonly WorkspaceTask[];
+  hiddenCompletedTaskIds: readonly string[];
+  hiddenOtherTaskIds: readonly string[];
+  retainedTaskIds: readonly string[];
+  pinReasonsByTaskId: Readonly<Record<string, readonly PinReason[]>>;
+  missingPinTaskIds: readonly string[];
+  selection: {
+    selectedTaskId: string | null;
+    contextTargetTaskId: string | null;
+    focusPinnedTaskId: string | null;
+  };
+  reveal: CompletedVisibilityReveal | null;
+  revealRemainingCount: number;
+  prerequisitesByTaskId: Readonly<Record<string, readonly PrerequisiteClassification[]>>;
+  counts: CompletedVisibilityCounts;
+  emptyKind: EmptyKind;
+}
+
 export const TASK_STATUSES = ["open", "started", "done", "dropped"] as const;
 export const TASK_PRIORITIES = ["P0", "P1", "P2", "P3"] as const;
 
@@ -25,6 +97,7 @@ export interface WorkspaceTask {
   due?: string | null;
   tags?: readonly string[];
   objective_ids?: readonly string[];
+  key_result_refs?: readonly { objective_id: string; key_result_id: string }[];
   parent_id?: string | null;
   dependencies?: readonly string[];
   subtasks?: readonly WorkspaceSubtask[];
@@ -64,6 +137,12 @@ export interface WorkspaceEdge {
   kind?: WorkspaceEdgeKind | string;
 }
 
+import type { ReactNode } from "react";
+
+
+
+import type { KeyResultProjection, OutcomeFilter } from "./keyResultModel";
+
 export interface WorkspaceFilters {
   search?: string;
   status?: string;
@@ -71,13 +150,46 @@ export interface WorkspaceFilters {
   objectiveId?: string;
   readiness?: "all" | "ready" | "blocked";
   timing?: "all" | "overdue" | "today" | "soon" | "unscheduled";
+  /** Scoped outcome coordinate; composes by AND inside the same filter pass. */
+  outcome?: OutcomeFilter;
   today?: string;
 }
 
-export interface WorkspaceViewsProps extends WorkspaceFilters {
+/**
+ * Transient, view-local interaction identities carried through the coordinator.
+ * They are never persisted to the URL, storage, Task fields or saved filters,
+ * and DOM trigger references stay inside GraphView.
+ */
+export interface WorkspaceInteractionPins {
+  /**
+   * Renders the popup-owned prerequisite controls INSIDE the Graph context
+   * modal. The Page still owns the projection, anchor and reveal state; this
+   * only carries its element to the one place a modal leaves reachable.
+   */
+  renderPopupPrerequisites?: (taskId: string) => ReactNode;
+  /** The independently open popup target, distinct from the shell selection. */
+  contextTargetTaskId?: string | null;
+  /** The Task whose trigger currently owns focus restoration. */
+  focusPinnedTaskId?: string | null;
+  onContextTargetChange?: (taskId: string | null) => void;
+  onFocusPinChange?: (taskId: string | null) => void;
+}
+
+export interface WorkspaceViewsProps extends WorkspaceFilters, WorkspaceInteractionPins {
   /** Active canvas. Graph and Treemap never mutate workspace data. */
   view: WorkspaceView;
   tasks: readonly WorkspaceTask[];
+  /**
+   * The single authoritative projection. When supplied, the coordinator renders
+   * projection.visibleTasks and never runs a second filter of its own.
+   */
+  projection?: CompletedVisibilityProjection;
+  /** Scoped outcome coordinate for the isolated fallback projection only. */
+  outcome?: OutcomeFilter;
+  /** The single Page-owned Key Result projection; renderers never rebuild it. */
+  keyResultProjection?: KeyResultProjection;
+  /** Narrow callback: choosing an outcome only changes that filter coordinate. */
+  onSelectOutcome?: (selection: { objectiveId: string; keyResultId: string }) => void;
   objectives: readonly WorkspaceObjective[];
   notes: readonly WorkspaceNote[];
   edges: readonly WorkspaceEdge[];

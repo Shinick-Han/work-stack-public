@@ -2,12 +2,30 @@
 # exactly on every platform; newline conversion invalidates the bundle root.
 contracts/workstack-conduit-v1/** -text
 
+# The checkpoint-transition contract test pins this frozen supplemental fixture
+# to an exact SHA-256 (tests/test_checkpoint_transition_contract.py,
+# FrozenSupplementTests.test_fixture_matches_the_frozen_digest). A Windows
+# checkout with core.autocrlf=true turns its single trailing LF into CRLF and
+# the digest no longer matches, so preserve the committed bytes exactly.
+tests/fixtures/checkpoint_transition_v1.json -text
+
 # Theme generators emit canonical LF bytes. Windows checkouts must preserve
 # those bytes so `theme:check` is identical locally and in GitHub Actions.
 frontend/src/generated/theme-tokens.css text eol=lf
 desktop/python-webview-shell/generated/theme_tokens.py text eol=lf
 
+# The brand generator emits canonical LF SVG bytes and `generate_brand_assets.py
+# --check` compares them against the working files. Without this rule a Windows
+# checkout converts them to CRLF and that byte comparison fails, so pin the
+# checkout to the bytes the committed blobs already hold.
+*.svg text eol=lf
+
 # Published setup scripts are immutable release artifacts. Treat the large
 # self-extracting PowerShell payload as opaque bytes so its SHA-256 sidecar
 # remains valid after cloning on Windows.
 installer/WorkStack-Setup-*.ps1 binary
+
+# Sidecar digest and update manifest are size-pinned by the public release.
+# Preserve repository bytes exactly so Windows autocrlf cannot change them.
+installer/WorkStack-Setup-*.ps1.sha256 -text
+installer/workstack-update.json -text

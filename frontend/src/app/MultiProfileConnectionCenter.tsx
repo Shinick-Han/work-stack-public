@@ -34,6 +34,7 @@ interface MultiProfileConnectionCenterProps {
   /** Separate dark gate: activation is a persisted restart transition, never a hot switch. */
   activationEnabled?: boolean
   enabled?: boolean
+  onReviewSynchronization?: () => void
   open: boolean
   onClose: () => void
 }
@@ -60,6 +61,16 @@ interface EditorContext {
   setFeedback: Dispatch<SetStateAction<string>>
   error: string
   setError: Dispatch<SetStateAction<string>>
+  // The one removal this component is waiting for. A save-registry reply is a
+  // deletion receipt only when it answers exactly this request.
+  removalRef: { current: PendingRemoval | null }
+}
+
+interface PendingRemoval {
+  label: string
+  path: string
+  profileId: string
+  requestId: string
 }
 
 interface EditorActions {
@@ -67,6 +78,7 @@ interface EditorActions {
   changeDraft: (draft: ConnectionProfileDraft) => void
   close: () => void
   persist: (activate: boolean) => void
+  removeProfile: (profile: ConnectionProfile) => void
   selectProfile: (profile: ConnectionProfile) => void
   testProfile: () => void
 }
@@ -133,12 +145,13 @@ function useEditorContext(): EditorContext {
   const [testedRegistryDigest, setTestedRegistryDigest] = useState<ConnectionRegistryDigest | undefined>(undefined)
   const [feedback, setFeedback] = useState('')
   const [error, setError] = useState('')
+  const removalRef = useRef<PendingRemoval | null>(null)
   draftRef.current = draft
   return {
     registry, setRegistry, registryDigest, setRegistryDigest, draft, draftRef, setDraft, originalFingerprint, setOriginalFingerprint,
     aliases, setAliases, testResult, setTestResult, testedFingerprint, setTestedFingerprint,
     testedRegistryDigest, setTestedRegistryDigest,
-    feedback, setFeedback, error, setError,
+    feedback, setFeedback, error, setError, removalRef,
   }
 }
 
@@ -167,7 +180,32 @@ function applyTestResult(message: Extract<SuccessMessage, { operation: 'test-pro
   editor.setFeedback(testResultMessage(message.result))
 }
 
+function applyRemovedProfile(
+  message: Extract<SuccessMessage, { operation: 'save-registry' }>,
+  editor: EditorContext,
+  removal: PendingRemoval,
+) {
+  editor.removalRef.current = null
+  const registry = message.result.registry
+  editor.setRegistry(registry)
+  editor.setRegistryDigest(message.result.registry_digest)
+  if (registry.profiles.some((profile) => profile.profile_id === removal.profileId)) {
+    // The host answered this exact request but the entry survived. Report that
+    // rather than claiming a removal that did not happen.
+    editor.setError('The saved connection profile was not removed. Reload the connection registry and try again.')
+    return
+  }
+  const surviving = registry.profiles.find((profile) => profile.profile_id === registry.active_profile_id)
+    ?? registry.profiles[0]
+  resetEditor(editor, surviving ? toDraft(surviving) : createDraft('local'))
+  editor.setFeedback(`Removed the saved connection profile “${removal.label}”. Its SSOT at ${removal.path} was not touched and the running workspace has not changed.`)
+}
+
 function applySavedRegistry(message: Extract<SuccessMessage, { operation: 'save-registry' | 'activate-profile' }>, editor: EditorContext) {
+  const removal = editor.removalRef.current
+  if (message.operation === 'save-registry' && removal !== null && removal.requestId === message.request_id) {
+    return applyRemovedProfile(message, editor, removal)
+  }
   editor.setRegistry(message.result.registry)
   editor.setRegistryDigest(message.result.registry_digest)
   const saved = message.result.registry.profiles.find((profile) => profile.profile_id === editor.draftRef.current.profile_id)
@@ -221,6 +259,11 @@ function useRegistryHost(enabled: boolean, open: boolean, editor: EditorContext)
       const pending = pendingRef.current.get(operation)
       if (!pending || pending.requestId !== requestId) return
       finish(operation)
+      if (editorRef.current.removalRef.current?.requestId === requestId) {
+        editorRef.current.removalRef.current = null
+        editorRef.current.setError('The removal result is unknown: the desktop service did not answer. Reload the connection registry before trying again.')
+        return
+      }
       editorRef.current.setError('The connection operation timed out. Try again.')
     }, 20_000)
     pendingRef.current.set(operation, { requestId, fingerprint: candidateFingerprint, timeoutId })
@@ -246,7 +289,10 @@ function useRegistryHost(enabled: boolean, open: boolean, editor: EditorContext)
         return
       }
       finish(message.operation)
-      if (!message.ok) return editorRef.current.setError(message.error.message)
+      if (!message.ok) {
+        if (editorRef.current.removalRef.current?.requestId === message.request_id) editorRef.current.removalRef.current = null
+        return editorRef.current.setError(message.error.message)
+      }
       editorRef.current.setError('')
       applySuccessMessage(message, editorRef.current)
     })
@@ -293,6 +339,48 @@ function useEditorActions(editor: EditorContext, begin: BeginRequest, onClose: (
   function selectProfile(selected: ConnectionProfile) {
     if (confirmDiscard()) resetEditor(editor, toDraft(selected))
   }
+  function removeProfile(target: ConnectionProfile) {
+    // Only an entry that is actually persisted can be removed, and never the
+    // active one: a draft in the editor is not a saved profile.
+    const persisted = editor.registry.profiles.find((profile) => profile.profile_id === target.profile_id)
+    if (!persisted) {
+      editor.setError('Only a saved connection profile can be removed.')
+      return
+    }
+    if (persisted.profile_id === editor.registry.active_profile_id) {
+      editor.setError('The active connection profile cannot be removed. Activate another profile first.')
+      return
+    }
+    if (editor.registryDigest === undefined) {
+      editor.setError('Profile writes require a CAS-capable desktop host. Update Work Stack and reopen this center.')
+      return
+    }
+    const path = profilePath(persisted)
+    const confirmed = window.confirm(
+      `Remove the saved connection profile “${persisted.label}” (${path})?\n\n`
+      + `Only this connection entry is removed. The SSOT at ${path} and everything inside it are left untouched.`,
+    )
+    if (!confirmed) return
+    if (dirty && !window.confirm('Your unsaved connection profile changes will be discarded. Remove the saved profile anyway?')) return
+    const expectedRegistryDigest = editor.registryDigest
+    // Built from the persisted registry snapshot, never from the draft, so an
+    // unsaved edit cannot be written as a side effect of a removal.
+    const candidate = connectionRegistrySchema.safeParse({
+      schema_version: CONNECTION_REGISTRY_SCHEMA_VERSION,
+      active_profile_id: editor.registry.active_profile_id,
+      profiles: editor.registry.profiles.filter((profile) => profile.profile_id !== persisted.profile_id),
+    })
+    if (!candidate.success) {
+      editor.setError('This removal conflicts with the current connection registry.')
+      return
+    }
+    editor.setError('')
+    editor.setFeedback('')
+    begin('save-registry', (id) => {
+      editor.removalRef.current = { label: persisted.label, path, profileId: persisted.profile_id, requestId: id }
+      return saveConnectionRegistry(candidate.data, expectedRegistryDigest, id)
+    })
+  }
   function testProfile() {
     const baseRegistryDigest = editor.registryDigest
     if (validDraft.success && baseRegistryDigest !== undefined) {
@@ -324,12 +412,12 @@ function useEditorActions(editor: EditorContext, begin: BeginRequest, onClose: (
       begin('activate-profile', (id) => activateConnectionProfile(candidate.data, profile.data.profile_id, proofId, expectedRegistryDigest, id), candidateFingerprint)
     } else begin('save-registry', (id) => saveConnectionRegistry(candidate.data, expectedRegistryDigest, id), candidateFingerprint)
   }
-  return { addProfile, changeDraft, close: () => { if (confirmDiscard()) onClose() }, persist, selectProfile, testProfile }
+  return { addProfile, changeDraft, close: () => { if (confirmDiscard()) onClose() }, persist, removeProfile, selectProfile, testProfile }
 }
 
-function ProfileList({ activeId, draftId, pending, profiles, onAdd, onSelect }: {
+function ProfileList({ activeId, draftId, pending, profiles, onAdd, onRemove, onSelect }: {
   activeId: string | null; draftId: string; pending: boolean; profiles: readonly ConnectionProfile[]
-  onAdd: (kind: 'local' | 'ssh') => void; onSelect: (profile: ConnectionProfile) => void
+  onAdd: (kind: 'local' | 'ssh') => void; onRemove: (profile: ConnectionProfile) => void; onSelect: (profile: ConnectionProfile) => void
 }) {
   return <section aria-labelledby="connection-profile-list-title">
     <div className="multi-profile-connections__heading"><h3 id="connection-profile-list-title">Workspace profiles</h3><div>
@@ -342,6 +430,9 @@ function ProfileList({ activeId, draftId, pending, profiles, onAdd, onSelect }: 
         <span>{profilePath(profile)}</span>
         <span>{activeId === profile.profile_id ? 'Active' : 'Inactive'} · {profile.enabled ? 'Enabled' : 'Disabled'} · {pathName(profilePath(profile))}</span>
       </button>
+      {activeId === profile.profile_id
+        ? null
+        : <Button disabled={pending} onClick={() => onRemove(profile)}>{`Remove ${profile.label}`}</Button>}
     </li>)}</ul> : <p>No connection profiles have been saved.</p>}
   </section>
 }
@@ -374,18 +465,37 @@ function SshFields({ aliases, begin, draft, onChange, pending }: { aliases: read
   </div>
 }
 
-function DetectedIdentity({ draft, result }: { draft: ConnectionProfileDraft; result: TestResult | null }) {
+function DetectedIdentity({ draft, onReviewSynchronization, result }: {
+  draft: ConnectionProfileDraft
+  onReviewSynchronization?: () => void
+  result: TestResult | null
+}) {
   const identity = result?.actual_workspace_id ?? draft.expected_workspace_id ?? 'Run Test connection'
   const version = result?.product_version
   const protocol = result?.protocol_version
+  const mismatch = result?.status === 'identity_mismatch'
+    && result.actual_workspace_id !== null
+    && draft.expected_workspace_id !== null
+    && result.actual_workspace_id !== draft.expected_workspace_id
   return <div aria-live="polite" className="multi-profile-connections__identity">
-    <strong>Detected workspace identity</strong><code>{identity}</code>
+    {mismatch ? <>
+      <strong>Saved profile identity</strong><code>{draft.expected_workspace_id}</code>
+      <strong>Detected workspace identity</strong><code>{result.actual_workspace_id}</code>
+      <p role="alert">These identities differ. Activation is blocked because this screen cannot prove whether the detected identity is a durable workspace authority or an unresolved Store synchronization candidate. Review the workspace synchronization status before changing this profile.</p>
+      {onReviewSynchronization ? <Button onClick={onReviewSynchronization}>Review workspace synchronization</Button> : null}
+    </> : <><strong>Detected workspace identity</strong><code>{identity}</code></>}
     {version ? <span>Work Stack {version}</span> : null}
     {protocol === null || protocol === undefined ? null : <span>Protocol {protocol}</span>}
   </div>
 }
 
-function ProfileEditor({ actions, begin, editor, pending }: { actions: EditorActions; begin: BeginRequest; editor: EditorContext; pending: ReadonlySet<Operation> }) {
+function ProfileEditor({ actions, begin, editor, onReviewSynchronization, pending }: {
+  actions: EditorActions
+  begin: BeginRequest
+  editor: EditorContext
+  onReviewSynchronization?: () => void
+  pending: ReadonlySet<Operation>
+}) {
   if (pending.has('get-registry')) return <section aria-labelledby="connection-profile-editor-title"><h3 id="connection-profile-editor-title">Loading profiles</h3><p role="status">Reading the connection registry…</p></section>
   if (pending.has('save-registry') || pending.has('activate-profile')) return <section aria-labelledby="connection-profile-editor-title"><h3 id="connection-profile-editor-title">Saving profile</h3><p role="status">The editor is locked until the correlated native response arrives.</p></section>
   const draftValid = connectionProfileDraftSchema.safeParse(editor.draft).success
@@ -399,7 +509,7 @@ function ProfileEditor({ actions, begin, editor, pending }: { actions: EditorAct
     {editor.draft.kind === 'local'
       ? <LocalFields begin={begin} draft={editor.draft} onChange={actions.changeDraft} pending={pending.has('choose-local-directory')} />
       : <SshFields aliases={editor.aliases} begin={begin} draft={editor.draft} onChange={actions.changeDraft} pending={pending.has('discover-ssh-aliases')} />}
-    <DetectedIdentity draft={editor.draft} result={editor.testResult} />
+    <DetectedIdentity draft={editor.draft} onReviewSynchronization={onReviewSynchronization} result={editor.testResult} />
     <Button disabled={pending.size > 0 || !draftValid} onClick={actions.testProfile}>Test connection</Button>
     {editor.feedback ? <p aria-live="polite" role="status">{editor.feedback}</p> : null}
     {editor.error ? <p role="alert">{editor.error}</p> : null}
@@ -425,7 +535,7 @@ function connectionCenterActions(editor: EditorContext, activationEnabled: boole
 }
 
 /** Feature-gated connection center. App keeps the legacy center mounted unless this gate is explicit. */
-export function MultiProfileConnectionCenter({ activationEnabled = false, enabled = false, onClose, open }: MultiProfileConnectionCenterProps) {
+export function MultiProfileConnectionCenter({ activationEnabled = false, enabled = false, onClose, onReviewSynchronization, open }: MultiProfileConnectionCenterProps) {
   const editor = useEditorContext()
   const host = useRegistryHost(enabled, open, editor)
   const actions = useEditorActions(editor, host.begin, onClose)
@@ -437,8 +547,8 @@ export function MultiProfileConnectionCenter({ activationEnabled = false, enable
       <Button disabled={!available.activationAllowed} onClick={() => actions.persist(true)} variant="primary">Save and activate after restart</Button></>}
     onClose={actions.close} open={open} size="large" title="SSOT connections">
     <div className="multi-profile-connections">
-      <ProfileList activeId={editor.registry.active_profile_id} draftId={editor.draft.profile_id} onAdd={actions.addProfile} onSelect={actions.selectProfile} pending={host.pendingOperations.size > 0} profiles={editor.registry.profiles} />
-      <ProfileEditor actions={actions} begin={host.begin} editor={editor} pending={host.pendingOperations} />
+      <ProfileList activeId={editor.registry.active_profile_id} draftId={editor.draft.profile_id} onAdd={actions.addProfile} onRemove={actions.removeProfile} onSelect={actions.selectProfile} pending={host.pendingOperations.size > 0} profiles={editor.registry.profiles} />
+      <ProfileEditor actions={actions} begin={host.begin} editor={editor} onReviewSynchronization={onReviewSynchronization} pending={host.pendingOperations} />
     </div>
   </Dialog>
 }

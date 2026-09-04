@@ -111,3 +111,55 @@ test('bounds the initial task options for a 10,000-Task workspace', () => {
   expect(screen.getByRole('option', { name: /T-00001.*Scale task 1/i })).toBeVisible()
   expect(screen.queryByRole('option', { name: /T-10000.*Scale task 10000/i })).not.toBeInTheDocument()
 })
+
+
+const numberedDestinations: readonly [string, number, Record<string, string>][] = [
+  ['Open Graph view', 1, { surface: 'workspace', view: 'graph' }],
+  ['Open Board view', 2, { surface: 'workspace', view: 'board' }],
+  ['Open Treemap view', 3, { surface: 'workspace', view: 'treemap' }],
+  ['Open Table view', 4, { surface: 'workspace', view: 'table' }],
+  ['Open Focus', 5, { surface: 'focus' }],
+  ['Open Context Inbox', 6, { surface: 'inbox' }],
+  ['Open Daily Review', 7, { surface: 'review' }],
+  ['Open Objective Hub', 8, { surface: 'objectives' }],
+]
+
+test.each(numberedDestinations)(
+  'palette caption for %s advertises shortcut %i and navigates there when clicked',
+  async (label, shortcut, target) => {
+    vi.spyOn(api, 'search').mockResolvedValue({ query: '', items: [] })
+    const onNavigate = vi.fn()
+    renderPalette(
+      <CommandPalette
+        onClose={vi.fn()}
+        onImportCapture={vi.fn()}
+        onNavigate={onNavigate}
+        onNewTask={vi.fn()}
+        onOpenCapture={vi.fn()}
+        onOpenObjective={vi.fn()}
+        onOpenTask={vi.fn()}
+        open
+        tasks={[task]}
+      />,
+    )
+
+    const option = screen.getByRole('option', { name: new RegExp(label, 'i') })
+    // The caption a user reads must name the same number the App key handler
+    // uses; a mismatch here is exactly the T-0004 defect.
+    expect(option).toHaveTextContent(new RegExp(`shortcut ${shortcut}\\b`))
+    await userEvent.click(option)
+    expect(onNavigate).toHaveBeenCalledWith(target)
+  },
+)
+
+test('lists the eight numbered destinations in shortcut order', () => {
+  vi.spyOn(api, 'search').mockResolvedValue({ query: '', items: [] })
+  renderPalette(<CommandPalette onClose={vi.fn()} onImportCapture={vi.fn()} onNavigate={vi.fn()} onNewTask={vi.fn()} onOpenCapture={vi.fn()} onOpenObjective={vi.fn()} onOpenTask={vi.fn()} open tasks={[task]} />)
+
+  const captions = screen.getAllByRole('option')
+    .map((option) => option.textContent ?? '')
+    .filter((text) => /shortcut \d/.test(text))
+    .map((text) => Number(/shortcut (\d)/.exec(text)?.[1]))
+
+  expect(captions).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+})

@@ -2,7 +2,7 @@ import { lazy, Suspense, useMemo } from "react";
 
 import { BoardView } from "./BoardView";
 import type { WorkspaceViewsProps } from "./types";
-import { filterWorkspaceTasks } from "./viewModels";
+import { projectCompletedTaskVisibility } from "./completedTaskVisibility";
 import "./workspace-views.css";
 
 const GraphView = lazy(() => import("./GraphView").then((module) => ({ default: module.GraphView })));
@@ -11,7 +11,12 @@ const TableView = lazy(() => import("./TableView").then((module) => ({ default: 
 
 /**
  * Read-only Graph/Treemap and status-mutating Board/Table coordinator.
- * Filtering is centralized here so all four views show the same task set.
+ *
+ * There is exactly one authoritative task set. The Workspace owner computes the
+ * completed-visibility projection and passes it down, so the summary and every
+ * renderer agree within the same render. The fallback below exists only for
+ * isolated callers that mount this component directly; it uses the same public
+ * projection rather than a second filter.
  */
 export function WorkspaceViews({
   view,
@@ -31,55 +36,106 @@ export function WorkspaceViews({
   onSelectTask,
   onSelectObjective,
   onChangeTaskStatus,
+  projection,
+  outcome,
+  keyResultProjection,
+  onSelectOutcome,
+  contextTargetTaskId = null,
+  focusPinnedTaskId = null,
+  onContextTargetChange,
+  onFocusPinChange,
+  renderPopupPrerequisites,
   className = "",
 }: WorkspaceViewsProps) {
-  const filteredTasks = useMemo(
+  const resolved = useMemo(
     () =>
-      filterWorkspaceTasks(tasks, {
-        search,
-        status,
-        priority,
-        objectiveId,
-        readiness,
-        timing,
-        today,
-      }),
-    [tasks, search, status, priority, objectiveId, readiness, timing, today],
+      projection
+        ?? projectCompletedTaskVisibility({
+          tasks,
+          filters: { search, status, priority, objectiveId, readiness, timing, outcome, today },
+          view,
+          selectedTaskId,
+          contextTargetTaskId,
+          focusPinnedTaskId,
+        }),
+    [
+      projection,
+      outcome,
+      tasks,
+      search,
+      status,
+      priority,
+      objectiveId,
+      readiness,
+      timing,
+      today,
+      view,
+      selectedTaskId,
+      contextTargetTaskId,
+      focusPinnedTaskId,
+    ],
   );
+
+  const visibleTasks = resolved.visibleTasks;
+  const referenceTasks = resolved.referenceTasks;
+
+  // Graph owns its own overlay so an emptied projection does not unmount its
+  // canvas; the other renderers share this one presentation.
+  const emptyMessage = view === "graph" ? null : emptyCopy(resolved.emptyKind);
 
   return (
     <section
       className={`wsv-root ${className}`.trim()}
       data-workspace-view={view}
+      data-empty-kind={resolved.emptyKind}
       role="tabpanel"
       aria-label={`${view} workspace view`}
     >
+      {emptyMessage ? (
+        <div className="wsv-empty" role="status">
+          <strong>{emptyMessage.title}</strong>
+          <span>{emptyMessage.detail}</span>
+        </div>
+      ) : null}
       <Suspense fallback={<div className="wsv-loading" role="status">Loading visualization…</div>}>
         {view === "graph" ? (
           <GraphView
-            tasks={filteredTasks}
+            outcome={outcome ?? null}
+            tasks={visibleTasks}
+            referenceTasks={referenceTasks}
             objectives={objectives}
             notes={notes}
             edges={edges}
+            emptyKind={resolved.emptyKind}
             selectedTaskId={selectedTaskId}
             selectedObjectiveId={selectedObjectiveId}
+            contextTargetTaskId={contextTargetTaskId}
+            focusPinnedTaskId={focusPinnedTaskId}
+            onContextTargetChange={onContextTargetChange}
+            onFocusPinChange={onFocusPinChange}
+            renderPopupPrerequisites={renderPopupPrerequisites}
+            keyResultProjection={keyResultProjection}
+            onSelectOutcome={onSelectOutcome}
             onSelectTask={onSelectTask}
             onSelectObjective={onSelectObjective}
           />
         ) : null}
-        {view === "treemap" ? (
+        {view === "treemap" && !emptyMessage ? (
           <TreemapView
-            tasks={filteredTasks}
+            keyResultProjection={keyResultProjection}
+            tasks={visibleTasks}
             objectives={objectives}
             selectedTaskId={selectedTaskId}
             onSelectTask={onSelectTask}
             onSelectObjective={onSelectObjective}
           />
         ) : null}
-        {view === "table" ? (
+        {view === "table" && !emptyMessage ? (
           <TableView
-            tasks={filteredTasks}
-            referenceTasks={tasks}
+            keyResultProjection={keyResultProjection}
+            onSelectOutcome={onSelectOutcome}
+            tasks={visibleTasks}
+            referenceTasks={referenceTasks}
             selectedTaskId={selectedTaskId}
             onSelectTask={onSelectTask}
             onSelectObjective={onSelectObjective}
@@ -88,10 +144,12 @@ export function WorkspaceViews({
           />
         ) : null}
       </Suspense>
-      {view === "board" ? (
+      {view === "board" && !emptyMessage ? (
         <BoardView
-          tasks={filteredTasks}
-          referenceTasks={tasks}
+          keyResultProjection={keyResultProjection}
+          onSelectOutcome={onSelectOutcome}
+          tasks={visibleTasks}
+          referenceTasks={referenceTasks}
           selectedTaskId={selectedTaskId}
           onSelectTask={onSelectTask}
           onSelectObjective={onSelectObjective}
@@ -101,4 +159,28 @@ export function WorkspaceViews({
       ) : null}
     </section>
   );
+}
+
+/**
+ * "All matching tasks are completed" deliberately never claims the whole
+ * workspace is complete: other filters may still be hiding open work.
+ */
+function emptyCopy(emptyKind: string) {
+  if (emptyKind === "none") return null;
+  if (emptyKind === "no-tasks") {
+    return {
+      title: "No tasks yet",
+      detail: "Create a Task to start planning this workspace.",
+    };
+  }
+  if (emptyKind === "all-complete") {
+    return {
+      title: "All matching tasks are completed",
+      detail: "Show completed tasks to bring them back into view.",
+    };
+  }
+  return {
+    title: "No work matches these filters",
+    detail: "Clear a filter to bring tasks and their relationships back.",
+  };
 }

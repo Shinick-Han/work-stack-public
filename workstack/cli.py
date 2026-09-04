@@ -13,9 +13,11 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote
 
+from . import agent_runtime
+from . import checkpoint_state_cli, cli_writer
 from .server import serve
 from .service import DomainError, WorkStack
-from .maintenance import backup_store, relocate_store, restore_store, verify_backup
+from .maintenance import backup_store, initialize_store, relocate_store, restore_store, verify_backup
 from .snapshot_export import write_snapshot_file
 from .store import Store
 from .storage.migration import (
@@ -55,7 +57,9 @@ def parser() -> argparse.ArgumentParser:
 
     backlog = sub.add_parser("backlog", help="manage projects and tasks")
     backlog_sub = backlog.add_subparsers(dest="action", required=True)
-    add = backlog_sub.add_parser("add")
+    add = backlog_sub.add_parser(
+        "add", description="Create a task; running-owner requests are limited to 1 MiB."
+    )
     add.add_argument("title")
     add.add_argument("--detail", default="")
     add.add_argument("--priority", choices=("P0", "P1", "P2", "P3"), default="P2")
@@ -91,10 +95,14 @@ def parser() -> argparse.ArgumentParser:
     add_key_result.add_argument("--target", default="")
     okr_list = okr_sub.add_parser("list")
     okr_list.add_argument("--status", default="active")
-    link = okr_sub.add_parser("link")
+    link = okr_sub.add_parser(
+        "link", description="Link an objective and task; running-owner requests are limited to 1 MiB."
+    )
     link.add_argument("objective")
     link.add_argument("task")
-    progress = okr_sub.add_parser("progress")
+    progress = okr_sub.add_parser(
+        "progress", description="Update key result progress; running-owner requests are limited to 1 MiB."
+    )
     progress.add_argument("objective")
     progress.add_argument("key_result")
     progress.add_argument("value", type=int)
@@ -102,15 +110,23 @@ def parser() -> argparse.ArgumentParser:
 
     worklog = sub.add_parser("worklog", help="record daily progress")
     worklog_sub = worklog.add_subparsers(dest="action", required=True)
-    checkin = worklog_sub.add_parser("checkin")
+    checkin = worklog_sub.add_parser(
+        "checkin", description="Record checkin; running-owner requests are limited to 1 MiB."
+    )
     checkin.add_argument("--time")
     checkin.add_argument("--date")
-    worklog_add = worklog_sub.add_parser("add")
+    worklog_add = worklog_sub.add_parser(
+        "add", description="Append worklog evidence; running-owner requests are limited to 1 MiB."
+    )
     worklog_add.add_argument("task")
     worklog_add.add_argument("--done", action="append", default=[])
     worklog_add.add_argument("--next", dest="next_items", action="append", default=[])
     worklog_add.add_argument("--blocker", action="append", default=[])
     worklog_add.add_argument("--date")
+    checkpoint_state = worklog_sub.add_parser("checkpoint-state")
+    checkpoint_state.add_argument("checkpoint")
+    checkpoint_state.add_argument("--stdin", action="store_true", required=True)
+    checkpoint_state.add_argument("--idempotency-key", required=True)
     worklog_list = worklog_sub.add_parser("list")
     worklog_list.add_argument("--date")
 
@@ -132,10 +148,17 @@ def parser() -> argparse.ArgumentParser:
         "agent",
         help="apply one revision-guarded agent update without editing Store files",
     )
+    agent.add_argument("--workspace-uid")
     agent_sub = agent.add_subparsers(dest="action", required=True)
     agent_apply = agent_sub.add_parser("apply")
     agent_apply.add_argument("--stdin", action="store_true", required=True)
     agent_apply.add_argument("--intent-id", required=True)
+    agent_sub.add_parser("status")
+    agent_context = agent_sub.add_parser("context")
+    agent_context.add_argument("--task", required=True)
+    agent_checkpoint = agent_sub.add_parser("checkpoint")
+    agent_checkpoint.add_argument("--intent-id", required=True)
+    agent_checkpoint.add_argument("--stdin", action="store_true", required=True)
 
     snapshot = sub.add_parser("snapshot", help="review and export one planning snapshot")
     snapshot_sub = snapshot.add_subparsers(dest="action", required=True)
@@ -197,7 +220,7 @@ def parser() -> argparse.ArgumentParser:
     v4_backup_restore.add_argument("archive")
     v4_backup_restore.add_argument("--to", required=True)
 
-    maintenance = sub.add_parser("maintenance", help="verify, back up, restore, or relocate local data")
+    maintenance = sub.add_parser("maintenance", help="verify, back up, restore, relocate, or initialize local data")
     maintenance_sub = maintenance.add_subparsers(dest="action", required=True)
     backup = maintenance_sub.add_parser("backup")
     backup.add_argument("--out", required=True, help="backup directory")
@@ -210,6 +233,9 @@ def parser() -> argparse.ArgumentParser:
     restore.add_argument("--safety-backups", help="required when replacing an existing store")
     relocate = maintenance_sub.add_parser("relocate")
     relocate.add_argument("--to", required=True, help="empty destination data directory")
+    maintenance_sub.add_parser(
+        "initialize", help="create a new empty workspace in an absent or empty data directory"
+    )
 
     graph = sub.add_parser("graph", help="export or serve the web dashboard")
     graph_sub = graph.add_subparsers(dest="action", required=True)
@@ -234,6 +260,34 @@ def parser() -> argparse.ArgumentParser:
         help="copy tracked demo fixtures only when runtime data is empty",
     )
     return root
+
+
+def forward_checkpoint_state(
+    store: Store, raw: bytes, checkpoint_id: str, idempotency_key: str
+) -> int:
+    """One explicit invocation, one POST, to a running owner only.
+
+    The owner metadata decides the route before any Store initialization: an
+    absent or unusable advertisement refuses here rather than falling back to a
+    local write, because this command has no local form.
+    """
+
+    body = checkpoint_state_cli.parse_body(raw)
+    owner_state = cli_writer.owner_metadata_state(store)
+    if owner_state == cli_writer.OWNER_ABSENT:
+        raise OSError("Work Stack server is not running for this data directory")
+    emit(
+        checkpoint_state_cli.forward_checkpoint_state(
+            store,
+            owner_state,
+            checkpoint_id,
+            body,
+            idempotency_key,
+            coordinates_reader=_server_coordinates,
+            request_json=_request_json,
+        )
+    )
+    return 0
 
 
 def forward_capture(store: Store, raw: bytes, idempotency_key: str | None) -> int:
@@ -522,6 +576,14 @@ def _run_maintenance(arguments: argparse.Namespace, store: Store) -> None:
             "safety_backup": str(receipt.safety_backup) if receipt.safety_backup else None,
         })
         return
+    if arguments.action == "initialize":
+        receipt = initialize_store(store.root)
+        emit({
+            "destination": str(receipt.destination),
+            "workspace_id": receipt.workspace_id,
+            "store_schema_version": receipt.store_schema_version,
+        })
+        return
     receipt = relocate_store(store.root, arguments.to)
     emit({
         "destination": str(receipt.destination),
@@ -709,6 +771,10 @@ def _run_storage(arguments: argparse.Namespace) -> int:
     return 0 if report.valid else 2
 
 
+# The only backlog actions this packet forwards to a running owner.
+_STATUS_ACTIONS = ("start", "done", "drop", "reopen")
+
+
 def _planning_status(action: str) -> str:
     return {
         "start": "started",
@@ -877,12 +943,220 @@ STACK_COMMANDS = {
 }
 
 
+def _is_subtask_status_write(arguments: argparse.Namespace) -> bool:
+    """Exactly the four subtask status operations, and nothing else.
+
+    Named so the owner selector reads as one condition per route; the routing
+    order, the bodies and the behaviour are unchanged.
+    """
+
+    return (
+        arguments.domain == "backlog"
+        and arguments.action == "subtask"
+        and arguments.operation in _STATUS_ACTIONS
+    )
+
+
+def _checkin_owner_writer(arguments: argparse.Namespace):
+    def forward(store: Store, owner_state: str) -> dict[str, object]:
+        return cli_writer.forward_checkin(
+            store, owner_state, arguments.time, arguments.date,
+            coordinates_reader=_server_coordinates, request_json=_request_json,
+        )
+
+    return forward
+
+
+def _worklog_entry_owner_writer(arguments: argparse.Namespace):
+    def forward(store: Store, owner_state: str) -> dict[str, object]:
+        return cli_writer.forward_worklog_entry(
+            store, owner_state, arguments.task, arguments.date, arguments.done,
+            arguments.next_items, arguments.blocker,
+            coordinates_reader=_server_coordinates, request_json=_request_json,
+        )
+
+    return forward
+
+
+def _worklog_owner_writer(arguments: argparse.Namespace):
+    if arguments.domain != "worklog":
+        return None
+    factory = {"checkin": _checkin_owner_writer, "add": _worklog_entry_owner_writer}.get(
+        getattr(arguments, "action", None)
+    )
+    return factory(arguments) if factory is not None else None
+
+
+def _backlog_add_owner_writer(arguments: argparse.Namespace):
+    def forward(store: Store, owner_state: str) -> dict[str, object]:
+        return cli_writer.forward_backlog_add(
+            store, owner_state, arguments.title, arguments.detail, arguments.priority,
+            arguments.due, arguments.tag, arguments.objective, arguments.parent,
+            arguments.depends_on,
+            coordinates_reader=_server_coordinates, request_json=_request_json,
+        )
+
+    return forward
+
+
+def _okr_link_owner_writer(arguments: argparse.Namespace):
+    def forward(store: Store, owner_state: str) -> dict[str, object]:
+        return cli_writer.forward_okr_link(
+            store, owner_state, arguments.objective, arguments.task,
+            coordinates_reader=_server_coordinates, request_json=_request_json,
+        )
+
+    return forward
+
+
+def _okr_progress_owner_writer(arguments: argparse.Namespace):
+    def forward(store: Store, owner_state: str) -> dict[str, object]:
+        return cli_writer.forward_okr_progress(
+            store, owner_state, arguments.objective, arguments.key_result, arguments.value,
+            coordinates_reader=_server_coordinates, request_json=_request_json,
+        )
+
+    return forward
+
+
+def _legacy_owner_writer(arguments: argparse.Namespace):
+    worklog_writer = _worklog_owner_writer(arguments)
+    if worklog_writer is not None:
+        return worklog_writer
+    factory = {
+        ("backlog", "add"): _backlog_add_owner_writer,
+        ("okr", "link"): _okr_link_owner_writer,
+        ("okr", "progress"): _okr_progress_owner_writer,
+    }.get(
+        (arguments.domain, getattr(arguments, "action", None))
+    )
+    return factory(arguments) if factory is not None else None
+
+
+def _owner_forwarded_write(arguments: argparse.Namespace):
+    """Return the owner-route writer for this invocation, or None.
+
+    Only the explicit branches below forward; other commands retain their
+    existing local dispatch.
+    """
+
+    legacy_writer = _legacy_owner_writer(arguments)
+    if legacy_writer is not None:
+        return legacy_writer
+    if arguments.domain == "note":
+        def forward(store: Store, owner_state: str) -> dict[str, object]:
+            return cli_writer.forward_note(
+                store,
+                owner_state,
+                arguments.text,
+                arguments.link,
+                coordinates_reader=_server_coordinates,
+                request_json=_request_json,
+            )
+
+        return forward
+    if arguments.domain == "okr" and arguments.action == "add-objective":
+        def forward(store: Store, owner_state: str) -> dict[str, object]:
+            return cli_writer.forward_objective(
+                store,
+                owner_state,
+                arguments.text,
+                arguments.quarter,
+                coordinates_reader=_server_coordinates,
+                request_json=_request_json,
+            )
+
+        return forward
+    if arguments.domain == "backlog" and arguments.action == "note":
+        def forward(store: Store, owner_state: str) -> dict[str, object]:
+            return cli_writer.forward_task_note(
+                store,
+                owner_state,
+                arguments.id,
+                arguments.text,
+                coordinates_reader=_server_coordinates,
+                request_json=_request_json,
+            )
+
+        return forward
+    if arguments.domain == "backlog" and arguments.action in _STATUS_ACTIONS:
+        def forward(store: Store, owner_state: str) -> dict[str, object]:
+            return cli_writer.forward_task_status(
+                store,
+                owner_state,
+                arguments.id,
+                _planning_status(arguments.action),
+                coordinates_reader=_server_coordinates,
+                request_json=_request_json,
+            )
+
+        return forward
+    if (
+        arguments.domain == "backlog"
+        and arguments.action == "subtask"
+        and arguments.operation == "add"
+    ):
+        def forward(store: Store, owner_state: str) -> dict[str, object]:
+            return cli_writer.forward_subtask(
+                store,
+                owner_state,
+                arguments.task,
+                arguments.subtask_or_title,
+                arguments.priority,
+                coordinates_reader=_server_coordinates,
+                request_json=_request_json,
+            )
+
+        return forward
+    if _is_subtask_status_write(arguments):
+        def forward(store: Store, owner_state: str) -> dict[str, object]:
+            return cli_writer.forward_subtask_status(
+                store,
+                owner_state,
+                arguments.task,
+                arguments.subtask_or_title,
+                _planning_status(arguments.operation),
+                coordinates_reader=_server_coordinates,
+                request_json=_request_json,
+            )
+
+        return forward
+    if arguments.domain == "okr" and arguments.action == "add-key-result":
+        def forward(store: Store, owner_state: str) -> dict[str, object]:
+            return cli_writer.forward_key_result(
+                store,
+                owner_state,
+                arguments.objective,
+                arguments.text,
+                arguments.target,
+                coordinates_reader=_server_coordinates,
+                request_json=_request_json,
+            )
+
+        return forward
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     if arguments.domain == "storage":
         return _run_storage(arguments)
+    if arguments.domain == "agent" and arguments.action in {"status", "context", "checkpoint"}:
+        if arguments.action == "checkpoint":
+            arguments.checkpoint_raw = sys.stdin.buffer.read(AGENT_APPLY_LIMIT + 1)
+        return agent_runtime.run_agent_command(
+            args=arguments,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            dependencies=agent_runtime._default_runtime_dependencies(),
+        )
     store = Store(arguments.data_dir) if arguments.data_dir else Store()
     try:
+        if arguments.domain == "worklog" and arguments.action == "checkpoint-state":
+            return forward_checkpoint_state(
+                store, sys.stdin.buffer.read(checkpoint_state_cli.STDIN_LIMIT + 1),
+                arguments.checkpoint, arguments.idempotency_key,
+            )
         if arguments.domain == "capture":
             return forward_capture(store, sys.stdin.buffer.read(64 * 1024 + 1), arguments.idempotency_key)
         if arguments.domain == "agent":
@@ -894,6 +1168,20 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.domain == "maintenance":
             _run_maintenance(arguments, store)
             return 0
+        # Owner metadata selects the running-owner route before WorkStack
+        # initialization would take the exclusive local Store lease.
+        # Only a genuinely missing entry keeps the exclusive-local path:
+        # an entry that exists but is not a readable regular file, or one
+        # that disappears after being observed, refuses inside the forwarder
+        # instead of falling through to a local write. Every domain and action
+        # not named in _OWNER_FORWARDED_WRITES is untouched, including the rest
+        # of okr and every backlog action.
+        forward = _owner_forwarded_write(arguments)
+        if forward is not None:
+            owner_state = cli_writer.owner_metadata_state(store)
+            if owner_state != cli_writer.OWNER_ABSENT:
+                emit(forward(store, owner_state))
+                return 0
         stack = WorkStack(store, initialize=arguments.domain != "snapshot")
         STACK_COMMANDS[arguments.domain](arguments, stack)
         return 0

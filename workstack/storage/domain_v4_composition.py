@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 from .capture_reply_repository import V4CaptureReplyRepository
 from .idempotency import IdempotencyLedgerError, parse_idempotency_ledger
@@ -82,6 +82,7 @@ def compose_experimental_v4_domain(
     projection_root: Path | str | None = None,
     task_note_source_indexes: Mapping[str, int] | None = None,
     fault_hook: FaultHook | None = None,
+    checkpoint_facts: Callable[..., Mapping[str, Any]] | None = None,
 ) -> ExperimentalV4Domain:
     """Admit, verify, and compose every v4 domain backend exactly once."""
 
@@ -113,7 +114,11 @@ def compose_experimental_v4_domain(
             enable_v4_capture_reply_commands=True,
         ),
         intents=V4IntentRepository(
-            runtime, enable_v4_intents=True, now=clock, uid_factory=uid_factory
+            runtime,
+            enable_v4_intents=True,
+            now=clock,
+            uid_factory=uid_factory,
+            checkpoint_facts=checkpoint_facts,
         ),
         objectives=V4ObjectiveRepository(
             runtime, enable_v4_objectives=True, now=clock, uid_factory=uid_factory

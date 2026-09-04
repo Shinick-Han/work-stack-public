@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Dialog } from '../../components/Dialog'
+import { DateInput } from '../../components/DateInput'
 import { Button } from '../../components/Primitives'
 import type { Task, TaskPriority, WorkspaceProjection } from '../../domain/types'
 import { getErrorMessage } from '../../utils/format'
@@ -98,6 +99,7 @@ function NewTaskFields({
   detail,
   destination,
   due,
+  dateResetKey,
   objectiveId,
   objectives,
   onAcceptSuggestion,
@@ -107,12 +109,14 @@ function NewTaskFields({
   onPriority,
   onTitle,
   priority,
+  pending,
   suggestion,
   title,
 }: {
   detail: string
   destination: 'new' | 'existing'
   due: string
+  dateResetKey: string
   objectiveId: string
   objectives: WorkspaceProjection['objectives']
   onAcceptSuggestion: (event: KeyboardEvent<HTMLInputElement>) => void
@@ -122,6 +126,7 @@ function NewTaskFields({
   onPriority: (value: TaskPriority) => void
   onTitle: (value: string) => void
   priority: TaskPriority
+  pending: boolean
   suggestion: string
   title: string
 }) {
@@ -132,7 +137,7 @@ function NewTaskFields({
     <div className="form-grid form-grid--three">
       <label className="field"><span>Objective</span><select onChange={(event) => onObjective(event.target.value)} value={objectiveId}><option value="">No objective</option>{objectives.map((objective) => <option key={objective.id} value={objective.id}>{objective.id} · {objective.title}</option>)}</select></label>
       <label className="field"><span>Priority</span><select onChange={(event) => onPriority(event.target.value as TaskPriority)} value={priority}>{(['P0', 'P1', 'P2', 'P3'] as const).map((value) => <option key={value}>{value}</option>)}</select></label>
-      <label className="field"><span>Due</span><div className="date-input"><input className={due ? '' : 'is-empty'} lang="en-US" onChange={(event) => onDue(event.target.value)} type="date" value={due} />{due ? null : <i aria-hidden="true">YYYY-MM-DD</i>}</div></label>
+      <DateInput className="field" label="Due" disabled={pending} onChange={onDue} resetKey={dateResetKey} value={due} />
     </div>
   </>
 }
@@ -235,7 +240,7 @@ export function SourceCaptureDialog({ onClose, onSubmit, open, provider, seed, s
         <SourceReviewFields captureTitle={captureTitle} onCaptureTitle={setCaptureTitle} onSourceUrl={setSourceUrl} onText={setText} provider={inferredProvider} sourceUrl={sourceUrl} sourceUrlManaged={sourceUrlManaged} text={text} />
         <DestinationChoice destination={destination} onChange={setDestination} />
         <ExistingTaskFields destination={destination} onQuery={(value) => { setTaskQuery(value); setTaskId('') }} onTask={setTaskId} query={taskQuery} taskId={taskId} tasks={workspace.tasks} />
-        <NewTaskFields detail={taskDetail} destination={destination} due={due} objectiveId={objectiveId} objectives={workspace.objectives} onAcceptSuggestion={acceptTaskTitleSuggestion} onDetail={setTaskDetail} onDue={setDue} onObjective={setObjectiveId} onPriority={setPriority} onTitle={setTaskTitle} priority={priority} suggestion={taskTitleSuggestion} title={taskTitle} />
+        <NewTaskFields dateResetKey={intentId} detail={taskDetail} destination={destination} due={due} objectiveId={objectiveId} objectives={workspace.objectives} onAcceptSuggestion={acceptTaskTitleSuggestion} onDetail={setTaskDetail} onDue={setDue} onObjective={setObjectiveId} onPriority={setPriority} onTitle={setTaskTitle} pending={pending} priority={priority} suggestion={taskTitleSuggestion} title={taskTitle} />
         {error ? <p className="inline-error" role="alert">{error}</p> : null}
       </form>
     </Dialog>

@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterable, Protocol
 from urllib.parse import urlsplit
 
 from . import REMOTE_PROTOCOL_VERSION, __version__
+from .context_projection import group_context_by_task
 from .capture import (
     EMAIL_RE,
     PercentDecodingLimitError,
@@ -25,6 +26,28 @@ from .capture import (
     is_allowed_microsoft_hostname,
     parse_rfc3339,
     validate_capture_packet,
+)
+import re as _re
+
+_CHECKPOINT_ID = _re.compile(r"CP-[0-9a-f]{64}")
+
+from .checkpoint_projection import (
+    active_worklog_document,
+    build_audit,
+    physical_locator_for,
+)
+from .checkpoint_transition import (
+    CheckpointTransitionError,
+    build_transition_event,
+    build_transition_notice,
+    next_transition,
+    normalize_transition_request,
+    verify_locator,
+)
+from .checkpoint_change import (
+    CheckpointChangeError,
+    build_checkpoint_facts,
+    build_committed_notice,
 )
 from .planning_status import (
     append_bootstrap,
@@ -91,6 +114,7 @@ TASK_PATCH_FIELDS = frozenset({
     "objective_ids",
     "parent_id",
     "dependencies",
+    "key_result_refs",
     "revision",
 })
 
@@ -117,6 +141,23 @@ class RevisionExhaustedError(DomainError):
 
 class IdempotencyConflictError(DomainError):
     code = "idempotency_conflict"
+
+
+class CheckpointTransitionConflictError(DomainError):
+    """A pure history refusal, carried out with its closed transition code.
+
+    Malformed input is an ordinary invalid_request; only the five history
+    conflicts reach this type, and the message is constant so no input value
+    or nested text can leak through it.
+    """
+
+    code = "checkpoint_transition_conflict"
+
+    def __init__(self, transition_code: str) -> None:
+        super().__init__(
+            "the checkpoint transition conflicts with recorded history",
+            {"transition_code": transition_code},
+        )
 
 
 class WorkSessionConflictError(DomainError):
@@ -356,6 +397,51 @@ def _query_graph_backend(method):
         return projection
 
     return wrapped
+
+
+def _attributed_released_v3_only(attribute: str, backend_method: str, boundary: str):
+    """Dispatch like ``_optional_command_backend``, but refuse an ATTRIBUTED call.
+
+    ``_optional_command_backend`` runs before ``_transactional``, so a configured
+    backend replaces the released-v3 implementation entirely. That backend's
+    ``add_worklog`` accepts no provenance, so forwarding an attributed write
+    there would silently drop the attribution and publish nothing while still
+    reporting success.
+
+    Method presence is never treated as evidence of capability: ANY configured
+    backend refuses an attributed call, before the backend call and before any
+    document write. Unattributed calls keep ordinary backend behaviour exactly,
+    with the released-only keyword removed so the backend signature is unchanged.
+    """
+
+    def decorate(method):
+        @wraps(method)
+        def wrapped(self: "WorkStack", *args: Any, **kwargs: Any):
+            # The document composition is checked FIRST, before any backend
+            # dispatch and before any document write. An injected repository
+            # that merely satisfies the DocumentRepository protocol is not the
+            # admitted released composition: protocol method presence is not
+            # capability, and the existing exact-adapter seam is what decides.
+            if kwargs.get("origin") is not None and not _attributed_released_composition(self):
+                raise DomainError(
+                    "attributed review entries are not supported by this storage composition"
+                )
+            commands = getattr(self, attribute)
+            if commands is not None:
+                if kwargs.get("origin") is not None:
+                    raise DomainError(
+                        "attributed review entries are not supported by this backend"
+                    )
+                forwarded = {key: value for key, value in kwargs.items() if key != "origin"}
+                command = getattr(commands, backend_method)
+                return _optional_command(
+                    lambda: command(*args, **forwarded), boundary
+                )
+            return method(self, *args, **kwargs)
+
+        return wrapped
+
+    return decorate
 
 
 def _transactional(method):
@@ -609,6 +695,162 @@ def _normalize_patch_objectives(
         raise DomainError("unknown objective ids", {"ids": missing})
 
 
+KEY_RESULT_REF_FIELDS = frozenset({"objective_id", "key_result_id"})
+
+
+def _normalized_ref_id(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise DomainError("key_result_refs {} must be a string".format(field))
+    normalized = value.strip().upper()
+    if not normalized:
+        raise DomainError("key_result_refs {} must not be blank".format(field))
+    return normalized
+
+
+def _normalized_key_result_ref(item: Any) -> dict[str, str]:
+    if not isinstance(item, dict) or set(item) != KEY_RESULT_REF_FIELDS:
+        raise DomainError("key_result_refs entries must be exact scoped pairs")
+    return {
+        "objective_id": _normalized_ref_id(item["objective_id"], "objective_id"),
+        "key_result_id": _normalized_ref_id(item["key_result_id"], "key_result_id"),
+    }
+
+
+def _normalize_patch_key_result_refs(changes: dict[str, Any]) -> None:
+    if "key_result_refs" not in changes:
+        return
+    pairs = [
+        (ref["objective_id"], ref["key_result_id"])
+        for ref in (_normalized_key_result_ref(item) for item in changes["key_result_refs"])
+    ]
+    if len(set(pairs)) != len(pairs):
+        raise DomainError("key_result_refs entries must be unique")
+    changes["key_result_refs"] = [
+        {"objective_id": objective_id, "key_result_id": key_result_id}
+        for objective_id, key_result_id in sorted(pairs)
+    ]
+
+
+def _require_single_key_result(objective: dict[str, Any], key_result_id: str) -> None:
+    matches = [
+        item
+        for item in objective.get("key_results", [])
+        if isinstance(item, dict) and str(item.get("id", "")).strip().upper() == key_result_id
+    ]
+    if len(matches) != 1:
+        raise DomainError(
+            "unknown key result reference", {"key_result_id": key_result_id}
+        )
+
+
+def _resolve_reference_objective(
+    objective_id: str, aligned: set[str], objectives_by_id: dict[str, list[dict[str, Any]]]
+) -> dict[str, Any]:
+    """Resolve exactly one aligned Objective record, keeping duplicate multiplicity."""
+
+    if objective_id not in aligned:
+        raise DomainError(
+            "key result reference parent is not aligned",
+            {"objective_id": objective_id},
+        )
+    matches = objectives_by_id.get(objective_id, [])
+    if len(matches) != 1:
+        raise DomainError(
+            "key result reference objective is not uniquely resolvable",
+            {"objective_id": objective_id},
+        )
+    return matches[0]
+
+
+def _validate_key_result_refs_state(
+    refs: Any, objective_ids: Any, objectives_by_id: dict[str, list[dict[str, Any]]]
+) -> None:
+    """Refuse any resulting reference whose scoped target is unaligned or unresolvable."""
+
+    if refs is None:
+        return
+    aligned = set(objective_ids or [])
+    for ref in refs:
+        objective = _resolve_reference_objective(
+            ref["objective_id"], aligned, objectives_by_id
+        )
+        _require_single_key_result(objective, ref["key_result_id"])
+
+
+def _objective_records_by_id(
+    records: Iterable[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    """Group Objective records by ID, preserving duplicate multiplicity."""
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        grouped.setdefault(record["id"], []).append(record)
+    return grouped
+
+
+def _released_v3_document_composition(stack: "WorkStack") -> bool:
+    """Recognize only the released v3 document composition, by exact adapter type.
+
+    ``StoreDocumentRepository`` is the released adapter that alone knows how the
+    released physical store represents these documents, and it wraps the released
+    ``Store``.  Any other object satisfying the ``DocumentRepository`` protocol is
+    an unadmitted composition: protocol method presence is not capability, and the
+    protocol exposes no capability predicate to ask.
+    """
+
+    documents = stack.documents
+    return (
+        type(documents) is StoreDocumentRepository
+        and type(getattr(documents, "_store", None)) is Store
+    )
+
+
+def _attributed_released_composition(stack: "WorkStack") -> bool:
+    """The released composition AND the Store that actually transacts and publishes.
+
+    Exact adapter and Store types are not enough. ``WorkStack.__init__`` accepts
+    an independently supplied repository, so a released adapter can legitimately
+    wrap a DIFFERENT Store: the documents would then be written in one Store
+    while the outer transaction, the workspace identity behind the recorded fact
+    and the typed publication all belong to another. Attribution requires those
+    to be the same object, checked by identity through the existing seams rather
+    than inferred from any capability surface.
+    """
+
+    return (
+        _released_v3_document_composition(stack)
+        and getattr(stack.documents, "_store", None) is stack.store
+    )
+
+
+def _released_v3_attributed_composition_owner(stack: "WorkStack") -> bool:
+    """The narrow released composition bound to the transacting Store itself.
+
+    Every new D5 write uses this, INCLUDING a null-origin browser write: a
+    transition is durable evidence, so it may only be produced by the admitted
+    composition writing through the same Store that transacts and publishes.
+    Unrelated ordinary commands keep their existing behaviour.
+    """
+
+    documents = stack.documents
+    return (
+        type(documents) is StoreDocumentRepository
+        and type(getattr(documents, "_store", None)) is Store
+        and documents._store is stack.store
+    )
+
+
+def _require_released_composition_for_refs(
+    stack: "WorkStack", patch: dict[str, Any]
+) -> None:
+    """Refuse a scoped-ref mutation, including [], on an unadmitted composition."""
+
+    if "key_result_refs" in patch and not _released_v3_document_composition(stack):
+        raise DomainError(
+            "key result references are not supported by this storage composition"
+        )
+
+
 def _normalize_patch_dependencies(changes: dict[str, Any]) -> None:
     if "dependencies" not in changes:
         return
@@ -622,11 +864,12 @@ def _normalize_patch_dependencies(changes: dict[str, Any]) -> None:
 def _normalize_patch_collection_fields(
     changes: dict[str, Any], objectives: set[str]
 ) -> None:
-    for field in ("tags", "objective_ids", "dependencies"):
+    for field in ("tags", "objective_ids", "dependencies", "key_result_refs"):
         _require_patch_array(changes, field)
     _normalize_patch_tags(changes)
     _normalize_patch_objectives(changes, objectives)
     _normalize_patch_dependencies(changes)
+    _normalize_patch_key_result_refs(changes)
 
 
 def _validate_patch_dependencies(
@@ -1882,6 +2125,125 @@ class WorkStack:
         return self._project_task(task, planning_status=status)
 
     @_transactional
+    def set_task_status_v1(
+        self,
+        task_id: str,
+        body: dict[str, Any],
+        idempotency_key: str,
+        *,
+        path: str,
+        request_digest: str | None = None,
+    ) -> dict[str, Any]:
+        """The keyed Task-status intent selected by a PRESENT Idempotency-Key.
+
+        Ordering is the frozen one: the key and the body are completely
+        validated, then the receipt is looked up, and only then is anything
+        mutable consulted. So an exact replay returns its original Task even
+        after unrelated revisions have moved on, and a key is never treated as
+        authorization.
+
+        A same-status action is not a no-op that skips checks: it still
+        requires a successful revision check, and then persists ONLY its
+        receipt, leaving the Task, its revision, its updated_at and the
+        planning history untouched.
+        """
+
+        self._validate_keyed_intent_request(idempotency_key, body)
+        if not _released_v3_attributed_composition_owner(self):
+            # The keyed branch, no-op included, is released-v3 SAME-Store only,
+            # bound by object identity. Refused before any read or write; the
+            # ordinary unkeyed PATCH is untouched by this.
+            raise DomainError(
+                "keyed task status intents are not supported by this storage composition"
+            )
+        digest = self._raw_request_digest(body, request_digest)
+
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
+        replay = self._idempotency_replay(activity, idempotency_key, "PATCH", path, digest)
+        if replay is not None:
+            return replay
+
+        data = self.documents.load(WorkspaceDocument.TASKS)
+        task = _find(data["tasks"], task_id, "task")
+        current_revision = _revision(task)
+        if body["revision"] != current_revision:
+            raise RevisionConflictError(
+                "task revision is stale",
+                {"expected": current_revision, "received": body["revision"]},
+            )
+        status = body["status"]
+        current_status = validate_and_project(data, activity)[task["id"]]
+
+        if status == current_status:
+            # A receipt, and nothing else. The Task is not rewritten, so its
+            # revision and updated_at stay exactly where the caller saw them.
+            projected = self._project_task(task, planning_status=current_status)
+            response_body = {"data": projected, "meta": {"replayed": False}}
+            self._record_idempotency(
+                activity, idempotency_key, "PATCH", path, digest, 200, response_body
+            )
+            self.documents.save_many(
+                {WorkspaceDocument.ACTIVITY: activity},
+                operation_id="task-status-intent-{}".format(idempotency_key),
+            )
+            return {"status": 200, "body": response_body}
+
+        next_revision = _next_revision(task)
+        append_transition(
+            activity,
+            task,
+            prior_status=current_status,
+            status=status,
+            prior_revision=current_revision,
+            new_revision=next_revision,
+            created_at=utc_now(),
+            actor="local.user",
+            provenance="cli",
+        )
+        task["updated_at"] = today()
+        task["revision"] = next_revision
+        projected = self._project_task(task, planning_status=status)
+        response_body = {"data": projected, "meta": {"replayed": False}}
+        self._record_idempotency(
+            activity, idempotency_key, "PATCH", path, digest, 200, response_body
+        )
+        # ONE save commits the Task, its planning fact and the receipt together.
+        # An ordinary PATCH followed by a separate receipt save would leave a
+        # window where the change exists without its receipt.
+        self.documents.save_many(
+            {WorkspaceDocument.TASKS: data, WorkspaceDocument.ACTIVITY: activity},
+            operation_id="task-status-intent-{}".format(idempotency_key),
+        )
+        return {"status": 200, "body": response_body}
+
+    def _validate_keyed_intent_request(
+        self, idempotency_key: Any, body: Any
+    ) -> None:
+        """Everything about the key and the body, before any lookup or read.
+
+        The exact built-in str requirement matches the other keyed entrypoint:
+        JSON and HTTP cannot carry a subclass, so nothing on the wire changes.
+        """
+
+        if type(idempotency_key) is not str:
+            raise DomainError(
+                "Idempotency-Key must be a string", {"field": "idempotency_key"}
+            )
+        self._validate_idempotency_key(idempotency_key)
+        if type(body) is not dict or set(body) != {"status", "revision"}:
+            raise DomainError(
+                "a keyed task status intent requires exactly status and revision"
+            )
+        if type(body["status"]) is not str or body["status"] not in TASK_STATUSES:
+            raise DomainError("invalid task status", {"field": "status"})
+        revision = body["revision"]
+        if type(revision) is not int or revision < 0:
+            raise DomainError(
+                "revision is required and must be a non-negative integer",
+                {"field": "revision"},
+            )
+
+    @_transactional
     def add_task_note(
         self,
         task_id: str,
@@ -2272,6 +2634,85 @@ class WorkStack:
             })
         return output
 
+    def add_task_cli(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Frame an ordinary create without changing its legacy domain rules."""
+        fields = {"title", "detail", "priority", "due", "tags", "objective_ids", "parent_id", "dependencies"}
+        if type(body) is not dict or set(body) != fields:
+            raise DomainError("CLI backlog add requires exactly its eight creation fields")
+        if any(type(body[field]) is not str for field in ("title", "detail", "priority")):
+            raise DomainError("CLI backlog title, detail and priority must be strings")
+        if any(body[field] is not None and type(body[field]) is not str for field in ("due", "parent_id")):
+            raise DomainError("CLI backlog due and parent_id must be strings or null")
+        for field in ("tags", "objective_ids", "dependencies"):
+            if type(body[field]) is not list or any(type(item) is not str for item in body[field]):
+                raise DomainError("CLI backlog collections must be arrays of strings")
+        self._require_cli_owner_composition("backlog add")
+        return self.add_task(
+            title=body["title"], detail=body["detail"], priority=body["priority"], due=body["due"],
+            tags=body["tags"], objective_ids=body["objective_ids"], parent_id=body["parent_id"],
+            dependencies=body["dependencies"],
+        )
+
+    def link_task_cli(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Preserve the legacy link lookup, revision and retained-reference rules."""
+        if type(body) is not dict or set(body) != {"objective_id", "task_id"}:
+            raise DomainError("CLI OKR link requires only objective_id and task_id")
+        if any(type(body[field]) is not str for field in ("objective_id", "task_id")):
+            raise DomainError("CLI OKR link identifiers must be strings")
+        self._require_cli_owner_composition("OKR link")
+        return self.link_task(objective_id=body["objective_id"], task_id=body["task_id"])
+
+    def set_key_result_progress_cli(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Frame legacy progress; its setter owns clamping, revisions and audit."""
+        if type(body) is not dict or set(body) != {"objective_id", "key_result_id", "progress"}:
+            raise DomainError("CLI OKR progress requires only objective_id, key_result_id and progress")
+        if any(type(body[field]) is not str for field in ("objective_id", "key_result_id")):
+            raise DomainError("CLI OKR progress identifiers must be strings")
+        if type(body["progress"]) is not int:
+            raise DomainError("CLI OKR progress must be an integer")
+        self._require_cli_owner_composition("OKR progress")
+        return self.set_key_result_progress(
+            objective_id=body["objective_id"], key_result_id=body["key_result_id"], progress=body["progress"],
+        )
+
+    def checkin_cli(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Run the existing CLI operation only on its supported owner Store."""
+        if type(body) is not dict or set(body) != {"date", "time"}:
+            raise DomainError("CLI checkin requires only date and time")
+        if any(type(body[field]) is not str for field in ("date", "time")):
+            raise DomainError("CLI checkin date and time must be strings")
+        self._require_cli_owner_composition("checkin")
+        return self.checkin(time=body["time"], date=body["date"])
+
+    def _require_cli_owner_composition(self, operation: str) -> None:
+        """Require released same-Store documents and no alternate delegates."""
+        delegates = (
+            self.capture_reply_commands, self.intent_commands,
+            self.objective_commands, self.task_commands,
+            self.relationship_commands, self.planning_commands,
+            self.work_session_commands, self.query_commands,
+        )
+        if not _attributed_released_composition(self) or any(
+            delegate is not None for delegate in delegates
+        ):
+            raise DomainError("CLI {} is not supported by this storage composition".format(operation))
+
+    def add_worklog_cli(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Frame an ordinary entry, leaving its domain rules to add_worklog."""
+        fields = {"task_id", "date", "done", "next_items", "blockers"}
+        if type(body) is not dict or set(body) != fields:
+            raise DomainError("CLI worklog add requires only task_id, date and categories")
+        if any(type(body[field]) is not str for field in ("task_id", "date")):
+            raise DomainError("CLI worklog task_id and date must be strings")
+        for field in ("done", "next_items", "blockers"):
+            if type(body[field]) is not list or any(type(item) is not str for item in body[field]):
+                raise DomainError("CLI worklog categories must be arrays of strings")
+        self._require_cli_owner_composition("worklog add")
+        return self.add_worklog(
+            task_id=body["task_id"], date=body["date"], done=body["done"],
+            next_items=body["next_items"], blockers=body["blockers"],
+        )
+
     @_transactional
     def checkin(self, time: str | None = None, date: str | None = None) -> dict[str, Any]:
         date = date or today()
@@ -2385,7 +2826,7 @@ class WorkStack:
         )
         return {"status": 201, "body": response_body}
 
-    @_optional_command_backend("intent_commands", "add_worklog", "intent")
+    @_attributed_released_v3_only("intent_commands", "add_worklog", "intent")
     @_transactional
     def add_worklog_v1(
         self,
@@ -2393,6 +2834,7 @@ class WorkStack:
         idempotency_key: str,
         *,
         path: str = "/api/v1/review/entries",
+        origin: str | None = None,
     ) -> dict[str, Any]:
         self._validate_idempotency_key(idempotency_key)
         task_id = body.get("task_id")
@@ -2417,7 +2859,9 @@ class WorkStack:
             return replay
 
         worklog = self.documents.load(WorkspaceDocument.WORKLOG)
-        day = worklog.setdefault("days", {}).setdefault(canonical["date"], {"entries": []})
+        days = worklog.setdefault("days", {})
+        day = days.setdefault(canonical["date"], {"entries": []})
+        entries = day.setdefault("entries", [])
         entry = {
             "task_id": task["id"],
             "task": task["title"],
@@ -2425,7 +2869,40 @@ class WorkStack:
             "next": canonical["next"],
             "blockers": canonical["blockers"],
         }
-        day.setdefault("entries", []).append(entry)
+        # The date-local PHYSICAL ordinal, captured before the append, and EVERY
+        # previously accepted physical entry, flattened across ALL dates.
+        #
+        # There is deliberately no date filter. A stored entry dated LATER than
+        # this one was still accepted earlier, so a backdated append is not the
+        # first for its Task. Filtering by date made exactly that case report
+        # first_for_task true. Browser and legacy entries count too: "first for
+        # this Task" is a fact about the stored Worklog, not about attributed
+        # writes, and nothing here rewrites or reorders the Worklog.
+        ordinal = len(entries)
+        prior_entries: list[dict[str, Any]] = []
+        for stored_date in sorted(days):
+            stored = days[stored_date].get("entries")
+            if not isinstance(stored, list):
+                continue
+            prior_entries.extend(stored[:ordinal] if stored_date == canonical["date"] else stored)
+        facts = self._checkpoint_facts(
+            idempotency_key=idempotency_key,
+            date=canonical["date"],
+            entry=entry,
+            ordinal=ordinal,
+            prior_entries=prior_entries,
+            origin=origin,
+        )
+        # TP-F3 preflight, under the SAME outer transaction lock and before any
+        # fresh document mutation: the committed notice must already be
+        # buildable, and the shared event sequence must still have room for both
+        # the manifest event this commit will emit and the typed event published
+        # after it. Publication itself still happens after a successful save.
+        # This validates capacity; it allocates nothing, adds no counter and
+        # makes no crash-atomicity claim.
+        if facts["recorded"]["origin"] is not None:
+            self._preflight_committed_notice(facts)
+        entries.append(entry)
         response_body = {
             "data": {"date": canonical["date"], **copy.deepcopy(entry)},
             "meta": {"replayed": False},
@@ -2433,11 +2910,102 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, 201, response_body
         )
+        # The recorded fact rides the EXISTING Worklog+Activity save_many beside
+        # the existing idempotency receipt. It is carried as an ordinary
+        # Activity record rather than a new document key: the Activity document
+        # schema is validated by exact key set, so inventing a top-level list would be
+        # a storage schema change and would fail every existing store. No
+        # Worklog entry field, public response, Task status or revision changes,
+        # and no history is rewritten.
+        entries_feed = activity.setdefault("activity", [])
+        entries_feed.append({
+            "id": _next_id(entries_feed, "E", 6),
+            "type": "worklog.recorded",
+            "created_at": utc_now(),
+            "task_id": facts["recorded"]["task_id"],
+            "details": copy.deepcopy(facts["recorded"]),
+        })
         self.documents.save_many(
             {WorkspaceDocument.WORKLOG: worklog, WorkspaceDocument.ACTIVITY: activity},
             operation_id="review-entry-{}".format(idempotency_key),
         )
+        # Published after the save succeeded and while the SAME outer
+        # transaction lock is still held, before any HTTP serialization. Only an
+        # attributed write publishes; an ordinary or browser write records its
+        # fact and stays silent.
+        if facts["recorded"]["origin"] is not None:
+            self.store.publish_change_notice(
+                lambda event_id: build_committed_notice(facts=facts, event_id=event_id)
+            )
         return {"status": 201, "body": response_body}
+
+    def _raw_request_digest(
+        self, body: dict[str, Any], supplied: str | None
+    ) -> str:
+        """The digest of the ORIGINAL parsed body, verifying any supplied one.
+
+        Serialization can still fail on a value the domain accepted, so the
+        failure is mapped to the same constant refusal rather than escaping as
+        a Python encoding or recursion error carrying input detail.
+        """
+
+        try:
+            computed = canonical_digest(body)
+        except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as error:
+            raise DomainError("the checkpoint transition request is invalid") from error
+        if supplied is not None and supplied != computed:
+            raise DomainError("the request digest does not match the request body")
+        return computed
+
+    def _preflight_committed_notice(self, facts: dict[str, Any]) -> None:
+        """Prove the notice is buildable at the id publication would use.
+
+        The projected id accounts for the manifest event the committing save
+        emits before publication, so the safe-integer ceiling is refused here
+        rather than after Worklog, Activity, the recorded fact and the receipt
+        have already been committed. The pure builder and its frozen twelve
+        fields are reused unchanged; the result is discarded.
+        """
+
+        try:
+            build_committed_notice(
+                facts=facts, event_id=self.store.projected_change_event_id()
+            )
+        except CheckpointChangeError as error:
+            raise DomainError("the review entry could not be recorded") from error
+
+    def _checkpoint_facts(
+        self,
+        *,
+        idempotency_key: str,
+        date: str,
+        entry: dict[str, Any],
+        ordinal: int,
+        prior_entries: list[dict[str, Any]],
+        origin: str | None,
+    ) -> dict[str, Any]:
+        """Build the immutable commit facts BEFORE any document is mutated.
+
+        The admitted pure builder decides identity, locator, counts and
+        physical-first semantics; nothing is recomputed here. A refusal is
+        content-free and carries no input value.
+        """
+
+        readiness = self.store.readiness
+        if readiness is None:
+            raise DomainError("the workspace is not ready to record a checkpoint")
+        try:
+            return build_checkpoint_facts(
+                workspace_uid=readiness.workspace_uid,
+                idempotency_key=idempotency_key,
+                date=date,
+                entry=entry,
+                ordinal=ordinal,
+                prior_entries=prior_entries,
+                origin=origin,
+            )
+        except CheckpointChangeError as error:
+            raise DomainError("the review entry could not be recorded") from error
 
     @staticmethod
     def _work_session_timestamp(value: Any, field: str) -> dt.datetime:
@@ -2824,12 +3392,199 @@ class WorkStack:
         )
         return {"status": 201, "body": response_body}
 
+    # ---- D5 shared projection and transitions ---------------------------
+    #
+    # Every ACTIVE reader below goes through one whole-history-validated view.
+    # Physical writers deliberately do NOT: append, check-in and work-session
+    # writers keep loading the raw document, so future ordinals and
+    # first-for-task still count superseded rows.
+
+    # The five closed pure history codes. "duplicate_revision" was never one
+    # of them; "history_invalid" is, and an invalid known history must reach
+    # the 409 envelope rather than being reported as a malformed request.
+    _TRANSITION_CONFLICT_CODES = frozenset(
+        {"stale_revision", "same_state", "exhausted", "locator_mismatch", "history_invalid"}
+    )
+
+    def _workspace_uid(self) -> str:
+        readiness = self.store.readiness
+        if readiness is None:
+            raise DomainError("the workspace is not ready")
+        return readiness.workspace_uid
+
+    def _refuse_transition(self, error: CheckpointTransitionError) -> DomainError:
+        """Map one closed pure code to its frozen public envelope."""
+
+        code = getattr(error, "code", "malformed")
+        if code in self._TRANSITION_CONFLICT_CODES:
+            return CheckpointTransitionConflictError(code)
+        return DomainError("the checkpoint transition request is invalid")
+
+    def _active_worklog(self) -> dict[str, Any]:
+        """The Worklog every active reader shares, superseded rows removed."""
+
+        try:
+            return active_worklog_document(
+                workspace_uid=self._workspace_uid(),
+                worklog=self.documents.load(WorkspaceDocument.WORKLOG),
+                activity=self.documents.load(WorkspaceDocument.ACTIVITY),
+            )
+        except CheckpointTransitionError as error:
+            raise self._refuse_transition(error) from error
+
+    def active_worklog_view(self) -> dict[str, Any]:
+        """The shared active Worklog view, for readers outside this class.
+
+        The local Agent backend and the running-owner Agent context read through
+        this so every active reader sees one whole-history-validated projection.
+        The caller must already hold the transaction, exactly as the readers in
+        this class do.
+        """
+
+        return self._active_worklog()
+
+    @_transactional
+    def list_checkpoint_audit(self) -> dict[str, Any]:
+        """The exact frozen complete audit view over the whole history."""
+
+        try:
+            return build_audit(
+                workspace_uid=self._workspace_uid(),
+                worklog=self.documents.load(WorkspaceDocument.WORKLOG),
+                activity=self.documents.load(WorkspaceDocument.ACTIVITY),
+            )
+        except CheckpointTransitionError as error:
+            raise self._refuse_transition(error) from error
+
+    @_transactional
+    def apply_checkpoint_transition_v1(
+        self,
+        checkpoint_id: str,
+        body: dict[str, Any],
+        idempotency_key: str,
+        *,
+        path: str,
+        request_digest: str | None = None,
+        origin: str | None = None,
+    ) -> dict[str, Any]:
+        """Supersede or restore one checkpoint, durably and idempotently.
+
+        Ordering is the frozen one. Ordinary validation runs first, then the
+        receipt lookup, and only then anything mutable: no locator, history,
+        revision or capacity decision may precede a matching replay, so an old
+        exact replay after later cycles returns its original event and saves and
+        publishes nothing.
+
+        The digest is supplied by the transport, which computes it from the RAW
+        parsed body before any normalization: a direct caller cannot forge one
+        that would match a differently-worded request.
+        """
+
+        # This NEW entrypoint requires an exact built-in str key. JSON and HTTP
+        # cannot carry a str subclass, so nothing on the wire is affected;
+        # legacy writers keep their own long-standing semantics untouched.
+        if type(idempotency_key) is not str:
+            raise DomainError("Idempotency-Key must be a string", {"field": "idempotency_key"})
+        self._validate_idempotency_key(idempotency_key)
+        if type(checkpoint_id) is not str or _CHECKPOINT_ID.fullmatch(checkpoint_id) is None:
+            # Malformed identifier SYNTAX is a bad request. An absent but
+            # canonical identifier is a different thing and stays a
+            # locator_mismatch conflict below.
+            raise DomainError("the checkpoint identifier is invalid")
+        if not _released_v3_attributed_composition_owner(self):
+            raise DomainError(
+                "checkpoint transitions are not supported by this storage composition"
+            )
+        # Ordinary shape validation runs FIRST, so a body the domain rejects is
+        # refused content-free instead of reaching the serializer, where a lone
+        # surrogate or a cycle would escape as UnicodeEncodeError or ValueError
+        # and leak position and value detail out of the public boundary.
+        try:
+            request = normalize_transition_request(body)
+        except CheckpointTransitionError as error:
+            raise self._refuse_transition(error) from error
+        # Only then the digest, and always of the ORIGINAL raw parsed body
+        # rather than the normalized replacement, so replay identity keeps
+        # distinguishing bodies the domain would normalize together. A supplied
+        # digest is verified, never trusted.
+        request_digest = self._raw_request_digest(body, request_digest)
+
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
+        replay = self._idempotency_replay(
+            activity, idempotency_key, "POST", path, request_digest
+        )
+        if replay is not None:
+            return replay
+
+        worklog = self.documents.load(WorkspaceDocument.WORKLOG)
+        workspace_uid = self._workspace_uid()
+        try:
+            locator, row = physical_locator_for(
+                workspace_uid=workspace_uid,
+                checkpoint_id=checkpoint_id,
+                worklog=worklog,
+                activity=activity,
+            )
+            verify_locator({
+                "workspace_uid": workspace_uid,
+                "checkpoint_id": checkpoint_id,
+                "recorded": row["recorded"],
+                "actual_locator": locator,
+            })
+            transition = next_transition({
+                "current": {"state": row["state"], "revision": row["revision"]},
+                "request": request,
+            })
+            event = build_transition_event({
+                "workspace_uid": workspace_uid,
+                "checkpoint_id": checkpoint_id,
+                "locator": locator,
+                "transition": transition,
+                "origin": origin,
+            })
+            if origin is not None:
+                # Full notice shape and event capacity are proven BEFORE any
+                # fresh mutation, at the ceiling publication could reach.
+                build_transition_notice(
+                    event, self.store.projected_change_event_id()
+                )
+        except CheckpointTransitionError as error:
+            raise self._refuse_transition(error) from error
+
+        response_body = {"data": copy.deepcopy(event), "meta": {"replayed": False}}
+        feed = activity.setdefault("activity", [])
+        feed.append({
+            "id": _next_id(feed, "E", 6),
+            "type": event["type"],
+            "created_at": utc_now(),
+            "task_id": event["task_id"],
+            "details": copy.deepcopy(event),
+        })
+        self._record_idempotency(
+            activity, idempotency_key, "POST", path, request_digest, 201, response_body
+        )
+        # ONE Activity-only save commits the transition and its receipt
+        # atomically. Worklog and Task bytes are never touched by a transition.
+        self.documents.save_many(
+            {WorkspaceDocument.ACTIVITY: activity},
+            operation_id="checkpoint-transition-{}".format(idempotency_key),
+        )
+        if origin is not None:
+            # The existing Store publisher is reused unchanged: store.py is not
+            # an owned path in this packet, and it needs no change. The record
+            # carries the notice, and the encoder tells the two variants apart
+            # by their disjoint frozen field sets.
+            self.store.publish_change_notice(
+                lambda event_id: build_transition_notice(event, event_id)
+            )
+        return {"status": 201, "body": response_body}
+
     @_transactional
     def review_projection(self, date: str, days: int = 7) -> dict[str, Any]:
         date = self._review_date(date)
         if type(days) is not int or days < 1 or days > 31:
             raise DomainError("days must be between 1 and 31", {"field": "days"})
-        worklog = self.documents.load(WorkspaceDocument.WORKLOG)
+        worklog = self._active_worklog()
         day = worklog.get("days", {}).get(date, {})
         return {
             "day": {
@@ -2840,8 +3595,12 @@ class WorkStack:
             "weekly": self.weekly_report(end=date, days=days),
         }
 
+    @_transactional
     def list_worklog(self, date: str | None = None) -> dict[str, Any]:
-        data = self.documents.load(WorkspaceDocument.WORKLOG)
+        # Transactional because the active view assembles TWO documents: without
+        # one outer owner the Worklog and the Activity could come from different
+        # committed states. The already transactional readers are unchanged.
+        data = self._active_worklog()
         if date:
             dt.date.fromisoformat(date)
             return {"date": date, "entries": data.get("days", {}).get(date, {}).get("entries", [])}
@@ -3095,13 +3854,17 @@ class WorkStack:
         with self.store.transaction():
             workspace = self.documents.load(WorkspaceDocument.WORKSPACE)
             captures = self.documents.load(WorkspaceDocument.CAPTURES).get("captures", [])
-            counts: dict[str, int] = {}
-            for capture in captures:
-                for task_id in set(capture.get("linked_task_ids", [])) | set(capture.get("converted_task_ids", [])):
-                    counts[task_id] = counts.get(task_id, 0) + 1
+            notes = self.documents.load(WorkspaceDocument.NOTES).get("notes", [])
+            objectives = self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", [])
+            source_tasks = self.list_tasks(status="all")
+            contexts = group_context_by_task(
+                notes, (self._project_capture(capture) for capture in captures),
+                (task["id"] for task in source_tasks),
+                (objective["id"] for objective in objectives),
+            )
             tasks = [
-                self._project_task(task, counts.get(task.get("id"), 0))
-                for task in self.list_tasks(status="all")
+                self._project_task(task, len(contexts[task["id"]]))
+                for task in source_tasks
             ]
             snapshot = self.snapshot()
             return {
@@ -3110,9 +3873,9 @@ class WorkStack:
                 "tasks": tasks,
                 "objectives": [
                     self._project_objective(objective)
-                    for objective in self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", [])
+                    for objective in objectives
                 ],
-                "notes": copy.deepcopy(self.documents.load(WorkspaceDocument.NOTES).get("notes", [])),
+                "notes": copy.deepcopy(notes),
                 "edges": snapshot["edges"],
                 "inbox_count": sum(1 for capture in captures if capture.get("status") == "inbox"),
             }
@@ -3313,15 +4076,19 @@ class WorkStack:
 
     def task_detail(self, task_id: str) -> dict[str, Any]:
         with self.store.transaction():
-            task = _find(self.documents.load(WorkspaceDocument.TASKS).get("tasks", []), task_id, "task")
+            tasks = self.documents.load(WorkspaceDocument.TASKS).get("tasks", [])
+            task = _find(tasks, task_id, "task")
             normalized_id = task["id"]
-            captures = [
-                capture
-                for capture in self.documents.load(WorkspaceDocument.CAPTURES).get("captures", [])
-                if normalized_id in capture.get("linked_task_ids", [])
-                or normalized_id in capture.get("converted_task_ids", [])
-            ]
-            capture_ids = {capture["id"] for capture in captures}
+            contexts = group_context_by_task(
+                self.documents.load(WorkspaceDocument.NOTES).get("notes", []),
+                (self._project_capture(capture) for capture in
+                 self.documents.load(WorkspaceDocument.CAPTURES).get("captures", [])),
+                (item["id"] for item in tasks),
+                (item["id"] for item in
+                 self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", [])),
+            )
+            context = contexts[normalized_id]
+            capture_ids = {item["id"] for item in context if item["ref"]["kind"] == "capture"}
             replies = [
                 reply
                 for reply in self.documents.load(WorkspaceDocument.REPLIES).get("replies", [])
@@ -3343,9 +4110,9 @@ class WorkStack:
             )[normalized_id]
             return {
                 "task": self._project_task(
-                    task, len(captures), planning_status=projected_status
+                    task, len(context), planning_status=projected_status
                 ),
-                "context": [self._project_capture(capture) for capture in captures],
+                "context": context,
                 "replies": [
                     self._project_reply(reply)
                     for reply in sorted(replies, key=lambda item: item["id"])
@@ -3425,8 +4192,12 @@ class WorkStack:
                 "task revision is stale",
                 {"expected": current_revision, "received": expected_revision},
             )
+        _require_released_composition_for_refs(self, patch)
         tasks_by_id = {item["id"]: item for item in backlog.get("tasks", [])}
-        objectives = {item["id"] for item in self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", [])}
+        objectives_by_id = _objective_records_by_id(
+            self.documents.load(WorkspaceDocument.OBJECTIVES).get("objectives", [])
+        )
+        objectives = set(objectives_by_id)
         changes, requested_status = _patch_change_set(
             patch, task, tasks_by_id, objectives
         )
@@ -3438,6 +4209,11 @@ class WorkStack:
         if not changed_fields:
             return self._project_task(task, planning_status=current_status)
 
+        _validate_key_result_refs_state(
+            changes.get("key_result_refs", task.get("key_result_refs")),
+            changes.get("objective_ids", task.get("objective_ids", [])),
+            objectives_by_id,
+        )
         next_revision = _next_revision(task)
         task.update(changes)
         projected_status = current_status
@@ -4109,7 +4885,7 @@ class WorkStack:
         start_day, end_day = _weekly_range(end, days)
         tasks = {task["id"]: task for task in self.list_tasks(status="all")}
         objectives = {item["id"]: item for item in self.list_objectives(status="all")}
-        worklog = self.documents.load(WorkspaceDocument.WORKLOG).get("days", {})
+        worklog = self._active_worklog().get("days", {})
         projects = _weekly_projects(worklog, tasks, start_day, end_day)
         return {
             "range": {"start": start_day.isoformat(), "end": end_day.isoformat(), "days": days},
@@ -4121,7 +4897,11 @@ class WorkStack:
     def snapshot(self) -> dict[str, Any]:
         objectives = self.list_objectives(status="all")
         tasks = self.list_tasks(status="all")
-        worklog = self.documents.load(WorkspaceDocument.WORKLOG).get("days", {})
+        # The Graph is an ACTIVE reader: its day counts and Worklog edges use
+        # the same validated membership as Review, weekly and the Agent
+        # readers. The physical day itself is retained, so a day whose entries
+        # are all superseded still appears with a zero count.
+        worklog = self._active_worklog().get("days", {})
         notes = self.documents.load(WorkspaceDocument.NOTES).get("notes", [])
         nodes: list[dict[str, Any]] = []
         edges: list[dict[str, str]] = []

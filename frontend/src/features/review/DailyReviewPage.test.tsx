@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { task, workspace } from '../../test/fixtures'
@@ -31,6 +31,28 @@ function renderPage(fetchMock: ReturnType<typeof vi.fn>, onNotice = vi.fn()) {
   )
   return { onNotice }
 }
+
+test('review calendar changes the selected date query and rejects impossible or future drafts', async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+    if (String(input).startsWith('/api/v1/review?')) return jsonResponse({ data: emptyReview })
+    throw new Error(`Unexpected request: ${String(input)}`)
+  })
+  renderPage(fetchMock)
+  await screen.findByText('Not yet')
+  const date = screen.getByRole('textbox', { name: 'Review date' })
+  await userEvent.click(screen.getByRole('button', { name: 'Choose date' }))
+  expect(screen.getByRole('button', { name: 'August 31, 2026' })).toBeDisabled()
+  await userEvent.click(screen.getByRole('button', { name: 'August 29, 2026' }))
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes('2026-08-29'))).toBe(true))
+  const count = fetchMock.mock.calls.length
+  fireEvent.change(date, { target: { value: '2026-02-30' } })
+  fireEvent.change(date, { target: { value: '2026-09-01' } })
+  expect(date).toHaveAttribute('aria-invalid', 'true')
+  expect(fetchMock).toHaveBeenCalledTimes(count)
+  await userEvent.click(screen.getByRole('button', { name: 'Clear date' }))
+  expect(date).toHaveValue('')
+  expect(fetchMock.mock.calls.every(([, init]) => !init || (init as RequestInit).method !== 'POST')).toBe(true)
+})
 
 test('adds one idempotent Done/Next/Blocker entry and refreshes the day', async () => {
   let review: any = emptyReview
@@ -125,4 +147,142 @@ test('shows reviewed work-session duration in the day record and weekly roll-up'
 
   expect(await screen.findByText('1h 5m focused · WS-000001')).toBeVisible()
   expect(screen.getByText('1h 5m focused · 1 active day')).toBeVisible()
+})
+
+test('a workspace that returns to A does not resurrect the old staged intent', async () => {
+  const user = userEvent.setup()
+  const CP = `CP-${'a'.repeat(64)}`
+  const DIGEST = `sha256:${'b'.repeat(64)}`
+  // The shared fixture UID is not RFC-conformant, so this case uses real ones.
+  const uidA = '22222222-2222-4222-8222-222222222222'
+  const uidB = '00000000-0000-4000-8000-0000000000b0'
+  const auditFor = (uid: string) => ({
+    workspace_uid: uid,
+    entries: [{
+      locator: { workspace_uid: uid, task_id: 'T-0001', date: '2026-08-30', ordinal: 0, entry_digest: DIGEST },
+      checkpoint_id: CP,
+      entry: { done: ['shipped'] },
+      recorded: {
+        type: 'worklog.recorded',
+        workspace_uid: uid,
+        task_id: 'T-0001',
+        checkpoint_id: CP,
+        date: '2026-08-30',
+        ordinal: 0,
+        entry_digest: DIGEST,
+        origin: 'agent-cli-v1',
+      },
+      state: 'active',
+      revision: 0,
+      transitions: [],
+    }],
+  })
+
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.endsWith('/api/v1/review/checkpoints')) {
+      return jsonResponse({ data: auditFor(url.includes('x') ? uidB : uidA) })
+    }
+    if (url.startsWith('/api/v1/review?')) return jsonResponse({ data: emptyReview })
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  const page = (uid: string) => (
+    <DailyReviewPage
+      onNotice={vi.fn()}
+      onOpenTask={vi.fn()}
+      today="2026-08-30"
+      workspace={{ ...workspace, workspace: { ...workspace.workspace, id: uid } }}
+    />
+  )
+  const view = render(<QueryClientProvider client={client}>{page(uidA)}</QueryClientProvider>)
+
+  await user.click(await screen.findByRole('button', { name: `Supersede ${CP}` }))
+  await user.type(screen.getByLabelText('Explanation'), 'staged in A')
+
+  // A -> B -> A: the coordinate returns, the interaction generation does not.
+  view.rerender(<QueryClientProvider client={client}>{page(uidB)}</QueryClientProvider>)
+  view.rerender(<QueryClientProvider client={client}>{page(uidA)}</QueryClientProvider>)
+
+  await waitFor(() => expect(screen.queryByLabelText('Explanation')).toBeNull())
+})
+
+test('a cache owner change in the same batch refuses the staged Confirm before rerender', async () => {
+  const user = userEvent.setup()
+  const CP = `CP-${'a'.repeat(64)}`
+  const DIGEST = `sha256:${'b'.repeat(64)}`
+  const uidA = '22222222-2222-4222-8222-222222222222'
+  const uidB = '00000000-0000-4000-8000-0000000000b0'
+  const auditFor = (uid: string) => ({
+    workspace_uid: uid,
+    entries: [{
+      locator: { workspace_uid: uid, task_id: 'T-0001', date: '2026-08-30', ordinal: 0, entry_digest: DIGEST },
+      checkpoint_id: CP,
+      entry: { done: ['shipped'] },
+      recorded: {
+        type: 'worklog.recorded',
+        workspace_uid: uid,
+        task_id: 'T-0001',
+        checkpoint_id: CP,
+        date: '2026-08-30',
+        ordinal: 0,
+        entry_digest: DIGEST,
+        origin: 'agent-cli-v1',
+      },
+      state: 'active',
+      revision: 0,
+      transitions: [],
+    }],
+  })
+
+  let transitions = 0
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-for-test' } })
+    if (url.includes('/transitions')) {
+      transitions += 1
+      return jsonResponse({ data: {}, meta: { replayed: false } }, 201)
+    }
+    if (url.endsWith('/api/v1/review/checkpoints')) return jsonResponse({ data: auditFor(uidA) })
+    if (url.startsWith('/api/v1/review?')) return jsonResponse({ data: emptyReview })
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  const workspaceFor = (uid: string) => ({
+    ...workspace,
+    workspace: { ...workspace.workspace, id: uid },
+  })
+  client.setQueryData(['workspace'], workspaceFor(uidA))
+  render(
+    <QueryClientProvider client={client}>
+      <DailyReviewPage
+        onNotice={vi.fn()}
+        onOpenTask={vi.fn()}
+        today="2026-08-30"
+        workspace={workspaceFor(uidA)}
+      />
+    </QueryClientProvider>,
+  )
+
+  await user.click(await screen.findByRole('button', { name: `Supersede ${CP}` }))
+  await user.type(screen.getByLabelText('Explanation'), 'staged in A')
+
+  const confirm = screen.getByRole('button', { name: 'Confirm supersede' })
+  // One React batch: ownership leaves and returns, then the stale control fires
+  // before any rerender could hide it.
+  await act(async () => {
+    client.setQueryData(['workspace'], workspaceFor(uidB))
+    client.setQueryData(['workspace'], workspaceFor(uidA))
+    confirm.click()
+  })
+
+  expect(transitions).toBe(0)
 })

@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import os
 import secrets
 import tempfile
 import zipfile
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .store import DEFAULTS, Store
+from .store import DEFAULTS, LOCK_NAME, Store
 
 
 BACKUP_SCHEMA_VERSION = 1
@@ -51,6 +52,17 @@ class RestoreReceipt:
     workspace_id: str
     backup_digest: str
     safety_backup: Path | None
+
+
+@dataclass(frozen=True)
+class InitializeReceipt:
+    destination: Path
+    workspace_id: str
+    store_schema_version: int
+
+
+class StoreInitializationRefused(ValueError):
+    """Raised before any write when the target is not an absent or empty directory."""
 
 
 def _sha256(body: bytes) -> str:
@@ -266,6 +278,41 @@ def verify_backup(path: Path | str) -> BackupArtifact:
 
 def _has_store_files(destination: Path) -> bool:
     return any((destination / name).exists() for name in DEFAULTS)
+
+
+def initialize_store(data_dir: Path | str) -> InitializeReceipt:
+    """Create one fresh, complete Store only in an absent or empty directory.
+
+    Never migrates, repairs or recovers: any entry other than the Store's
+    writer-lease marker refuses before the lease is taken, and the result must
+    report a fresh origin, so the server's own initialization stays the only path
+    for existing data.
+    """
+
+    destination = Path(data_dir).expanduser().resolve()
+    if os.path.lexists(destination) and not destination.is_dir():
+        raise StoreInitializationRefused("destination is not a directory")
+    occupied: list[str] = []
+    if destination.is_dir():
+        with os.scandir(destination) as entries:
+            occupied = sorted(
+                entry.name
+                for entry in entries
+                if not (entry.name == LOCK_NAME and entry.is_file(follow_symlinks=False))
+            )
+    if occupied:
+        raise StoreInitializationRefused(
+            "destination already contains entries; a new workspace requires an empty "
+            "directory: " + ", ".join(occupied)
+        )
+    readiness = Store(destination).initialize()
+    if readiness.migration_origin != "fresh":
+        raise StoreInitializationRefused("destination was not initialized as a fresh store")
+    return InitializeReceipt(
+        destination=destination,
+        workspace_id=readiness.workspace_uid,
+        store_schema_version=readiness.schema_version,
+    )
 
 
 def restore_store(

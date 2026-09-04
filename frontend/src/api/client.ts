@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import {
   capturePacketSchema,
+  checkpointAuditSchema,
+  checkpointTransitionEventSchema,
   captureSchema,
   noteSchema,
   objectiveDetailSchema,
@@ -23,6 +25,9 @@ import {
 } from '../domain/schemas'
 import type {
   ApprovedReplyInput,
+  CheckpointAudit,
+  CheckpointTransitionEventRecord,
+  CheckpointTransitionInput,
   Capture,
   CapturePacket,
   CaptureTaskInput,
@@ -56,8 +61,21 @@ import {
   getData,
   mutateData,
   mutateIdempotent,
+  type MutateReceipt,
 } from './transport'
 import { downloadBackup, downloadTaskSnapshot } from './downloads'
+
+/** The keyed status receipt travels raw; the intent hook validates it. */
+const rawReceiptSchema = z.unknown()
+
+export interface TaskStatusIntentReceipt {
+  status: number
+  body: { data: unknown; meta: unknown }
+}
+
+/** One ambiguity message for both a failed and a contradictory D5 receipt. */
+const AMBIGUOUS_TRANSITION =
+  'The checkpoint transition may have committed. Retry the same request unchanged to verify it without duplication.'
 
 export { ApiError, CommitUnknownError, createIdempotencyKey } from './transport'
 
@@ -140,6 +158,51 @@ export const api = {
   search(query: string, limit = 30): Promise<SearchProjection> {
     const parameters = new URLSearchParams({ q: query, limit: String(limit) })
     return getData(`/api/v1/search?${parameters}`, searchProjectionSchema)
+  },
+
+  /** Whole-workspace audit. UI day filtering happens only after validation. */
+  getCheckpointAudit(): Promise<CheckpointAudit> {
+    return getData('/api/v1/review/checkpoints', checkpointAuditSchema)
+  },
+
+  /**
+   * One attempt through the unchanged idempotent transport. The explanation is
+   * sent verbatim so the server's normalization stays authoritative.
+   */
+  transitionCheckpoint(
+    checkpointId: string,
+    input: CheckpointTransitionInput,
+    idempotencyKey = createIdempotencyKey(),
+  ): Promise<CheckpointTransitionEventRecord> {
+    const receipt: MutateReceipt = {}
+    return mutateIdempotent(
+      `/api/v1/review/checkpoints/${encodeURIComponent(checkpointId)}/transitions`,
+      input,
+      checkpointTransitionEventSchema,
+      idempotencyKey,
+      AMBIGUOUS_TRANSITION,
+      // Exactly one POST per explicit submit or explicit same-snapshot retry.
+      { singleAttempt: true, receipt },
+    ).then((record) => {
+      // Only a fresh 201 or a replayed 200 whose receipt names the requested
+      // checkpoint, state and next revision establishes that this committed.
+      const replayed = (receipt.meta as { replayed?: unknown } | undefined)?.replayed
+      const routeAccepted = (receipt.status === 201 && replayed === false)
+        || (receipt.status === 200 && replayed === true)
+      const matches = routeAccepted
+        && record.checkpoint_id === checkpointId
+        && record.state === input.state
+        && record.revision === input.revision + 1
+      if (!matches) {
+        throw new CommitUnknownError(AMBIGUOUS_TRANSITION, {
+          expected: { checkpointId, state: input.state, revision: input.revision + 1 },
+          received: record,
+          status: receipt.status,
+          meta: receipt.meta,
+        })
+      }
+      return record
+    })
   },
 
   getReview(date: string, days = 7): Promise<ReviewProjection> {
@@ -231,6 +294,42 @@ export const api = {
   },
 
   downloadTaskSnapshot,
+
+  /**
+   * The keyed Task-status branch of the existing PATCH route.
+   *
+   * The caller ALWAYS supplies the key - none is generated here - and the
+   * answered HTTP status and the raw `{data, meta}` are handed back exactly as
+   * received. Nothing is unwrapped, defaulted or parsed into a Task: the
+   * admitted intent hook owns receipt validation. Early planning publication is
+   * suppressed so no returned Task is installed before that classification.
+   */
+  patchTaskStatusIntent(
+    taskId: string,
+    body: { status: string; revision: number },
+    idempotencyKey: string,
+  ): Promise<TaskStatusIntentReceipt> {
+    const receipt: MutateReceipt = {}
+    return mutateData(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}`,
+      'PATCH',
+      body,
+      rawReceiptSchema,
+      idempotencyKey,
+      false,
+      { singleAttempt: true, receipt },
+    ).then(
+      (data) => ({ status: receipt.status ?? 0, body: { data, meta: receipt.meta } }),
+      (error) => {
+        // A determinate conflict is an ANSWER, not a lost request: it must reach
+        // the intent hook's 409 branch instead of being read as network loss.
+        if (error instanceof ApiError && error.status === 409) {
+          return { status: 409, body: { data: undefined, meta: receipt.meta } }
+        }
+        throw error
+      },
+    )
+  },
 
   patchTask(taskId: string, patch: TaskPatch): Promise<Task> {
     return mutateData(

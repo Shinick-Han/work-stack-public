@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -601,6 +602,193 @@ class ConnectionRegistryStartupSelectionTest(unittest.TestCase):
 
             self.assertEqual(selection.data_dir, data_dir.resolve())
             self.assertFalse(selection.backup_dir.exists())
+
+
+class FreshLocalStoreGateTest(unittest.TestCase):
+    """The read-only predicate that tells a fresh installation it has no Store yet."""
+
+    def test_registry_migration_never_initializes_an_empty_local_store(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "state"
+            empty_dir = Path(temporary) / "empty"
+            empty_dir.mkdir()
+            absent_dir = Path(temporary) / "absent"
+
+            with self.assertRaisesRegex(RuntimeError, "required Store file"):
+                MODULE.ensure_connection_registry(
+                    root,
+                    installation_identity="install-A",
+                    local_data_dir=str(empty_dir.resolve()),
+                )
+            with self.assertRaisesRegex(RuntimeError, "does not exist"):
+                MODULE.ensure_connection_registry(
+                    root,
+                    installation_identity="install-A",
+                    local_data_dir=str(absent_dir.resolve()),
+                )
+
+            self.assertEqual(
+                sorted(path.name for path in root.iterdir()), [MODULE.MIGRATION_LOCK_FILE]
+            )
+            self.assertEqual(list(empty_dir.iterdir()), [])
+            self.assertFalse(absent_dir.exists())
+
+    def test_fresh_gate_true_only_for_absent_empty_or_lease_only_data_dir(self) -> None:
+        def absent(_data_dir: Path) -> None:
+            return None
+
+        def empty(data_dir: Path) -> None:
+            data_dir.mkdir()
+
+        def files(*names: str):
+            def build(data_dir: Path) -> None:
+                data_dir.mkdir()
+                for name in names:
+                    (data_dir / name).write_text("{}", encoding="utf-8")
+
+            return build
+
+        def complete(data_dir: Path) -> None:
+            _write_workspace(data_dir)
+
+        def regular_file(data_dir: Path) -> None:
+            data_dir.write_bytes(b"not a directory")
+
+        cases = (
+            ("absent", absent, True),
+            ("empty", empty, True),
+            ("lease-only", files(MODULE.STORE_LEASE_FILE), True),
+            ("unrelated-file", files("notes.txt"), False),
+            ("desktop-ini", files("desktop.ini"), False),
+            ("v4-store", files("store.json"), False),
+            ("journal-only", files(".workstack-journal.json"), False),
+            ("workspace-only", files("workspace.json"), False),
+            ("complete-store", complete, False),
+            ("regular-file", regular_file, False),
+        )
+        for name, build, expected in cases:
+            with self.subTest(case=name):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "state"
+                    root.mkdir()
+                    data_dir = Path(temporary) / "data"
+                    build(data_dir)
+                    self.assertIs(
+                        MODULE.fresh_local_store_required(root, str(data_dir)), expected
+                    )
+
+    def test_fresh_gate_false_when_any_registry_authority_exists(self) -> None:
+        for name in MODULE.REGISTRY_AUTHORITY_FILES:
+            with self.subTest(authority=name):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "state"
+                    root.mkdir()
+                    data_dir = Path(temporary) / "data"
+                    data_dir.mkdir()
+                    (root / name).write_bytes(b"")
+                    self.assertFalse(MODULE.fresh_local_store_required(root, str(data_dir)))
+
+        with self.subTest(authority="dangling-link"):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "state"
+                root.mkdir()
+                data_dir = Path(temporary) / "data"
+                data_dir.mkdir()
+                try:
+                    os.symlink(root / "missing-target", root / MODULE.REGISTRY_FILE)
+                except (OSError, NotImplementedError) as error:
+                    self.skipTest(f"symbolic links are not permitted here: {error}")
+                self.assertFalse((root / MODULE.REGISTRY_FILE).exists())
+                self.assertFalse(MODULE.fresh_local_store_required(root, str(data_dir)))
+
+        with self.subTest(authority=MODULE.MIGRATION_LOCK_FILE):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "state"
+                root.mkdir()
+                data_dir = Path(temporary) / "data"
+                data_dir.mkdir()
+                (root / MODULE.MIGRATION_LOCK_FILE).write_bytes(b"\0")
+                self.assertTrue(MODULE.fresh_local_store_required(root, str(data_dir)))
+
+    def test_fresh_gate_legacy_draft_only_tolerates_the_exact_local_singleton(self) -> None:
+        cases = (
+            ("local-singleton", json.dumps({"storage_mode": "local"}).encode("utf-8"), True),
+            ("ssh-draft", json.dumps(_remote_legacy()).encode("utf-8"), False),
+            (
+                "local-with-extra-field",
+                json.dumps({"storage_mode": "local", "extra": 1}).encode("utf-8"),
+                False,
+            ),
+            ("invalid-json", b"{", False),
+            ("directory", None, False),
+        )
+        for name, payload, expected in cases:
+            with self.subTest(case=name):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "state"
+                    root.mkdir()
+                    data_dir = Path(temporary) / "data"
+                    data_dir.mkdir()
+                    legacy = root / MODULE.LEGACY_CONNECTION_FILE
+                    if payload is None:
+                        legacy.mkdir()
+                    else:
+                        legacy.write_bytes(payload)
+                    self.assertIs(
+                        MODULE.fresh_local_store_required(root, str(data_dir)), expected
+                    )
+
+    def test_fresh_gate_refuses_paths_the_registry_would_refuse(self) -> None:
+        for candidate in ("data", "C:\\", "\\\\server\\share"):
+            with self.subTest(data_dir=candidate):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "state"
+                    root.mkdir()
+                    self.assertFalse(MODULE.fresh_local_store_required(root, candidate))
+                    self.assertEqual(list(root.iterdir()), [])
+                    self.assertFalse((Path(temporary) / "data").exists())
+
+    def test_fresh_gate_refuses_link_like_data_dir_or_ancestor(self) -> None:
+        original = MODULE._is_link_like
+        for existing in (True, False):
+            with self.subTest(existing=existing):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "state"
+                    root.mkdir()
+                    data_dir = Path(temporary) / "parent" / "data"
+                    if existing:
+                        data_dir.mkdir(parents=True)
+                    with mock.patch.object(
+                        MODULE,
+                        "_is_link_like",
+                        side_effect=lambda path: (
+                            path.resolve(strict=False)
+                            == data_dir.parent.resolve(strict=False)
+                            or original(path)
+                        ),
+                    ):
+                        self.assertFalse(
+                            MODULE.fresh_local_store_required(root, str(data_dir))
+                        )
+
+    def test_fresh_gate_is_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "state"
+            root.mkdir()
+            (root / "config.json").write_text("{}", encoding="utf-8")
+            before = sorted(path.name for path in root.iterdir())
+            data_dir = Path(temporary) / "data"
+
+            self.assertTrue(MODULE.fresh_local_store_required(root, str(data_dir)))
+
+            self.assertFalse(data_dir.exists())
+            self.assertEqual(sorted(path.name for path in root.iterdir()), before)
+
+    def test_shell_store_rosters_match_the_store_module(self) -> None:
+        from workstack.store import DEFAULTS, LOCK_NAME
+
+        self.assertEqual(MODULE.STORE_LEASE_FILE, LOCK_NAME)
+        self.assertEqual(MODULE.MINIMUM_LOCAL_STORE_FILES, frozenset(DEFAULTS))
 
 
 if __name__ == "__main__":

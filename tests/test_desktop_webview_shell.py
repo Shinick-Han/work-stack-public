@@ -117,9 +117,64 @@ class PythonDesktopShellContractTest(unittest.TestCase):
 
         self.assertIn('APP_USER_MODEL_ID = "WorkStack.Desktop"', source)
         self.assertIn("SetCurrentProcessExplicitAppUserModelID", source)
-        self.assertIn('self.install_root / "WorkStack.ico"', source)
-        self.assertIn('theme_rgb("dark", "brand.accent")', source)
         self.assertNotIn("Color.FromArgb(174, 235, 61)", source)
+
+        # The window icon comes from the packaged versioned mark. The two former
+        # literal expectations here described an install-root ico and a brand
+        # accent lookup that the admitted behaviour no longer uses, so they are
+        # replaced by a scoped check of the method that actually sets the icon.
+        brand = self.native_brand_source(source)
+        self.assertIn("has_mark_ico()", brand)
+        self.assertIn("Icon(str(mark_ico_path()))", brand)
+        self.assertIn("self.native_icon = icon", brand)
+        self.assertIn("self._set_native_window_icon(icon)", brand)
+        # ast.unparse normalises quoting, so the stale path is matched by its parts.
+        self.assertFalse("install_root" in brand and "WorkStack.ico" in brand)
+
+    @staticmethod
+    def native_brand_source(source: str) -> str:
+        """Return only the executable body of WorkStackDesktopHost._apply_native_brand.
+
+        Comments and docstrings are excluded, so an explanatory mention of the old
+        path can neither satisfy nor break these assertions.
+        """
+
+        import ast as _ast
+
+        tree = _ast.parse(source)
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.ClassDef) and node.name == "WorkStackDesktopHost":
+                for member in node.body:
+                    if isinstance(member, _ast.FunctionDef) and member.name == "_apply_native_brand":
+                        body = list(member.body)
+                        if (
+                            body
+                            and isinstance(body[0], _ast.Expr)
+                            and isinstance(body[0].value, _ast.Constant)
+                            and isinstance(body[0].value.value, str)
+                        ):
+                            body = body[1:]
+                        return "\n".join(_ast.unparse(statement) for statement in body)
+        raise AssertionError("WorkStackDesktopHost._apply_native_brand was not found")
+
+    def test_native_brand_check_detects_a_reintroduced_install_root_icon(self) -> None:
+        # Positive control for the check above: a copy of the real source that
+        # genuinely reintroduces the stale install-root path must be detected.
+        source = self.read("workstack_desktop.py")
+        original = self.native_brand_source(source)
+        self.assertFalse("install_root" in original and "WorkStack.ico" in original)
+
+        # The healthy packaged constructor is RETAINED and a later stale
+        # install-root override is appended, which is the shape that would slip
+        # past a check that only looked for the good constructor.
+        mutated = source.replace(
+            "icon = Icon(str(mark_ico_path()))",
+            'icon = Icon(str(mark_ico_path()))\n            icon = Icon(str(self.install_root / "WorkStack.ico"))',
+            1,
+        )
+        self.assertNotEqual(mutated, source, "the mutation control did not change the copied source")
+        reintroduced = self.native_brand_source(mutated)
+        self.assertTrue("install_root" in reintroduced and "WorkStack.ico" in reintroduced)
 
     def test_dialog_suspension_restores_the_existing_provider_view(self) -> None:
         source = self.read("workstack_desktop.py")

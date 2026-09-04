@@ -1,11 +1,12 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import { api, ApiError, CommitUnknownError, createIdempotencyKey } from '../api/client'
+import { BrandMark } from '../components/BrandMark'
 import { Icon } from '../components/Icon'
 import { Button, ErrorState, IconButton, LoadingBlock } from '../components/Primitives'
 import { microsoftProviderGates, type MicrosoftProviderGates } from '../config/providerGates'
 import { workstackConnectionCenterGates, type ConnectionCenterGates } from '../config/connectionCenterGates'
-import type { AppUrlState, Capture, CapturePacket, CaptureTaskInput, QuickTaskInput, SyncStatus, Task, TaskStatus, WorkspaceProjection } from '../domain/types'
+import type { AppUrlState, Capture, CapturePacket, CaptureTaskInput, QuickTaskInput, SyncStatus, Task, TaskDetail, TaskStatus, WorkspaceProjection } from '../domain/types'
 import { CommandPalette } from '../features/commands/CommandPalette'
 import { CaptureDrawer } from '../features/inbox/CaptureDrawer'
 import { CaptureImportDialog } from '../features/inbox/CaptureImportDialog'
@@ -22,6 +23,15 @@ import { subscribePlanningChanges } from '../integration/planningChangeBus'
 import { SyncStatusControl, SyncStatusDialog, isSyncUnavailable, isSyncWriteBlocked } from './SyncStatusControl'
 import { UpdateStatusControl } from './UpdateStatusControl'
 import { subscribeSyncStatusEvents } from './syncStatusEvents'
+import {
+  useCheckpointNotices,
+  type CheckpointNoticeIntent,
+  useCheckpointTransitionNotices,
+} from './useCheckpointNotices'
+import {
+  useTaskStatusIntent,
+  type TaskStatusIntentResponse,
+} from './useTaskStatusIntent'
 import { applyTheme, readTheme, type WorkStackTheme } from './theme'
 import { FocusSurface, ReviewSurface } from './AppSurfaces'
 import { SsotConnectionCenter } from './SsotConnectionCenter'
@@ -36,6 +46,8 @@ interface Notice {
   id: number
   message: string
   tone: 'success' | 'error'
+  /** The already-verified Task this notice may offer an explicit action for. */
+  intent?: CheckpointNoticeIntent
 }
 
 interface AppProps {
@@ -83,11 +95,11 @@ const numericShortcutTargets: Record<string, Partial<AppUrlState>> = {
   '1': { surface: 'workspace', view: 'graph' },
   '2': { surface: 'workspace', view: 'board' },
   '3': { surface: 'workspace', view: 'treemap' },
-  '4': { surface: 'focus' },
-  '5': { surface: 'inbox' },
-  '6': { surface: 'review' },
-  '7': { surface: 'objectives' },
-  '8': { surface: 'workspace', view: 'table' },
+  '4': { surface: 'workspace', view: 'table' },
+  '5': { surface: 'focus' },
+  '6': { surface: 'inbox' },
+  '7': { surface: 'review' },
+  '8': { surface: 'objectives' },
 }
 
 function workspaceShortcutBlocked(event: KeyboardEvent) {
@@ -109,6 +121,9 @@ function filteredShortcutTasks(workspace: WorkspaceProjection, state: AppUrlStat
     status: state.status,
     priority: state.priority,
     objectiveId: state.objectiveId,
+    // The helper builds a NEW filter object, so an omitted field is not
+    // forwarded by passing the whole state: the coordinate is explicit here.
+    outcome: state.outcomeFilter,
   })
 }
 
@@ -158,11 +173,11 @@ function SurfaceNavButton({ active, count, icon, label, onClick, shortcut, showC
 
 function PrimaryNavigation({ onNavigate, state, workspace }: { onNavigate: (surface: AppUrlState['surface']) => void; state: AppUrlState; workspace?: WorkspaceProjection }) {
   return <nav aria-label="Product surfaces" className="primary-nav">
-    <SurfaceNavButton active={state.surface === 'workspace'} icon="graph" label="Workspace" onClick={() => onNavigate('workspace')} shortcut="1–3 · 8" />
-    <SurfaceNavButton active={state.surface === 'focus'} icon="target" label="Focus" onClick={() => onNavigate('focus')} shortcut="4" />
-    <SurfaceNavButton active={state.surface === 'inbox'} count={workspace?.inbox_count} icon="inbox" label="Context Inbox" onClick={() => onNavigate('inbox')} shortcut="5" showCount />
-    <SurfaceNavButton active={state.surface === 'review'} icon="activity" label="Daily Review" onClick={() => onNavigate('review')} shortcut="6" />
-    <SurfaceNavButton active={state.surface === 'objectives'} icon="target" label="Objective Hub" onClick={() => onNavigate('objectives')} shortcut="7" />
+    <SurfaceNavButton active={state.surface === 'workspace'} icon="graph" label="Workspace" onClick={() => onNavigate('workspace')} shortcut="1–4" />
+    <SurfaceNavButton active={state.surface === 'focus'} icon="target" label="Focus" onClick={() => onNavigate('focus')} shortcut="5" />
+    <SurfaceNavButton active={state.surface === 'inbox'} count={workspace?.inbox_count} icon="inbox" label="Context Inbox" onClick={() => onNavigate('inbox')} shortcut="6" showCount />
+    <SurfaceNavButton active={state.surface === 'review'} icon="activity" label="Daily Review" onClick={() => onNavigate('review')} shortcut="7" />
+    <SurfaceNavButton active={state.surface === 'objectives'} icon="target" label="Objective Hub" onClick={() => onNavigate('objectives')} shortcut="8" />
   </nav>
 }
 
@@ -261,7 +276,7 @@ function AppSidebar({ connectionCenterGates, mobileNavOpen, onOpenConnectionCent
   return <>
     <aside className={`app-sidebar ${mobileNavOpen ? 'is-open' : ''}`}>
       <div className="brand-block">
-        <span className="brand-mark"><span /><span /><span /></span>
+        <BrandMark />
         <div><strong>Work Stack</strong><small>Aligned execution</small></div>
         <IconButton className="mobile-close" icon="close" label="Close navigation" onClick={closeMobile} variant="ghost" />
       </div>
@@ -481,18 +496,214 @@ function AppDialogLayer({ captureImport, commandPalette, microsoftOob, quickTask
   </>
 }
 
-function AppNotice({ notice, onDismiss }: { notice: Notice | null; onDismiss: () => void }) {
+/**
+ * The approved bounded affordance for the keyed status intent. View and the
+ * explicit forward action coexist; a pending or ambiguous intent keeps its
+ * frozen key and offers Retry instead of silently starting a new one.
+ */
+function AppNoticeIntentAction({ intent }: { intent: TaskStatusIntentAffordance | null }) {
+  if (!intent) return null
+  if (intent.pending) return <span className="toast__action" role="status">Marking in progress…</span>
+  if (intent.retryable) {
+    return <button className="toast__action" onClick={intent.retry} type="button">Retry mark in progress</button>
+  }
+  if (intent.undoAvailable) {
+    return <button className="toast__action" onClick={intent.undo} type="button">Undo mark in progress</button>
+  }
+  if (!intent.canMarkInProgress) return null
+  return <button className="toast__action" onClick={intent.markInProgress} type="button">Mark In Progress</button>
+}
+
+function AppNotice({ intent, notice, onDismiss }: {
+  intent: TaskStatusIntentAffordance | null
+  notice: Notice | null
+  onDismiss: () => void
+}) {
   if (!notice) return null
   return <div className={`toast toast--${notice.tone}`} role="status">
     <Icon name={notice.tone === 'success' ? 'check' : 'warning'} size={16} />
     <span>{notice.message}</span>
     {notice.action ? <button className="toast__action" onClick={notice.action.run} type="button">{notice.action.label}</button> : null}
+    <AppNoticeIntentAction intent={intent} />
     <button aria-label="Dismiss notification" onClick={onDismiss} type="button"><Icon name="close" size={14} /></button>
   </div>
 }
 
+const NO_INTENT_OWNER = {
+  ownerEpoch: 'checkpoint-intent:none',
+  taskId: '',
+  taskUid: '',
+  workspaceUid: '',
+}
+
+/**
+ * GI-F1: the LIVE authority for one intent. The rendered snapshot is never the
+ * input: status, revision, detail identity and write authority are read from
+ * the cache at the moment the hook asks.
+ */
+function liveIntentAuthority(
+  client: QueryClient,
+  intent: CheckpointNoticeIntent | null,
+) {
+  if (!intent) return { detailAgrees: false, task: null, writable: false }
+  const live = client.getQueryData<WorkspaceProjection>(['workspace'])
+    ?.tasks.find((item) => item.id === intent.taskId)
+  const detail = client.getQueryData<TaskDetail>(['task', intent.taskId])
+  const task = live && live.uid === intent.taskUid ? live : null
+  // A cached detail for this Task must agree; an absent detail is not a defect.
+  const detailAgrees = !detail || (detail.task.id === intent.taskId && detail.task.uid === intent.taskUid)
+  const sync = client.getQueryState<SyncStatus>(['sync-status'])
+  const workspaceFailed = client.getQueryState(['workspace'])?.status === 'error'
+  const { writeBlocked } = deriveSyncPresentation(sync?.error, sync?.data, workspaceFailed)
+  return { detailAgrees, task, writable: !writeBlocked }
+}
+
+/** Every explicit dispatch and every completion re-reads that authority. */
+function isIntentAuthorityCurrent(
+  client: QueryClient,
+  intent: CheckpointNoticeIntent | null,
+  ownerEpoch: string,
+) {
+  if (!intent || intent.ownerEpoch !== ownerEpoch || !intent.isCurrent()) return false
+  const authority = liveIntentAuthority(client, intent)
+  return !!authority.task && authority.detailAgrees && authority.writable
+}
+
+interface ReconcileChronology {
+  revisionFloor: number
+  unchanged: () => boolean
+}
+
+/**
+ * GI-F2: query identity and update chronology are captured BEFORE the reads, so
+ * a newer arrival during the fetch survives instead of being overwritten.
+ */
+function captureReconcileChronology(
+  client: QueryClient,
+  intent: CheckpointNoticeIntent,
+): ReconcileChronology {
+  const cache = client.getQueryCache()
+  const keys: QueryKey[] = [['workspace'], ['task', intent.taskId]]
+  const snapshots = keys.map((key) => {
+    const query = cache.find({ exact: true, queryKey: key })
+    return { data: query?.state.data, key, query, updates: query?.state.dataUpdateCount }
+  })
+  const cachedTask = client.getQueryData<WorkspaceProjection>(['workspace'])
+    ?.tasks.find((item) => item.id === intent.taskId)
+  const cachedDetail = client.getQueryData<TaskDetail>(['task', intent.taskId])
+  return {
+    // An inactive detail can already be newer than the workspace when reads begin.
+    revisionFloor: Math.max(cachedTask?.revision ?? 0, cachedDetail?.task.revision ?? 0),
+    unchanged: () => snapshots.every((snapshot) => {
+      const live = cache.find({ exact: true, queryKey: snapshot.key })
+      // Removal, recreation, a newer update count or a replaced value all refuse.
+      return live === snapshot.query
+        && live?.state.dataUpdateCount === snapshot.updates
+        && live?.state.data === snapshot.data
+    }),
+  }
+}
+
+/** The fetched pair must answer the captured owner and may not roll back. */
+function acceptsReconciledPair(
+  before: ReconcileChronology,
+  intent: CheckpointNoticeIntent,
+  workspace: WorkspaceProjection,
+  detail: TaskDetail,
+) {
+  if (workspace.workspace.id !== intent.workspaceUid) return false
+  const live = workspace.tasks.find((item) => item.id === intent.taskId)
+  if (!live || live.uid !== intent.taskUid) return false
+  if (detail.task.id !== intent.taskId || detail.task.uid !== intent.taskUid) return false
+  if (detail.task.revision !== live.revision) return false
+  return live.revision >= before.revisionFloor
+}
+
+/** The capability a notice carries, if any. */
+function noticeIntentOf(notice: Notice | null) {
+  return notice?.intent ?? null
+}
+
+/**
+ * GI-F4: an unresolved intent keeps its own owner. Presentation may be replaced
+ * underneath it; ownership may not.
+ */
+function currentIntentOwnerOf(owned: CheckpointNoticeIntent | null, notice: Notice | null) {
+  const presented = noticeIntentOf(notice)
+  if (!owned || !owned.isCurrent()) return presented
+  if (presented && !sameIntentTask(owned, presented)) return presented
+  return owned
+}
+
+function sameIntentTask(left: CheckpointNoticeIntent, right: CheckpointNoticeIntent) {
+  return left.workspaceUid === right.workspaceUid
+    && left.taskId === right.taskId
+    && left.taskUid === right.taskUid
+}
+
+function retainedIntentOwner(
+  intent: CheckpointNoticeIntent | null,
+  state: ReturnType<typeof useTaskStatusIntent>,
+) {
+  return holdsNotice(state) ? intent : null
+}
+
+/** A pending or ambiguous intent holds its notice, and therefore its key. */
+function holdsNotice(state: ReturnType<typeof useTaskStatusIntent>) {
+  return state.pending || state.retryable
+}
+
+/** Liveness for a captured owner: same lifetime AND same live Task identity. */
+function isIntentOwnerCurrent(intent: CheckpointNoticeIntent | null, ownerEpoch: string) {
+  if (!intent || intent.ownerEpoch !== ownerEpoch) return false
+  return intent.isCurrent()
+}
+
+function intentOwnerOf(intent: CheckpointNoticeIntent | null) {
+  if (!intent) return NO_INTENT_OWNER
+  const { ownerEpoch, taskId, taskUid, workspaceUid } = intent
+  return { ownerEpoch, taskId, taskUid, workspaceUid }
+}
+
+/** The authoritative current Task for this intent, or null when it is gone. */
+function liveIntentTask(workspace: WorkspaceProjection | undefined, intent: CheckpointNoticeIntent | null) {
+  if (!intent) return null
+  const live = workspace?.tasks.find((item) => item.id === intent.taskId)
+  return live && live.uid === intent.taskUid ? live : null
+}
+
+function intentAffordanceOf(
+  intent: CheckpointNoticeIntent | null,
+  state: ReturnType<typeof useTaskStatusIntent>,
+): TaskStatusIntentAffordance | null {
+  if (!intent) return null
+  return {
+    canMarkInProgress: state.canMarkInProgress,
+    markInProgress: state.markInProgress,
+    pending: state.pending,
+    retry: state.retry,
+    retryable: state.retryable,
+    undo: state.undoLast,
+    undoAvailable: !!state.undoOffer,
+  }
+}
+
+interface TaskStatusIntentAffordance {
+  canMarkInProgress: boolean
+  markInProgress: () => void
+  pending: boolean
+  retry: () => void
+  retryable: boolean
+  undo: () => void
+  undoAvailable: boolean
+}
+
 function connectionCenterAction(gates: ConnectionCenterGates, onOpen: () => void): (() => void) | undefined {
   return gates.registry ? onOpen : undefined
+}
+
+function synchronizationReviewAction(status: SyncStatus | undefined, onOpen: () => void): (() => void) | undefined {
+  return status ? onOpen : undefined
 }
 
 function appShellClass(drawerOpen: boolean, syncWriteBlocked: boolean): string {
@@ -500,6 +711,28 @@ function appShellClass(drawerOpen: boolean, syncWriteBlocked: boolean): string {
   if (drawerOpen) className += ' has-drawer'
   if (syncWriteBlocked) className += ' is-write-blocked'
   return className
+}
+
+function useAutoOpenWorkspaceRebind({
+  coordinate,
+  onOpen,
+  rebindAvailable,
+  workspaceError,
+  workspaceLoaded,
+}: {
+  coordinate: string
+  onOpen: () => void
+  rebindAvailable?: boolean
+  workspaceError: boolean
+  workspaceLoaded: boolean
+}) {
+  const openedCoordinateRef = useRef('')
+  useEffect(() => {
+    if (!workspaceError || workspaceLoaded || !rebindAvailable || !coordinate) return
+    if (openedCoordinateRef.current === coordinate) return
+    openedCoordinateRef.current = coordinate
+    onOpen()
+  }, [coordinate, onOpen, rebindAvailable, workspaceError, workspaceLoaded])
 }
 
 export function App({ connectionCenterGates = workstackConnectionCenterGates, providerGates = microsoftProviderGates }: AppProps) {
@@ -517,6 +750,8 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
   const [importOpen, setImportOpen] = useState(false)
   const [microsoftOobMode, setMicrosoftOobMode] = useState<MicrosoftOobMode | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
+  const noticeHoldRef = useRef(false)
+  const ownedIntentRef = useRef<CheckpointNoticeIntent | null>(null)
   const [syncReviewOpen, setSyncReviewOpen] = useState(false)
   const [theme, setTheme] = useState<WorkStackTheme>(readTheme)
   const [connectionCenterOpen, setConnectionCenterOpen] = useState(false)
@@ -530,8 +765,9 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
     message: string,
     tone: Notice['tone'] = 'success',
     action?: Notice['action'],
+    intent?: CheckpointNoticeIntent,
   ) => {
-    setNotice({ action, id: Date.now(), message, tone })
+    setNotice({ action, id: Date.now(), intent, message, tone })
   }
 
   const { state, update } = useUrlState((current, next) => {
@@ -546,11 +782,6 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
     applyTheme(theme)
   }, [theme])
 
-  useEffect(() => {
-    if (!notice) return
-    const timer = window.setTimeout(() => setNotice((current) => current?.id === notice.id ? null : current), 3200)
-    return () => window.clearTimeout(timer)
-  }, [notice])
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -670,7 +901,86 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
     ])
   }
 
-  useEffect(() => subscribeSyncStatusEvents(refreshAuthoritativeState), [queryClient])
+  const receiveCheckpoint = useCheckpointNotices({
+    workspace: workspaceQuery.data,
+    onNotice: ({ intent, message, view }) => showNotice(message, 'success', { label: 'View', run: view }, intent),
+    onView: (event) => { update({ surface: 'workspace', taskId: event.task_id, captureId: null }) },
+  })
+  // The transition notice is a separate strict variant on the SAME stream.
+  const receiveTransition = useCheckpointTransitionNotices({
+    workspace: workspaceQuery.data,
+    onNotice: ({ message, view }) => showNotice(message, 'success', { label: 'View', run: view }),
+    onView: (event) => { update({ surface: 'review', taskId: null, captureId: null }) },
+  })
+  useEffect(
+    () => subscribeSyncStatusEvents(refreshAuthoritativeState, receiveCheckpoint, receiveTransition),
+    [queryClient, receiveCheckpoint, receiveTransition],
+  )
+
+  // The ONLY status-intent state machine: the admitted hook, with its frozen
+  // options. No second hook, transport, mailbox or status setter is introduced.
+  // GI-F4: presentation is replaceable, ownership of an UNRESOLVED intent is
+  // not. While one is pending or ambiguous its owner survives a new
+  // informational notice and the ordinary presentation timeout, so the frozen
+  // key can never be replaced by a fresh Mark.
+  const noticeIntent = currentIntentOwnerOf(ownedIntentRef.current, notice)
+  const intentOwner = useMemo(() => intentOwnerOf(noticeIntent), [noticeIntent])
+
+  // The live capability the getter and the guards read at call time.
+  const noticeIntentRef = useRef(noticeIntent)
+  noticeIntentRef.current = noticeIntent
+
+  const statusIntent = useTaskStatusIntent({
+    // GI-F1: a getter, so the accepted hook reads the LIVE authoritative Task at
+    // its own dispatch and receipt decision points instead of a render snapshot.
+    // The hook's options contract is unchanged and nothing is synthesized.
+    get currentTask() {
+      return liveIntentAuthority(queryClient, noticeIntentRef.current).task ?? null
+    },
+    // Liveness is answered from the cache at call time, not from this render.
+    isCurrent: (owner) => isIntentAuthorityCurrent(
+      queryClient, noticeIntentRef.current, owner.ownerEpoch,
+    ),
+    mutateOnce: (intent) => api.patchTaskStatusIntent(
+      intent.taskId,
+      { revision: intent.body.revision, status: intent.body.status },
+      intent.key,
+    ) as Promise<TaskStatusIntentResponse>,
+    newKey: () => createIdempotencyKey(),
+    owner: intentOwner,
+    reconcile: async () => {
+      // GI-F2: display-only reconciliation. BOTH authoritative snapshots are
+      // fetched, all chronology is captured BEFORE the reads, and the whole
+      // validated pair installs together or not at all.
+      const captured = noticeIntentRef.current
+      if (!captured) return
+      const before = captureReconcileChronology(queryClient, captured)
+      const [workspace, detail] = await Promise.all([
+        api.getWorkspace(),
+        api.getTask(captured.taskId),
+      ])
+      if (noticeIntentRef.current !== captured || !before.unchanged()) return
+      if (!acceptsReconciledPair(before, captured, workspace, detail)) return
+      if (!isIntentAuthorityCurrent(queryClient, captured, captured.ownerEpoch)) return
+      queryClient.setQueryData(['workspace'], workspace)
+      queryClient.setQueryData(['task', captured.taskId], detail)
+    },
+  })
+  // Holding is a fact about the CURRENT intent, read by the dismissal timer.
+  noticeHoldRef.current = holdsNotice(statusIntent)
+  // An unresolved intent keeps its owner; a settled one releases it.
+  ownedIntentRef.current = retainedIntentOwner(noticeIntent, statusIntent)
+  const noticeHoldToken = `${statusIntent.pending}:${statusIntent.retryable}`
+  useEffect(() => {
+    if (!notice) return
+    // An in-flight or ambiguous keyed intent keeps its notice, and therefore its
+    // frozen key, until it settles: the timeout must not manufacture a new one.
+    if (noticeHoldRef.current) return
+    const timer = window.setTimeout(() => setNotice((current) => current?.id === notice.id ? null : current), 3200)
+    return () => window.clearTimeout(timer)
+  }, [notice, noticeHoldToken])
+
+  const intentAffordance = intentAffordanceOf(noticeIntent, statusIntent)
 
   const workspaceActionMutation = useMutation({
     mutationFn: async (action: { text: string; links: string[]; idempotencyKey: string }) => {
@@ -859,6 +1169,13 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
       manifestDigest: syncStatus.manifest_digest,
     })
   }
+  useAutoOpenWorkspaceRebind({
+    coordinate: syncCoordinate,
+    onOpen: beginSyncReview,
+    rebindAvailable: syncStatus?.rebind_available,
+    workspaceError: workspaceQuery.isError,
+    workspaceLoaded: workspaceQuery.data !== undefined,
+  })
   useEffect(() => {
     const drawers = Array.from(document.querySelectorAll<HTMLElement>('.detail-drawer'))
     for (const drawer of drawers) drawer.inert = syncWriteBlocked
@@ -885,7 +1202,7 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
     const listener = (event: KeyboardEvent) => handleWorkspaceShortcut(event, state, workspace, update)
     window.addEventListener('keydown', listener)
     return () => window.removeEventListener('keydown', listener)
-  }, [state.objectiveId, state.priority, state.search, state.status, state.surface, state.taskId, update, workspace])
+  }, [state.objectiveId, state.outcomeFilter, state.priority, state.search, state.status, state.surface, state.taskId, update, workspace])
 
   const createSourceTask = async (draft: SourceCaptureDraft): Promise<unknown> => {
     const packet = await buildManualWebCapturePacket(draft)
@@ -1058,8 +1375,17 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
         syncStatus={syncStatusProps}
         workspaceActions={workspaceActionsProps}
       />
-      <MultiProfileConnectionCenter activationEnabled={connectionCenterGates.activation} enabled={connectionCenterGates.registry} onClose={() => setConnectionCenterOpen(false)} open={connectionCenterOpen} />
-      <AppNotice notice={notice} onDismiss={() => setNotice(null)} />
+      <MultiProfileConnectionCenter
+        activationEnabled={connectionCenterGates.activation}
+        enabled={connectionCenterGates.registry}
+        onClose={() => setConnectionCenterOpen(false)}
+        onReviewSynchronization={synchronizationReviewAction(syncStatus, () => {
+          setConnectionCenterOpen(false)
+          beginSyncReview()
+        })}
+        open={connectionCenterOpen}
+      />
+      <AppNotice intent={intentAffordance} notice={notice} onDismiss={() => setNotice(null)} />
     </div>
   )
 }

@@ -8,11 +8,24 @@ async function getElk() {
   return elkPromise
 }
 
+/**
+ * One geometry policy for every node kind. The key-result frame carries
+ * Progress plus optional Target, Status and Tasks rows, so it is both wider and
+ * taller than a Task box, and the CSS bounds those rows to this height.
+ */
+export const GRAPH_NODE_SIZES = {
+  objective: { width: 240, height: 88 },
+  note: { width: 220, height: 80 },
+  'key-result': { width: 236, height: 132 },
+  task: { width: 230, height: 96 },
+} as const
+
 function nodeSize(node: Node) {
   const kind = node.data?.kind
-  if (kind === 'objective') return { width: 240, height: 88 }
-  if (kind === 'note') return { width: 220, height: 80 }
-  return { width: 230, height: 96 }
+  if (kind === 'objective') return GRAPH_NODE_SIZES.objective
+  if (kind === 'note') return GRAPH_NODE_SIZES.note
+  if (kind === 'key-result') return GRAPH_NODE_SIZES['key-result']
+  return GRAPH_NODE_SIZES.task
 }
 
 export type GraphRoutePoint = { x: number; y: number }

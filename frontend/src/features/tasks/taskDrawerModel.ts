@@ -48,9 +48,27 @@ export function hasPatch(patch: EditableTaskPatch) {
   return patchFields(patch).length > 0
 }
 
+function keyResultRefPair(value: unknown): [string, string] | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const keys = Object.keys(record)
+  if (keys.length !== 2 || !keys.includes('objective_id') || !keys.includes('key_result_id')) return null
+  const { objective_id: objectiveId, key_result_id: keyResultId } = record
+  if (typeof objectiveId !== 'string' || typeof keyResultId !== 'string') return null
+  return [objectiveId, keyResultId]
+}
+
+function sameMember(left: unknown, right: unknown) {
+  if (left === right) return true
+  const leftPair = keyResultRefPair(left)
+  const rightPair = keyResultRefPair(right)
+  if (!leftPair || !rightPair) return false
+  return leftPair[0] === rightPair[0] && leftPair[1] === rightPair[1]
+}
+
 export function sameValue(left: unknown, right: unknown) {
   if (Array.isArray(left) && Array.isArray(right)) {
-    return left.length === right.length && left.every((value, index) => value === right[index])
+    return left.length === right.length && left.every((value, index) => sameMember(value, right[index]))
   }
   return left === right
 }
@@ -69,13 +87,9 @@ export function overlayDirtyFields(task: Task, draft: Task, fields: Set<Editable
   return overlaid
 }
 
-export function externalContext(item: ContextItem) {
-  return Boolean(item.source || item.normalized || item.kind === 'capture' || item.type === 'capture')
-}
-
-export function contextTitle(item: ContextItem) {
-  return item.source?.display_title ?? item.normalized?.summary ?? item.text ?? 'Context item'
-}
+// Q4: moved to the neutral shared utility; re-exported here so every existing
+// importer keeps the same functions by reference identity.
+export { contextTitle, externalContext } from '../../utils/taskContext'
 
 export function activityTitle(item: TaskDetail['activity'][number]) {
   if (item.type !== 'task.planning_status' || !item.status) {

@@ -3,7 +3,9 @@
 This module deliberately stops at configuration selection.  It never starts a
 server, opens an SSH process, or constructs a Store.  Identity readers are
 read-only capabilities supplied by the caller; the local default only reads
-``workspace.json``.
+``workspace.json``.  It may report that a wholly fresh installation still needs
+its first local Store (``fresh_local_store_required``); creating it is the
+caller's job through the product's own maintenance entry.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from connection_registry import (
     migrate_singleton_draft,
     registry_to_document,
     save_connection_registry,
+    validate_local_data_dir,
 )
 
 
@@ -38,6 +41,14 @@ LEGACY_ABSENT_MARKER = "remote-connection.pre-registry-v1.absent"
 MIGRATION_RECEIPT_FILE = "connection-registry-migration-receipt.json"
 MIGRATION_INTENT_FILE = "connection-registry-migration-intent.json"
 MIGRATION_LOCK_FILE = "connection-registry-migration.lock"
+STORE_LEASE_FILE = ".workstack.lock"  # workstack.store.LOCK_NAME; the Store never unlinks it
+REGISTRY_AUTHORITY_FILES = (
+    REGISTRY_FILE,
+    MIGRATION_INTENT_FILE,
+    MIGRATION_RECEIPT_FILE,
+    LEGACY_BACKUP_FILE,
+    LEGACY_ABSENT_MARKER,
+)
 MIGRATION_RECEIPT_VERSION = 1
 MIGRATION_INTENT_VERSION = 1
 MAX_LEGACY_BYTES = 1_048_576
@@ -240,6 +251,47 @@ def _capture_legacy(state_root: Path) -> _LegacySnapshot:
     return _LegacySnapshot(
         True, _read_bounded_bytes(path, MAX_LEGACY_BYTES, "legacy connection profile")
     )
+
+
+def fresh_local_store_required(state_root: Path, local_data_dir: str) -> bool:
+    """True only for a wholly fresh installation; read-only, creates nothing.
+
+    Every condition must hold: no registry, migration intent, receipt, backup or
+    absence marker under ``state_root`` (any of them means an authority already
+    binds some data_dir and the configured one may be stale); no legacy draft, or
+    one that is exactly the local singleton; ``local_data_dir`` satisfies the
+    registry's own path rules; no link or junction on its path; and the target is
+    absent, or a real directory holding nothing but the Store's writer-lease
+    marker.  Anything else returns False so startup keeps its fail-closed
+    identity verification.  Creating the Store is the caller's job, through the
+    product's own maintenance entry.
+    """
+
+    state_root = Path(state_root)
+    if any(os.path.lexists(state_root / name) for name in REGISTRY_AUTHORITY_FILES):
+        return False
+    try:
+        legacy = _parse_legacy(_capture_legacy(state_root))
+        normalized = validate_local_data_dir(local_data_dir)
+    except RuntimeError:
+        return False
+    if legacy != {"storage_mode": "local"}:
+        return False
+    data_dir = Path(normalized)
+    if any(_is_link_like(component) for component in _path_and_ancestors(data_dir)):
+        return False
+    if not os.path.lexists(data_dir):
+        return True
+    if not data_dir.is_dir():
+        return False
+    try:
+        with os.scandir(data_dir) as entries:
+            return all(
+                entry.name == STORE_LEASE_FILE and entry.is_file(follow_symlinks=False)
+                for entry in entries
+            )
+    except OSError:
+        return False
 
 
 def _atomic_write_new(path: Path, payload: bytes, description: str) -> None:

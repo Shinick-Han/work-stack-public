@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { workspace } from '../../test/fixtures'
@@ -6,6 +6,87 @@ import { QuickTaskDialog } from './QuickTaskDialog'
 import { QUICK_TASK_DRAFT_KEY, writeQuickTaskDraft } from './quickTaskDraft'
 
 beforeEach(() => window.localStorage.clear())
+
+test.each(['Clear draft', 'parent reset'] as const)('%s removes invalid empty-valued date drafts and permits the next valid submit', async (reset) => {
+  const props = { error: null, onClose: vi.fn(), onSubmit: vi.fn(), open: true, pending: false, workspace }
+  const view = render(<QuickTaskDialog {...props} resetDraftToken={0} />)
+  for (const label of ['Plan for', 'Due']) {
+    const input = screen.getByRole('textbox', { name: label })
+    expect(input).toHaveValue('')
+    await userEvent.type(input, '2024-02-31')
+    expect(input).toBeInvalid()
+  }
+  if (reset === 'Clear draft') await userEvent.click(screen.getByRole('button', { name: 'Clear draft' }))
+  else {
+    const dueControl = screen.getByLabelText('Due').closest('.date-input-control')! as HTMLElement
+    await userEvent.click(within(dueControl).getByRole('button', { name: 'Choose date' }))
+    expect(screen.getByRole('grid')).toBeInTheDocument()
+    view.rerender(<QuickTaskDialog {...props} resetDraftToken={1} />)
+  }
+  for (const label of ['Plan for', 'Due']) {
+    expect(screen.getByLabelText(label)).toHaveValue('')
+    expect(screen.getByLabelText(label)).toBeValid()
+  }
+  expect(screen.queryByRole('grid')).not.toBeInTheDocument()
+  expect(props.onSubmit).not.toHaveBeenCalled()
+  await userEvent.type(screen.getByLabelText('Task title'), 'Next valid draft')
+  await userEvent.click(screen.getByRole('button', { name: 'Create task' }))
+  expect(props.onSubmit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ title: 'Next valid draft', scheduled: null, due: null }))
+})
+
+test('ordinary close and same-value rerenders preserve invalid date text until explicit reset', async () => {
+  const props = { error: null, onClose: vi.fn(), onSubmit: vi.fn(), pending: false, workspace }
+  const view = render(<QuickTaskDialog {...props} open />)
+  const due = screen.getByLabelText('Due')
+  await userEvent.type(due, '2024-02-31')
+  await userEvent.type(screen.getByLabelText('Task title'), 'Preserved draft')
+  expect(due).toHaveValue('2024-02-31')
+  await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+  expect(props.onClose).toHaveBeenCalledOnce()
+  view.rerender(<QuickTaskDialog {...props} open={false} />)
+  view.rerender(<QuickTaskDialog {...props} open />)
+  expect(screen.getByLabelText('Due')).toHaveValue('2024-02-31')
+  expect(screen.getByLabelText('Due')).toBeInvalid()
+  expect(screen.getByLabelText('Task title')).toHaveValue('Preserved draft')
+  await userEvent.click(screen.getByRole('button', { name: 'Create task' }))
+  expect(props.onSubmit).not.toHaveBeenCalled()
+})
+
+test('invalid date drafts block native form submission until repaired or explicitly cleared', async () => {
+  const onSubmit = vi.fn()
+  render(<QuickTaskDialog error={null} onClose={vi.fn()} onSubmit={onSubmit} open pending={false} workspace={workspace} />)
+  await userEvent.type(screen.getByLabelText('Task title'), 'Check this date')
+  const due = screen.getByLabelText('Due')
+  fireEvent.change(due, { target: { value: '2024-02-29' } })
+  fireEvent.change(due, { target: { value: '2024-02-31' } })
+  await userEvent.click(screen.getByRole('button', { name: 'Create task' }))
+  expect(onSubmit).not.toHaveBeenCalled()
+  expect(due).toBeInvalid()
+  await userEvent.click(within(due.closest('.date-input-control')! as HTMLElement).getByRole('button', { name: 'Clear date' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Create task' }))
+  expect(onSubmit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ due: null }))
+})
+
+test('calendar drafts survive close and emit date-only and nullable values on submit', async () => {
+  const props = { error: null, onClose: vi.fn(), onSubmit: vi.fn(), pending: false, workspace }
+  const view = render(<QuickTaskDialog {...props} open />)
+  await userEvent.type(screen.getByLabelText('Task title'), 'Date adoption')
+  const planned = screen.getByLabelText('Plan for')
+  fireEvent.change(planned, { target: { value: '2024-02-28' } })
+  await userEvent.click(within(planned.closest('.date-input-control')! as HTMLElement).getByRole('button', { name: 'Choose date' }))
+  await userEvent.click(screen.getByRole('button', { name: 'February 29, 2024' }))
+  const due = screen.getByLabelText('Due')
+  fireEvent.change(due, { target: { value: '2024-03-01' } })
+  await userEvent.click(within(due.closest('.date-input-control')! as HTMLElement).getByRole('button', { name: 'Clear date' }))
+  expect(props.onSubmit).not.toHaveBeenCalled()
+  view.rerender(<QuickTaskDialog {...props} open={false} />)
+  view.rerender(<QuickTaskDialog {...props} open />)
+  expect(planned).toHaveValue('2024-02-29')
+  expect(due).toHaveValue('')
+  expect(JSON.parse(window.localStorage.getItem(QUICK_TASK_DRAFT_KEY)!)).toEqual(expect.objectContaining({ scheduled: '2024-02-29', due: '' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Create task' }))
+  expect(props.onSubmit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ scheduled: '2024-02-29', due: null }))
+})
 
 function deferred() {
   let resolve!: () => void

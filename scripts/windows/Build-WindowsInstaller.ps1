@@ -7,9 +7,28 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$script:WorkStackPreserveTemporary = $false
+. (Join-Path $PSScriptRoot 'WorkStack-Shortcuts.ps1')
 $runtimeUrl = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip'
 $runtimeFilename = 'python-3.12.10-embed-amd64.zip'
 $runtimeSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
+
+function ConvertTo-WorkStackCommandLineArgument {
+    <#
+        Windows argument encoding: quote when needed, escape embedded quotes and
+        double the backslashes that precede a closing quote so a trailing
+        separator survives the round trip.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value,
+        [switch]$AlwaysQuote
+    )
+
+    if (-not $AlwaysQuote -and $Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+    return '"' + $escaped + '"'
+}
 
 function Remove-PythonBytecode {
     param([Parameter(Mandatory = $true)][string]$Root)
@@ -148,6 +167,109 @@ try {
         # Work Stack imports these libraries and does not ship or invoke their CLIs.
         Remove-Item -LiteralPath $dependencyBin -Recurse -Force
     }
+    # ---- branded same-process desktop host ------------------------------
+    # One bounded compile of the already-read host source into payload/WorkStack.exe.
+    # No compiler is discovered, downloaded or installed, and the output is never
+    # executed here. A missing compiler, source or icon fails packaging.
+    $compiler = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) {
+        throw "The pinned Framework64 C# compiler is missing: $compiler"
+    }
+    $hostSource = Join-Path $payload 'desktop\python-webview-shell\WorkStackHost.cs'
+    if (-not (Test-Path -LiteralPath $hostSource -PathType Leaf)) {
+        throw 'The Work Stack desktop host source is missing from the payload.'
+    }
+    $hostIcon = Get-WorkStackShortcutIconPath -InstallPath $payload
+    if (-not (Test-Path -LiteralPath $hostIcon -PathType Leaf)) {
+        throw "The packaged Work Stack icon is missing: $hostIcon"
+    }
+
+    # The single version truth is the already-read $version from workstack/__init__.py.
+    # It is validated numerically before it is ever emitted into C#.
+    $versionMatch = [regex]::Match($version, '^(\d{1,5})\.(\d{1,5})\.(\d{1,5})$')
+    if (-not $versionMatch.Success) {
+        throw "Work Stack version is not a plain three-part release version: $version"
+    }
+    $assemblyVersion = '{0}.0' -f $version
+
+    $metadataSource = Join-Path $temporary 'WorkStackHostMetadata.cs'
+    $metadataLines = @(
+        'using System.Reflection;',
+        '[assembly: AssemblyTitle("Work Stack")]',
+        '[assembly: AssemblyDescription("Work Stack")]',
+        '[assembly: AssemblyProduct("Work Stack")]',
+        '[assembly: AssemblyCompany("Work Stack")]',
+        ('[assembly: AssemblyVersion("{0}")]' -f $assemblyVersion),
+        ('[assembly: AssemblyFileVersion("{0}")]' -f $assemblyVersion),
+        ('[assembly: AssemblyInformationalVersion("{0}")]' -f $version)
+    )
+    Set-Content -LiteralPath $metadataSource -Value $metadataLines -Encoding utf8
+
+    $hostOutput = Join-Path $payload 'WorkStack.exe'
+    # Every path-bearing value is encoded with Windows argument quoting before
+    # Start-Process serializes the list, so spaces, Unicode, embedded quotes and
+    # trailing backslashes survive intact.
+    $compilerArguments = @(
+        '/nologo',
+        '/target:winexe',
+        '/platform:x64',
+        '/optimize+',
+        '/codepage:65001',
+        ('/win32icon:' + (ConvertTo-WorkStackCommandLineArgument -Value $hostIcon)),
+        ('/out:' + (ConvertTo-WorkStackCommandLineArgument -Value $hostOutput)),
+        (ConvertTo-WorkStackCommandLineArgument -Value $hostSource),
+        (ConvertTo-WorkStackCommandLineArgument -Value $metadataSource)
+    )
+    # Bounded: one invocation, no retry and no alternate compiler. The process
+    # object is retained so a timeout can be reported rather than silently ignored.
+    $compile = Start-Process -FilePath $compiler -ArgumentList $compilerArguments -NoNewWindow -PassThru -Wait:$false
+    $initialExited = $false
+    try {
+        $initialExited = [bool]$compile.WaitForExit(30000)
+    } catch {
+        # Exit is unknown, so the tree may still be in use: preserve it and report.
+        $script:WorkStackPreserveTemporary = $true
+        throw ("Waiting for the Work Stack desktop host compiler failed, so its exit is unknown and the " +
+            "temporary tree at " + $temporary + " was preserved. " + $_.Exception.Message)
+    }
+    if (-not $initialExited) {
+        # One bounded owned lifetime: a single termination attempt against this
+        # exact instance, then a bounded confirmation. Nothing is scanned, no
+        # descendant is touched and there is no second attempt.
+        $terminationError = ''
+        try { $compile.Kill() } catch { $terminationError = $_.Exception.Message }
+        $confirmed = $false
+        try { $confirmed = [bool]$compile.WaitForExit(5000) } catch { $terminationError += ' ' + $_.Exception.Message }
+        if (-not $confirmed) {
+            # Exit could not be established, so the temporary tree may still be in
+            # use. It is preserved deliberately and the uncertainty is reported
+            # alongside the primary failure rather than being cleaned up blindly.
+            $script:WorkStackPreserveTemporary = $true
+            throw ("Compiling the Work Stack desktop host timed out after 30 seconds, and its exit could not be " +
+                "confirmed within 5 seconds; the temporary tree at $temporary was preserved. $terminationError")
+        }
+        throw 'Compiling the Work Stack desktop host timed out after 30 seconds.'
+    }
+    $compile.Refresh()
+    $compilerExitCode = $compile.ExitCode
+    if ($null -eq $compilerExitCode) {
+        # Some hosts populate HasExited without ExitCode. The produced host is the
+        # authority: a missing file still fails, a present file is treated as success.
+        if (-not (Test-Path -LiteralPath $hostOutput -PathType Leaf)) {
+            throw 'Compiling the Work Stack desktop host finished without an exit code and produced no host.'
+        }
+        $compilerExitCode = 0
+    }
+    if ($compilerExitCode -ne 0) {
+        throw "Compiling the Work Stack desktop host failed with exit code $compilerExitCode."
+    }
+    if (-not (Test-Path -LiteralPath $hostOutput -PathType Leaf)) {
+        throw 'The Work Stack desktop host was not produced.'
+    }
+    # Deterministic here means fixed validated inputs, argv, version, resource and
+    # output selection. It is NOT a claim of byte-reproducible PE output, and no
+    # reproducible-build switch is assumed of this legacy compiler.
+
     Remove-PythonBytecode -Root $payload
     Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archive -CompressionLevel Optimal
     $encoded = [Convert]::ToBase64String([IO.File]::ReadAllBytes($archive))
@@ -200,5 +322,9 @@ try {
     Write-Host "Checksum $checksumPath"
     Write-Host "SHA-256 $digest"
 } finally {
-    if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
+    if ($script:WorkStackPreserveTemporary) {
+        Write-Warning ("Preserving " + $temporary + ": a compiler instance may still be using it.")
+    } elseif (Test-Path -LiteralPath $temporary) {
+        Remove-Item -LiteralPath $temporary -Recurse -Force
+    }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Icon } from '../../components/Icon'
+import { DateInput } from '../../components/DateInput'
 import { Button, IconButton, Pill } from '../../components/Primitives'
 import {
   TASK_PRIORITIES,
@@ -134,7 +135,7 @@ export function CaptureDrawer({ capture, onClose, onCreateTask, providerGates = 
               <label className="field"><span>Definition of done / source context</span><textarea onChange={(event) => { setSourceDirty(true); setRefreshedRevision(null); setDetail(event.target.value) }} rows={5} value={detail} /></label>
               <div className="form-grid">
                 <label className="field"><span>Priority</span><select onChange={(event) => setPriority(event.target.value as CaptureTaskInput['priority'])} value={priority}>{TASK_PRIORITIES.map((item) => <option key={item}>{item}</option>)}</select></label>
-                <label className="field"><span>Due</span><input onChange={(event) => setDue(event.target.value)} type="date" value={due} /></label>
+                <DateInput className="field" label="Due" disabled={pending} onChange={setDue} value={due} />
               </div>
               <label className="field"><span>Objective <small>optional</small></span><select onChange={(event) => setObjectiveId(event.target.value)} value={objectiveId}><option value="">Unaligned / Operations</option>{workspace.objectives.map((objective) => <option key={objective.id} value={objective.id}>{objective.id} · {getObjectiveTitle(objective)}</option>)}</select></label>
               <label className="field"><span>Tags <small>comma separated</small></span><input onChange={(event) => { setSourceDirty(true); setRefreshedRevision(null); setTags(event.target.value) }} value={tags} /></label>

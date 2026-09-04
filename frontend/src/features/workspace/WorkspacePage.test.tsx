@@ -16,6 +16,7 @@ const state = {
   objectiveId: 'all',
   taskId: null,
   captureId: null,
+  doneVisibility: 'default' as const,
 }
 
 beforeEach(() => window.localStorage.clear())
@@ -115,7 +116,10 @@ describe('WorkspacePage filter summary', () => {
       />,
     )
 
-    expect(screen.getByText('1 of 2 tasks · 0 relationships')).toBeVisible()
+    // The summary now always comes from the shared projection, and the
+    // relationship total is explicitly labelled canonical rather than rendered.
+    expect(screen.getByText(/1 of 2 tasks shown/)).toBeVisible()
+    expect(screen.getByText(/0 canonical relationships/)).toBeVisible()
     const blockedMetric = within(screen.getByLabelText('Workspace summary')).getByText('Blocked').closest('div')
     expect(blockedMetric).toHaveTextContent('1')
     expect(blockedMetric).toHaveTextContent('2 P0 active tasks')

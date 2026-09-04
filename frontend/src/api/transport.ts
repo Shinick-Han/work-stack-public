@@ -94,6 +94,32 @@ export async function getData<T>(path: string, schema: z.ZodType<T>): Promise<T>
   return schema.parse(envelope.data)
 }
 
+/**
+ * Opt-in behaviour for callers that must send exactly one mutation request.
+ * Omitting it preserves the existing network retry and 403 recovery for every
+ * current caller.
+ */
+/** Narrow response evidence the D5 route needs before the envelope is discarded. */
+export interface MutateReceipt {
+  status?: number
+  meta?: unknown
+}
+
+export interface MutateOptions {
+  /** D5 transitions: one POST per explicit submit, no automatic resend. */
+  singleAttempt?: boolean
+  /** Filled with the HTTP status and envelope meta of the answered request. */
+  receipt?: MutateReceipt
+}
+
+/** An unreadable 2xx body: the write may well have happened. */
+export class UnreadableSuccessError extends Error {
+  constructor(readonly status: number) {
+    super('The server returned an unreadable successful response.')
+    this.name = 'UnreadableSuccessError'
+  }
+}
+
 export async function mutateData<T>(
   path: string,
   method: 'POST' | 'PATCH',
@@ -101,6 +127,7 @@ export async function mutateData<T>(
   schema: z.ZodType<T>,
   idempotencyKey?: string,
   publishChange = true,
+  options: MutateOptions = {},
 ): Promise<T> {
   const encodedBody = JSON.stringify(body)
   const makeHeaders = async (refreshSession = false) => {
@@ -113,7 +140,11 @@ export async function mutateData<T>(
     return headers
   }
 
-  const request = idempotencyKey ? fetchWithNetworkRetry : fetch
+  // Default behaviour is unchanged. Only an explicit single-attempt caller
+  // gives up the network retry, and it also declines the 403 resend below.
+  const request = options.singleAttempt
+    ? fetch
+    : idempotencyKey ? fetchWithNetworkRetry : fetch
   let response = await request(path, {
     method,
     credentials: 'same-origin',
@@ -124,7 +155,7 @@ export async function mutateData<T>(
 
   // A restarted local server rotates the CSRF nonce. Retry once with the same body and,
   // critically, the same idempotency key.
-  if (response.status === 403) {
+  if (response.status === 403 && !options.singleAttempt) {
     response = await request(path, {
       method,
       credentials: 'same-origin',
@@ -134,7 +165,19 @@ export async function mutateData<T>(
     })
   }
 
-  const envelope = envelopeSchema.parse(await assertOk(response))
+  if (options.receipt) options.receipt.status = response.status
+  let payload: unknown
+  try {
+    payload = await assertOk(response)
+  } catch (error) {
+    // A successful status with an unreadable body is ambiguous, not determinate.
+    if (options.receipt && response.ok && error instanceof ApiError && error.code === 'invalid_json') {
+      throw new UnreadableSuccessError(response.status)
+    }
+    throw error
+  }
+  const envelope = envelopeSchema.parse(payload)
+  if (options.receipt) options.receipt.meta = envelope.meta
   const parsed = schema.parse(envelope.data)
   if (publishChange) publishPlanningChange()
   return parsed
@@ -153,9 +196,10 @@ export async function mutateIdempotent<T>(
   schema: z.ZodType<T>,
   idempotencyKey: string,
   commitUnknownMessage: string,
+  options: MutateOptions = {},
 ): Promise<T> {
   try {
-    return await mutateData(path, 'POST', body, schema, idempotencyKey)
+    return await mutateData(path, 'POST', body, schema, idempotencyKey, true, options)
   } catch (error) {
     if (error instanceof ApiError) throw error
     throw new CommitUnknownError(commitUnknownMessage, error)

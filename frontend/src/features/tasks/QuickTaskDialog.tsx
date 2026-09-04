@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Button } from '../../components/Primitives'
 import { Dialog } from '../../components/Dialog'
+import { DateInput } from '../../components/DateInput'
 import { TASK_PRIORITIES, type QuickTaskInput, type WorkspaceProjection } from '../../domain/types'
 import { getObjectiveTitle } from '../../utils/format'
 import {
@@ -28,6 +29,7 @@ export function QuickTaskDialog({ error, initialObjectiveId = '', onClose, onSub
   const submitGateRef = useRef(false)
   const appliedObjectiveRef = useRef<string | null>(null)
   const [draft, setDraft] = useState(readQuickTaskDraft)
+  const [dateResetKey, setDateResetKey] = useState(0)
   const [syntaxMessage, setSyntaxMessage] = useState<string | null>(null)
   const { detail, due, estimateMinutes, objectiveId, priority, scheduled, tags, title } = draft
 
@@ -51,6 +53,7 @@ export function QuickTaskDialog({ error, initialObjectiveId = '', onClose, onSub
     if (!resetDraftToken) return
     clearQuickTaskDraft()
     setDraft(EMPTY_QUICK_TASK_DRAFT)
+    setDateResetKey((current) => current + 1)
   }, [resetDraftToken])
 
   useEffect(() => {
@@ -72,6 +75,7 @@ export function QuickTaskDialog({ error, initialObjectiveId = '', onClose, onSub
     if (!canEdit()) return
     clearQuickTaskDraft()
     setDraft(EMPTY_QUICK_TASK_DRAFT)
+    setDateResetKey((current) => current + 1)
     setSyntaxMessage(null)
   }
 
@@ -134,8 +138,8 @@ export function QuickTaskDialog({ error, initialObjectiveId = '', onClose, onSub
         </label>
         <div className="form-grid">
           <label className="field"><span>Priority</span><select disabled={pending} onChange={(event) => changeDraft('priority', event.target.value as QuickTaskDraft['priority'])} value={priority}>{TASK_PRIORITIES.map((item) => <option key={item}>{item}</option>)}</select></label>
-          <label className="field"><span>Plan for</span><input disabled={pending} onChange={(event) => changeDraft('scheduled', event.target.value)} type="date" value={scheduled} /></label>
-          <label className="field"><span>Due</span><input disabled={pending} onChange={(event) => changeDraft('due', event.target.value)} type="date" value={due} /></label>
+          <DateInput className="field" label="Plan for" disabled={pending} onChange={(value) => changeDraft('scheduled', value)} resetKey={dateResetKey} value={scheduled} />
+          <DateInput className="field" label="Due" disabled={pending} onChange={(value) => changeDraft('due', value)} resetKey={dateResetKey} value={due} />
           <label className="field"><span>Estimate <small>minutes</small></span><input disabled={pending} max={1440} min={1} onChange={(event) => changeDraft('estimateMinutes', event.target.value)} placeholder="90" type="number" value={estimateMinutes} /></label>
         </div>
         <label className="field"><span>Objective <small>optional</small></span><select disabled={pending} onChange={(event) => changeDraft('objectiveId', event.target.value)} value={objectiveId}><option value="">Unaligned / Operations</option>{workspace?.objectives.map((objective) => <option key={objective.id} value={objective.id}>{objective.id} · {getObjectiveTitle(objective)}</option>)}</select></label>

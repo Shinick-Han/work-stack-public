@@ -643,7 +643,12 @@ def _read_store_values(
                 raise ProfileInspectionError(
                     "store_too_large", "The selected Store is too large to inspect safely."
                 )
-            payload = path.read_bytes()
+            with path.open("rb") as stream:
+                payload = stream.read(MAX_STORE_FILE_BYTES + 1)
+            if len(payload) > MAX_STORE_FILE_BYTES:
+                raise ProfileInspectionError(
+                    "store_changed", "The selected Store changed during inspection; try again."
+                )
             _reject_reparse_components(path)
             after = path.stat()
         except ProfileInspectionError:
@@ -652,7 +657,10 @@ def _read_store_values(
             raise ProfileInspectionError(
                 "store_unreadable", "The selected Store could not be read."
             ) from error
-        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        if (
+            len(payload) != before.st_size
+            or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+        ):
             raise ProfileInspectionError(
                 "store_changed", "The selected Store changed during inspection; try again."
             )

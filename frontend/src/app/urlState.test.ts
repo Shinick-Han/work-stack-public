@@ -17,8 +17,10 @@ const state = (patch: Partial<AppUrlState> = {}): AppUrlState => ({
   readiness: 'all',
   timing: 'all',
   objectiveId: 'all',
+  outcomeFilter: { kind: 'all' },
   taskId: null,
   captureId: null,
+  doneVisibility: 'default',
   ...patch,
 })
 
@@ -106,6 +108,135 @@ describe('URL state canonicalization', () => {
   })
 })
 
+describe('durable doneVisibility coordinate', () => {
+  test('a fresh URL with no status parameter stays default', () => {
+    expect(readUrlState('').doneVisibility).toBe('default')
+    expect(readUrlState('?view=board').doneVisibility).toBe('default')
+  })
+
+  test('a literal legacy status=all becomes a durable show', () => {
+    expect(readUrlState('?status=all').doneVisibility).toBe('show')
+    expect(readUrlState('?view=table&status=all').doneVisibility).toBe('show')
+  })
+
+  test('an invalid status value alone never implies show', () => {
+    // 'bogus' falls back to status 'all', but the literal parameter was not
+    // 'all', so the legacy rule must not fire.
+    const read = readUrlState('?status=bogus')
+    expect(read.status).toBe('all')
+    expect(read.doneVisibility).toBe('default')
+  })
+
+  test('an explicit Done status keeps the coordinate untouched', () => {
+    expect(readUrlState('?status=done')).toMatchObject({
+      status: 'done',
+      doneVisibility: 'default',
+    })
+    expect(readUrlState('?status=done&doneVisibility=hide')).toMatchObject({
+      status: 'done',
+      doneVisibility: 'hide',
+    })
+  })
+
+  test('a supplied coordinate wins over the legacy status rule', () => {
+    expect(readUrlState('?status=all&doneVisibility=default').doneVisibility).toBe('default')
+    expect(readUrlState('?status=all&doneVisibility=hide').doneVisibility).toBe('hide')
+    expect(readUrlState('?status=all&doneVisibility=show').doneVisibility).toBe('show')
+  })
+
+  test('an invalid or empty supplied coordinate normalizes to default', () => {
+    expect(readUrlState('?doneVisibility=nonsense').doneVisibility).toBe('default')
+    expect(readUrlState('?doneVisibility=').doneVisibility).toBe('default')
+    // Presence with a bad value must not be mistaken for absence, so even with
+    // a legacy status=all present the supplied-but-invalid value wins.
+    expect(readUrlState('?status=all&doneVisibility=nonsense').doneVisibility).toBe('default')
+  })
+
+  test('serializes hide and show but omits default', () => {
+    window.history.replaceState(null, '', '/')
+    writeUrlState(state({ doneVisibility: 'show' }), false)
+    expect(window.location.search).toBe('?doneVisibility=show')
+
+    window.history.replaceState(null, '', '/')
+    writeUrlState(state({ doneVisibility: 'hide' }), false)
+    expect(window.location.search).toBe('?doneVisibility=hide')
+
+    window.history.replaceState(null, '', '/')
+    writeUrlState(state({ doneVisibility: 'default' }), false)
+    expect(window.location.search).toBe('')
+  })
+
+  test('canonicalizes a legacy ?status=all link and keeps show on reload', () => {
+    window.history.replaceState(null, '', '/?status=all')
+    const first = readUrlState()
+    expect(first.doneVisibility).toBe('show')
+
+    writeUrlState(first, true)
+    expect(window.location.search).toBe('?doneVisibility=show')
+
+    // Repeated read/write cycles must not drift back to default.
+    const second = readUrlState()
+    expect(second.doneVisibility).toBe('show')
+    writeUrlState(second, true)
+    expect(window.location.search).toBe('?doneVisibility=show')
+    expect(readUrlState().doneVisibility).toBe('show')
+  })
+
+  test('read, write and read again agree for every coordinate value', () => {
+    for (const value of ['default', 'hide', 'show'] as const) {
+      window.history.replaceState(null, '', '/')
+      const written = writeUrlState(state({ doneVisibility: value }), true)
+      expect(written.doneVisibility).toBe(value)
+      expect(readUrlState().doneVisibility).toBe(value)
+    }
+  })
+
+  test('in-memory status=all alone does not infer a legacy show', () => {
+    // Programmatic state, not a parsed URL: the legacy rule is URL-only.
+    expect(normalizeUrlState(state({ status: 'all' })).doneVisibility).toBe('default')
+
+    const withoutCoordinate = { ...state(), doneVisibility: undefined }
+    expect(normalizeUrlState(withoutCoordinate).doneVisibility).toBe('default')
+
+    window.history.replaceState(null, '', '/')
+    writeUrlState(withoutCoordinate, false)
+    expect(window.location.search).toBe('')
+  })
+
+  test('normalizeUrlState always yields a concrete coordinate', () => {
+    expect(normalizeUrlState({ ...state(), doneVisibility: undefined }).doneVisibility)
+      .toBe('default')
+    expect(
+      normalizeUrlState({ ...state(), doneVisibility: 'bogus' as never }).doneVisibility,
+    ).toBe('default')
+    expect(normalizeUrlState(state({ doneVisibility: 'show' })).doneVisibility).toBe('show')
+  })
+
+  test('preserves pathname, hash and the task/capture invariant alongside the coordinate', () => {
+    window.history.replaceState(null, '', '/work-stack?old=1#focus')
+    const normalized = writeUrlState(
+      state({ surface: 'focus', taskId: 'T-0100', captureId: 'C-0100', doneVisibility: 'show' }),
+      false,
+    )
+
+    expect(normalized.captureId).toBeNull()
+    expect(normalized.doneVisibility).toBe('show')
+    expect(window.location.pathname).toBe('/work-stack')
+    expect(window.location.search).toBe('?surface=focus&task=T-0100&doneVisibility=show')
+    expect(window.location.hash).toBe('#focus')
+  })
+
+  test('leaves unrelated query semantics untouched', () => {
+    expect(readUrlState('?doneVisibility=show&q=release&priority=P1&objective=O-2'))
+      .toMatchObject({
+        doneVisibility: 'show',
+        search: 'release',
+        priority: 'P1',
+        objectiveId: 'O-2',
+      })
+  })
+})
+
 describe('useUrlState', () => {
   test('canonicalizes surface transitions before updating state and URL', () => {
     window.history.replaceState(null, '', '/?surface=inbox&capture=C-0007')
@@ -180,5 +311,70 @@ describe('useUrlState', () => {
 
     expect(result.current.state.taskId).toBe('T-0012')
     expect(window.location.search).toBe('?task=T-0012')
+  })
+
+  test('canonicalizes a legacy All entry point on mount and keeps it across popstate', () => {
+    window.history.replaceState(null, '', '/?status=all')
+    const { result } = renderHook(() => useUrlState())
+
+    expect(result.current.state.doneVisibility).toBe('show')
+    expect(window.location.search).toBe('?doneVisibility=show')
+
+    act(() => {
+      window.history.pushState(null, '', '/?doneVisibility=show&view=board')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    expect(result.current.state).toMatchObject({ doneVisibility: 'show', view: 'board' })
+    expect(window.location.search).toBe('?view=board&doneVisibility=show')
+  })
+
+  test('updates the coordinate without disturbing the current Task drawer', () => {
+    window.history.replaceState(null, '', '/?task=T-0014')
+    const { result } = renderHook(() => useUrlState())
+
+    act(() => result.current.update({ doneVisibility: 'hide' }))
+
+    expect(result.current.state).toMatchObject({ taskId: 'T-0014', doneVisibility: 'hide' })
+    expect(window.location.search).toBe('?task=T-0014&doneVisibility=hide')
+  })
+})
+
+
+describe('outcome filter persistence', () => {
+  test('all is omitted, unassigned is literal and a pair round-trips exactly', () => {
+    expect(readUrlState('').outcomeFilter).toEqual({ kind: 'all' })
+    expect(readUrlState('?outcome=unassigned').outcomeFilter).toEqual({ kind: 'unassigned' })
+
+    const encoded = encodeURIComponent(JSON.stringify(['pair', 'O-A::B', 'KR|X']))
+    expect(readUrlState(`?outcome=${encoded}`).outcomeFilter).toEqual({
+      kind: 'pair',
+      objectiveId: 'O-A::B',
+      keyResultId: 'KR|X',
+    })
+  })
+
+  test.each([
+    ['unknown kind', 'sometimes'],
+    ['malformed json', '%7Bnope'],
+    ['wrong tuple length', encodeURIComponent(JSON.stringify(['pair', 'O-1']))],
+    ['blank identity', encodeURIComponent(JSON.stringify(['pair', ' ', 'KR-1']))],
+    ['non-string identity', encodeURIComponent(JSON.stringify(['pair', 'O-1', 7]))],
+  ])('%s normalizes to all without deleting unrelated state', (_name, raw) => {
+    const parsed = readUrlState(`?surface=focus&q=release&outcome=${raw}`)
+
+    expect(parsed.outcomeFilter).toEqual({ kind: 'all' })
+    expect(parsed.surface).toBe('focus')
+    expect(parsed.search).toBe('release')
+  })
+
+  test('identifiers are never trimmed or uppercased on read', () => {
+    const encoded = encodeURIComponent(JSON.stringify(['pair', ' o-1 ', ' kr-1 ']))
+
+    expect(readUrlState(`?outcome=${encoded}`).outcomeFilter).toEqual({
+      kind: 'pair',
+      objectiveId: ' o-1 ',
+      keyResultId: ' kr-1 ',
+    })
   })
 })

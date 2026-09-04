@@ -172,7 +172,10 @@ class V4CaptureReplyBackend:
         self.root = root
         source = root.parent / "bootstrap-v3"
         bootstrap = WorkStack(Store(source))
-        self.task = bootstrap.add_task("Capture/reply contract Task")
+        with mock.patch(
+            "workstack.service.utc_now", return_value="2026-08-29T00:00:00Z"
+        ):
+            self.task = bootstrap.add_task("Capture/reply contract Task")
         documents = {name: bootstrap.store.load(name) for name in DEFAULTS}
         self.conversion = convert_v3_documents(
             documents, candidate_created_at="2026-08-29T00:00:00Z"

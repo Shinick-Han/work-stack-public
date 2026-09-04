@@ -1,4 +1,5 @@
 import type { Edge, Node } from '@xyflow/react'
+import { GRAPH_NODE_SIZES } from "./graphLayout";
 import { describe, expect, test } from 'vitest'
 
 import { layoutPlanningGraph } from './graphLayout'
@@ -38,3 +39,13 @@ describe('layoutPlanningGraph', () => {
     await expect(layoutPlanningGraph([], [])).resolves.toEqual({ nodes: [], edgeRoutes: {} })
   })
 })
+
+
+describe("GR03 key-result geometry policy", () => {
+  it("gives the key-result kind its own explicit size instead of the Task fallback", () => {
+    expect(GRAPH_NODE_SIZES["key-result"]).toEqual({ width: 236, height: 132 });
+    expect(GRAPH_NODE_SIZES["key-result"]).not.toEqual(GRAPH_NODE_SIZES.task);
+    expect(GRAPH_NODE_SIZES.objective).toEqual({ width: 240, height: 88 });
+    expect(GRAPH_NODE_SIZES.note).toEqual({ width: 220, height: 80 });
+  });
+});

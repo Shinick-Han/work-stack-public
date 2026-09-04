@@ -1,0 +1,23 @@
+.date-input-control { display: grid; gap: 4px; position: relative; min-width: 0; }
+.date-input-control--open { grid-column: 1 / -1; }
+.date-input-control__field { display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 4px; }
+.date-input-control__field input { grid-column: 1 / -1; min-width: 0; width: 100%; }
+.date-input-control > label { color: var(--ws-text-secondary); font-size: 10px; font-weight: 600; }
+.date-input-control.date-input-control--property { grid-column: 1 / -1; background: var(--ws-surface-raised); border: 1px solid var(--ws-border-subtle); border-radius: 7px; padding: 8px; }
+.date-input-control.date-input-control--property > label { display: block; background: transparent; border: 0; min-height: 0; padding: 0; }
+.date-input-control--property .date-input-control__field input { font-size: 11px; padding: 8px; background: var(--ws-control-bg); border: 1px solid var(--ws-border-subtle); border-radius: 5px; }
+.date-input-control button { background: var(--ws-surface-base); border: 1px solid var(--ws-border-subtle); border-radius: 5px; color: var(--ws-text-primary); cursor: pointer; font: inherit; padding: 5px 7px; }
+.date-input-control button:disabled { cursor: default; opacity: .45; }
+.date-input-control button:focus-visible, .date-input-control input:focus-visible { outline: 2px solid var(--ws-control-border-focus); outline-offset: 2px; }
+.date-input-control__hint { color: var(--ws-text-muted); font-size: .8em; }
+.date-input-control__error { color: var(--ws-status-danger-text); font-size: .8em; }
+/* Keep the expanded calendar in its scroll container; no clipped overlay or nested dialog. */
+.date-input-control__calendar { background: var(--ws-surface-base); border: 1px solid var(--ws-border-subtle); border-radius: 8px; box-shadow: var(--ws-shadow-lg); color: var(--ws-text-primary); padding: 8px; position: relative; width: 100%; max-width: 19rem; min-width: 0; }
+.date-input-control__heading, .date-input-control__actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.date-input-control__calendar table { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 8px 0; }
+.date-input-control__calendar th { color: var(--ws-text-muted); font-size: .75em; padding: 4px 0; }
+.date-input-control__calendar abbr { text-decoration: none; }
+.date-input-control__calendar td { padding: 2px; text-align: center; }
+.date-input-control__calendar td button { width: 100%; padding: 6px 0; border-color: transparent; }
+.date-input-control__calendar td[aria-selected="true"] button { background: var(--ws-surface-soft); border-color: var(--ws-control-border-focus); font-weight: 700; }
+.date-input-control__calendar button[aria-current="date"] { text-decoration: underline; text-underline-offset: 3px; }

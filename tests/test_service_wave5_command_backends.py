@@ -21,6 +21,7 @@ from workstack.storage.objective_v4_repository import V4ObjectiveRepository
 from workstack.storage.reader import read_v4
 from workstack.storage.runtime import resolve_runtime_authority
 from workstack.storage.task_repository import V4TaskRepository
+from workstack.checkpoint_change import build_checkpoint_facts
 
 from tests.test_storage_intent_dual_backend import _write_conversion
 
@@ -62,6 +63,7 @@ class Wave5ServiceFixture:
         self.intents = V4IntentRepository(
             self.runtime,
             enable_v4_intents=True,
+            checkpoint_facts=build_checkpoint_facts,
             now=lambda: NOW,
             uid_factory=lambda: next(uids),
         )

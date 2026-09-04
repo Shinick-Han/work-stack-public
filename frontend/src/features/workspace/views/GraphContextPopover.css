@@ -1,0 +1,30 @@
+.wsv-graph-node { position: relative; }
+.wsv-graph-node__action:focus-visible { outline: 2px solid var(--ws-focus-ring); outline-offset: 3px; border-radius: 3px; }
+.wsv-graph-node:has(.wsv-graph-context-trigger) .wsv-graph-node__meta { padding-right: 42px; }
+.wsv-graph-context-trigger { position: absolute; right: 12px; bottom: 10px; cursor: pointer; font-size: .61rem; }
+.wsv-graph-context-trigger:focus-visible { outline: 2px solid var(--ws-focus-ring); outline-offset: 3px; }
+.wsv-graph-context {
+  box-sizing: border-box; width: min(680px, calc(100vw - 24px));
+  max-height: min(760px, calc(100dvh - 24px)); margin: auto; padding: 0;
+  border: 1px solid var(--ws-border-default); border-radius: 16px;
+  background: var(--ws-surface-raised); color: var(--ws-text-primary);
+  box-shadow: 0 20px 72px var(--ws-backdrop); overflow: hidden;
+}
+.wsv-graph-context[open] { display: flex; flex-direction: column; }
+.wsv-graph-context::backdrop { background: var(--ws-backdrop); }
+.wsv-graph-context__header { display: flex; align-items: flex-start; gap: 16px; padding: 20px; border-bottom: 1px solid var(--ws-border-default); }
+.wsv-graph-context__header > div { flex: 1; min-width: 0; }
+.wsv-graph-context__header, .wsv-graph-context__footer { flex-shrink: 0; }
+.wsv-graph-context__header p { margin: 0 0 6px; color: var(--ws-text-muted); font-size: 12px; }
+.wsv-graph-context__header h2 { margin: 0; font-size: 20px; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.wsv-graph-context__body { overflow: auto; overscroll-behavior: contain; min-height: 0; padding: 20px; overflow-wrap: anywhere; }
+.wsv-graph-context__body .timeline-list { margin: 0; }
+.wsv-graph-context .context-entry { grid-template-columns: 25px minmax(0, 1fr); }
+.wsv-graph-context .context-entry > div { min-width: 0; }
+.wsv-graph-context .context-entry header { flex-wrap: wrap; }
+.wsv-graph-context .context-entry h3 { font-size: 13px; }
+.wsv-graph-context .context-entry p, .wsv-graph-context .context-entry ul, .wsv-graph-context .context-entry a { font-size: 12px; }
+.wsv-graph-context .context-entry time { font-size: 10px; }
+.wsv-graph-context__footer { display: flex; justify-content: flex-end; padding: 12px 20px; border-top: 1px solid var(--ws-border-default); }
+.wsv-graph-context button { flex-shrink: 0; min-height: 36px; padding: 6px 12px; cursor: pointer; font: inherit; border: 1px solid var(--ws-control-border); border-radius: 8px; background: var(--ws-control-bg); color: var(--ws-text-primary); }
+.wsv-graph-context button:focus-visible, .wsv-graph-context a:focus-visible { outline: 2px solid var(--ws-focus-ring); outline-offset: 3px; }
