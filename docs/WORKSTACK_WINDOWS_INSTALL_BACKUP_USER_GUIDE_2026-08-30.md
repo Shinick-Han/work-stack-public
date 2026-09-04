@@ -1,5 +1,9 @@
 # Work Stack Windows install, backup, and recovery guide
 
+The Korean 1.0.7 install and usage guide is
+[WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md](WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md).
+This repository has not published a v1.0.7 GitHub Release yet.
+
 ## Install from one setup file
 
 No Python or Node.js installation is required on the target machine. The setup file includes

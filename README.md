@@ -25,6 +25,11 @@ published installer until the v1.0.6 release gate and immutable artifact build f
 The target machine needs neither Python nor Node.js. This build is not code-signed, so
 the checksum proves transfer integrity rather than publisher identity.
 
+A Korean install and usage guide for the **1.0.7** desktop is
+[docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md](docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md).
+This repository does not yet publish a v1.0.7 GitHub Release. Use that guide only with a
+verified `WorkStack-Setup-1.0.7.ps1` and its `.sha256` sidecar.
+
 This prototype is intentionally a thin local product shell. Activepieces and the
 Conduit runtime are not embedded. Work Stack owns `PlanningTask`; a future Conduit
 integration owns execution tasks. See the
