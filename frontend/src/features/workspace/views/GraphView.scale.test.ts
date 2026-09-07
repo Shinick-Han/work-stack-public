@@ -148,3 +148,16 @@ test('GN3 the initial key-result geometry is the SAME policy the layout engine i
   const objective = nodes.find((node) => node.data.kind === 'objective')
   expect([objective!.initialWidth, objective!.initialHeight]).toEqual([221, 78])
 })
+
+test('presentation nodes expose a dedicated move-handle drag selector', () => {
+  const { nodes } = makeGraphModel(
+    [{ id: 'T-0001', title: 'Ship minimap', status: 'open', priority: 'P2', objective_ids: ['O-1'] }],
+    [{ id: 'O-1', objective: 'Make work legible', quarter: '2026-Q3' }],
+    [],
+    [],
+    'T-0001',
+  )
+  expect(nodes.length).toBeGreaterThan(0)
+  expect(nodes.every((node) => node.draggable === true)).toBe(true)
+  expect(nodes.every((node) => node.dragHandle === '.wsv-graph-move-handle')).toBe(true)
+})

@@ -808,3 +808,276 @@ test('the ordinary patchTask keeps its unkeyed default behaviour', async () => {
 
   expect(headersSeen).toEqual([null])
 })
+
+const deletionPreviewPayload = {
+  backup: {
+    created: false,
+    location: '/runtime/task-deletion-backups/pending',
+    retention: 'retain-until-operator-purge',
+  },
+  modified_references: { notes: ['N-1'], tasks: ['T-0002'] },
+  preview_token: 'preview-token-1',
+  removed_task_owned_records: {
+    activity_events: 1,
+    idempotency_keys: 0,
+    notes: 2,
+    planning_events: 1,
+    replies: 0,
+    work_sessions: 0,
+    worklog_entries: 1,
+  },
+  store_digest: 'digest-1',
+  task: { id: task.id, revision: task.revision, title: task.title, uid: task.uid },
+  unlinked_captures: { actions: 1, captures: ['C-0001'] },
+}
+
+const deletionReceiptPayload = {
+  backup: { digest: 'sha256:abc', location: '/runtime/task-deletion-backups/file.zip' },
+  deleted: true as const,
+  display_id_high_water: 12,
+  generation: 4,
+  revision: task.revision,
+  task_id: task.id,
+  task_uid: task.uid,
+}
+
+test('previewTaskDeletion posts the D2 body and does not publish a planning change', async () => {
+  window.localStorage.removeItem(CROSS_TAB_STORAGE_KEY)
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-for-test' } })
+    if (url.endsWith(`/api/v1/tasks/${task.id}/deletion-preview`)) {
+      return jsonResponse({ data: deletionPreviewPayload })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(api.previewTaskDeletion(
+    task.id,
+    {
+      revision: task.revision,
+      workspace_uid: workspace.workspace.id,
+      client_request_id: 'workstack:preview-1',
+    },
+    'workstack:preview-1',
+  )).resolves.toEqual(deletionPreviewPayload)
+
+  const previewCall = fetchMock.mock.calls.find(([input]) => String(input).includes('/deletion-preview'))
+  expect(previewCall?.[1]?.method).toBe('POST')
+  expect(JSON.parse(String(previewCall?.[1]?.body))).toEqual({
+    revision: task.revision,
+    workspace_uid: workspace.workspace.id,
+    client_request_id: 'workstack:preview-1',
+  })
+  expect((previewCall?.[1]?.headers as Record<string, string>)['Idempotency-Key']).toBe('workstack:preview-1')
+  expect(window.localStorage.getItem(CROSS_TAB_STORAGE_KEY)).toBeNull()
+})
+
+test('previewTaskDeletion refuses a task or revision mismatch', async () => {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-for-test' } })
+    return jsonResponse({
+      data: { ...deletionPreviewPayload, task: { ...deletionPreviewPayload.task, revision: task.revision + 1 } },
+    })
+  }))
+
+  await expect(api.previewTaskDeletion(
+    task.id,
+    {
+      revision: task.revision,
+      workspace_uid: workspace.workspace.id,
+      client_request_id: 'workstack:preview-stale',
+    },
+    'workstack:preview-stale',
+  )).rejects.toMatchObject({ name: 'ApiError', code: 'preview_stale', status: 409 })
+})
+
+test('permanentlyDeleteTask sends DELETE with If-Match, preview token, and confirm', async () => {
+  window.localStorage.removeItem(CROSS_TAB_STORAGE_KEY)
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-for-test' } })
+    if (url.endsWith(`/api/v1/tasks/${task.id}`) && init?.method === 'DELETE') {
+      return jsonResponse({ data: deletionReceiptPayload })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(api.permanentlyDeleteTask(task.id, {
+    previewToken: 'preview-token-1',
+    confirm: task.id,
+    revision: task.revision,
+    idempotencyKey: 'workstack:delete-1',
+  })).resolves.toEqual(deletionReceiptPayload)
+
+  const deleteCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'DELETE')
+  expect(JSON.parse(String(deleteCall?.[1]?.body))).toEqual({
+    preview_token: 'preview-token-1',
+    confirm: task.id,
+  })
+  const headers = deleteCall?.[1]?.headers as Record<string, string>
+  expect(headers['If-Match']).toBe(String(task.revision))
+  expect(headers['Idempotency-Key']).toBe('workstack:delete-1')
+  expect(JSON.parse(window.localStorage.getItem(CROSS_TAB_STORAGE_KEY) ?? '{}')).toMatchObject({ version: 1 })
+})
+
+test('a malformed 2xx permanent-delete receipt is commit-unknown, never success', async () => {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-for-test' } })
+    if (init?.method === 'DELETE') return jsonResponse({ data: { deleted: true } }, 200)
+    throw new Error(`Unexpected request: ${url}`)
+  }))
+
+  await expect(api.permanentlyDeleteTask(task.id, {
+    previewToken: 'preview-token-1',
+    confirm: task.id,
+    revision: task.revision,
+    idempotencyKey: 'workstack:delete-malformed',
+  })).rejects.toBeInstanceOf(CommitUnknownError)
+})
+
+test('an extra field on a 2xx permanent-delete receipt is commit-unknown', async () => {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-for-test' } })
+    if (init?.method === 'DELETE') {
+      return jsonResponse({ data: { ...deletionReceiptPayload, extra: true } })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }))
+
+  await expect(api.permanentlyDeleteTask(task.id, {
+    previewToken: 'preview-token-1',
+    confirm: task.id,
+    revision: task.revision,
+    idempotencyKey: 'workstack:delete-extra',
+  })).rejects.toBeInstanceOf(CommitUnknownError)
+})
+
+test('a lost DELETE response is commit-unknown while a 409 stays an ApiError', async () => {
+  const lost = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-for-test' } })
+    if (init?.method === 'DELETE') return Promise.reject(new TypeError('network down'))
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', lost)
+  await expect(api.permanentlyDeleteTask(task.id, {
+    previewToken: 'preview-token-1',
+    confirm: task.id,
+    revision: task.revision,
+    idempotencyKey: 'workstack:delete-lost',
+  })).rejects.toBeInstanceOf(CommitUnknownError)
+
+  const conflict = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-for-test' } })
+    if (init?.method === 'DELETE') {
+      return jsonResponse({ error: { code: 'preview_stale', message: 'preview_stale' } }, 409)
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', conflict)
+  try {
+    await api.permanentlyDeleteTask(task.id, {
+      previewToken: 'preview-token-1',
+      confirm: task.id,
+      revision: task.revision,
+      idempotencyKey: 'workstack:delete-conflict',
+    })
+    throw new Error('Expected conflict')
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).not.toBeInstanceOf(CommitUnknownError)
+    expect(error).toMatchObject({ status: 409, code: 'preview_stale' })
+  }
+})
+
+test('reads the frozen daily preview contract and refuses uid mismatch', async () => {
+  const uid = '22222222-2222-4222-8222-222222222222'
+  const body = {
+    workspace_uid: uid,
+    source_digest: `sha256:${'a'.repeat(64)}`,
+    preview: {
+      template: 'daily-v1',
+      period: { kind: 'day', date: '2026-08-30' },
+      generated_at: '2026-09-06T01:02:03Z',
+      absence: 'no records',
+      provenance: {
+        date: '2026-08-30',
+        task_ids: [],
+        sources: [],
+        weekly_range: { start: '2026-08-30', end: '2026-08-30', days: 1 },
+        ignored_keys: [],
+      },
+      markdown: '# Daily review 2026-08-30\n',
+    },
+  }
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.startsWith('/api/v1/reports/daily-preview?')) return jsonResponse({ data: body })
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(api.getDailyReportPreview('2026-08-30', uid)).resolves.toEqual(body)
+  const url = String(fetchMock.mock.calls[0][0])
+  expect(url).toBe(
+    '/api/v1/reports/daily-preview?date=2026-08-30&template=daily-v1&workspace_uid=22222222-2222-4222-8222-222222222222',
+  )
+
+  await expect(
+    api.getDailyReportPreview('2026-08-30', '00000000-0000-4000-8000-0000000000b0'),
+  ).rejects.toThrow()
+})
+
+test('reads the frozen weekly preview contract and refuses uid mismatch', async () => {
+  const uid = '22222222-2222-4222-8222-222222222222'
+  const week = [
+    '2026-08-24',
+    '2026-08-25',
+    '2026-08-26',
+    '2026-08-27',
+    '2026-08-28',
+    '2026-08-29',
+    '2026-08-30',
+  ]
+  const body = {
+    workspace_uid: uid,
+    source_digest: `sha256:${'a'.repeat(64)}`,
+    preview: {
+      template: 'weekly-v1',
+      period: { kind: 'week', start: '2026-08-24', end: '2026-08-30', days: 7 },
+      generated_at: '2026-09-06T01:02:03Z',
+      absence: 'no records',
+      provenance: {
+        range: { start: '2026-08-24', end: '2026-08-30', days: 7 },
+        task_ids: [],
+        sources: [],
+        coverage: { record_dates: [], no_record_dates: week },
+        ignored_keys: [],
+      },
+      markdown: '# Weekly review 2026-08-24 → 2026-08-30\n',
+    },
+  }
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.startsWith('/api/v1/reports/weekly-preview?')) return jsonResponse({ data: body })
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(api.getWeeklyReportPreview('2026-08-30', uid)).resolves.toEqual(body)
+  const url = String(fetchMock.mock.calls[0][0])
+  expect(url).toBe(
+    '/api/v1/reports/weekly-preview?end_date=2026-08-30&template=weekly-v1&workspace_uid=22222222-2222-4222-8222-222222222222',
+  )
+
+  await expect(
+    api.getWeeklyReportPreview('2026-08-30', '00000000-0000-4000-8000-0000000000b0'),
+  ).rejects.toThrow()
+})

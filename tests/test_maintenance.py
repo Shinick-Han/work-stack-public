@@ -5,7 +5,9 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
+from workstack import maintenance
 from workstack.maintenance import (
     BackupValidationError,
     backup_store,
@@ -15,7 +17,7 @@ from workstack.maintenance import (
     verify_backup,
 )
 from workstack.service import WorkStack
-from workstack.store import Store, StoreLockedError
+from workstack.store import DEFAULTS, Store, StoreLockedError
 
 
 class MaintenanceTest(unittest.TestCase):
@@ -37,7 +39,7 @@ class MaintenanceTest(unittest.TestCase):
         verified = verify_backup(artifact.path)
         self.assertEqual(verified.workspace_id, artifact.workspace_id)
         self.assertEqual(verified.digest, artifact.digest)
-        self.assertEqual(verified.file_count, 9)
+        self.assertEqual(verified.file_count, 10)
 
         destination = self.root / "restored"
         receipt = restore_store(artifact.path, destination)
@@ -49,6 +51,11 @@ class MaintenanceTest(unittest.TestCase):
     def test_restore_existing_store_creates_safety_backup(self) -> None:
         artifact = backup_store(self.source, self.backups)
         destination = self.root / "existing"
+        # The destination has to be this workspace's own authority: replacing a
+        # store is a rollback of one workspace's history, never an overwrite of
+        # a different workspace's, so the fixture adopts the archive identity
+        # first and then diverges from it.
+        restore_store(artifact.path, destination)
         existing = WorkStack(Store(destination))
         existing.add_task("Existing fact")
 
@@ -63,6 +70,80 @@ class MaintenanceTest(unittest.TestCase):
         self.assertTrue(receipt.safety_backup.is_file())
         restored = WorkStack(Store(destination))
         self.assertEqual([item["title"] for item in restored.list_tasks(status="all")], [self.task["title"]])
+
+    def test_restore_refuses_to_replace_a_different_workspace(self) -> None:
+        artifact = backup_store(self.source, self.backups)
+        destination = self.root / "another-workspace"
+        WorkStack(Store(destination)).add_task("A different workspace's fact")
+        before = {
+            path.name: path.read_bytes() for path in sorted(destination.glob("*.json"))
+        }
+        safety = self.backups / "never-written"
+
+        with self.assertRaisesRegex(
+            BackupValidationError, "destination holds a different workspace"
+        ):
+            restore_store(
+                artifact.path, destination, replace=True, safety_backup_dir=safety
+            )
+
+        self.assertEqual(
+            {path.name: path.read_bytes() for path in sorted(destination.glob("*.json"))},
+            before,
+        )
+        self.assertFalse(safety.exists())
+
+    def test_restore_refuses_a_foreign_swap_after_the_identity_check(self) -> None:
+        artifact = backup_store(self.source, self.backups)
+        destination = self.root / "same-then-swapped"
+        restore_store(artifact.path, destination)
+        foreign = self.root / "interleaved-foreign"
+        WorkStack(Store(foreign)).add_task("A foreign workspace's fact")
+        foreign_uid = json.loads(
+            (foreign / "workspace.json").read_text(encoding="utf-8")
+        )["id"]
+        foreign_files = {
+            path.name: path.read_bytes() for path in sorted(foreign.glob("*.json"))
+        }
+        foreign_manifest = Store(foreign).store_manifest_path.read_bytes()
+        safety = self.backups / "never-written-after-swap"
+        original = maintenance._existing_destination_generation
+
+        def swap_after_identity(store: Store) -> maintenance._HeldDestinationGeneration:
+            held = original(store)
+            source = Store(foreign)
+            for name in DEFAULTS:
+                store.path(name).write_bytes(source.path(name).read_bytes())
+            store.store_manifest_path.write_bytes(source.store_manifest_path.read_bytes())
+            return held
+
+        with mock.patch.object(
+            maintenance,
+            "_existing_destination_generation",
+            side_effect=swap_after_identity,
+        ):
+            with self.assertRaisesRegex(
+                BackupValidationError, "destination holds a different workspace"
+            ):
+                restore_store(
+                    artifact.path,
+                    destination,
+                    replace=True,
+                    safety_backup_dir=safety,
+                )
+
+        self.assertEqual(
+            {path.name: path.read_bytes() for path in sorted(destination.glob("*.json"))},
+            foreign_files,
+        )
+        self.assertEqual(
+            Store(destination).store_manifest_path.read_bytes(), foreign_manifest
+        )
+        self.assertEqual(
+            json.loads((destination / "workspace.json").read_text(encoding="utf-8"))["id"],
+            foreign_uid,
+        )
+        self.assertFalse(safety.exists())
 
     def test_tampered_backup_is_rejected_without_touching_destination(self) -> None:
         artifact = backup_store(self.source, self.backups)

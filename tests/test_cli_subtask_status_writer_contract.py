@@ -263,6 +263,25 @@ class _SubtaskStatusCase(unittest.TestCase):
 
         self.store = Store(self.root)
         self.stack = WorkStack(self.store)
+        self._advertised_owner_lease = None
+
+    def hold_advertised_owner_lock(self) -> None:
+        """A1: leftover server_info without a held lock is exclusive-local."""
+
+        if self._advertised_owner_lease is not None:
+            return
+        lease = self.store.try_acquire_writer_lease()
+        self.assertIsNotNone(
+            lease, "advertising a running owner requires a real writer lock"
+        )
+        self._advertised_owner_lease = lease
+        self.addCleanup(self._release_advertised_owner_lock)
+
+    def _release_advertised_owner_lock(self) -> None:
+        lease = self._advertised_owner_lease
+        self._advertised_owner_lease = None
+        if lease is not None:
+            self.store.release_writer_lease(lease)
 
     def _restore_environment(self) -> None:
         for name, value in self._saved.items():
@@ -623,6 +642,7 @@ class SubtaskStatusOwnerBoundaryContract(_SubtaskStatusCase):
         idle = self.start_idle_endpoint()
         path = self.store.server_info_path
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.hold_advertised_owner_lock()
         cases = {
             "malformed": b"{not json",
             "structurally invalid": json.dumps({"version": 1, "host": []}).encode(),
@@ -648,6 +668,7 @@ class SubtaskStatusOwnerBoundaryContract(_SubtaskStatusCase):
         parent = self.seed_one("Directory metadata")
         path = self.store.server_info_path
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.hold_advertised_owner_lock()
         path.mkdir()
 
         code, out, err = self.act("done", parent, "S-1")
@@ -659,6 +680,7 @@ class SubtaskStatusOwnerBoundaryContract(_SubtaskStatusCase):
 
     def test_an_empty_advertisement_refuses_without_local_fallback(self) -> None:
         parent = self.seed_one("Empty metadata")
+        self.hold_advertised_owner_lock()
         self.store.server_info_path.write_bytes(b"")
 
         code, out, err = self.act("start", parent, "S-1")

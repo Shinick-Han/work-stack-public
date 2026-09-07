@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from workstack.service import WorkStack
-from workstack.store import Store, StoreCorruptError
+from workstack.store import Store, StoreCorruptError, _task_semantics
 
 
 class StoreManifestCharacterizationTests(unittest.TestCase):
@@ -87,6 +87,56 @@ class StoreManifestCharacterizationTests(unittest.TestCase):
             manifest["tasks"] = {task_id: task}
             with self.subTest(label=label):
                 self.assert_invalid(manifest, "store manifest task baseline is invalid")
+
+
+class StoreManifestTaskBaselineRuleTests(unittest.TestCase):
+    """One rule produces the recorded task baseline and the one checked against it.
+
+    The upgrade preflight judges a released manifest by recomputing this
+    baseline from the backlog it already holds. That only means anything if the
+    rule is the same one a commit records, so the equality is pinned here
+    rather than left to two copies drifting apart.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.temporary.name))
+        self.service = WorkStack(self.store)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def manifest(self) -> dict:
+        return json.loads(self.store.store_manifest_path.read_text(encoding="utf-8"))
+
+    def test_the_recorded_baseline_is_the_backlog_semantics(self) -> None:
+        self.assertEqual(self.manifest()["tasks"], {})
+
+        task = self.service.add_task("Baseline")
+
+        backlog = self.store.load("backlog.json")
+        expected = _task_semantics(backlog)
+        self.assertEqual(set(expected), {task["id"]})
+        self.assertEqual(self.manifest()["tasks"], expected)
+        self.assertEqual(self.store._task_semantics_locked(), expected)
+
+    def test_the_baseline_follows_a_task_the_backlog_changed(self) -> None:
+        task = self.service.add_task("Baseline")
+        before = self.manifest()["tasks"][task["id"]]
+
+        self.service.set_task_status(task["id"], "done")
+
+        after = self.manifest()["tasks"][task["id"]]
+        self.assertNotEqual(after["digest"], before["digest"])
+        self.assertEqual(after, _task_semantics(self.store.load("backlog.json"))[task["id"]])
+
+    def test_a_backlog_without_an_array_of_tasks_has_no_semantics(self) -> None:
+        for backlog in ({"version": 3}, {"version": 3, "tasks": {}}, "backlog"):
+            with self.subTest(backlog=backlog):
+                with self.assertRaisesRegex(
+                    StoreCorruptError, "^backlog.tasks must be an array$"
+                ):
+                    _task_semantics(backlog)
 
 
 if __name__ == "__main__":

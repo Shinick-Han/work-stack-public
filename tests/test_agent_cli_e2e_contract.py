@@ -14,7 +14,7 @@ from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from workstack import cli
 from workstack.agent_authority import admit_authority
@@ -341,6 +341,21 @@ class IsolatedAuthorityTest(unittest.TestCase):
         _write_json(
             self.data_dir / "store.json",
             {"format": "workstack.ssot", "schema_version": 4},
+        )
+
+    def make_v5_metadata(self) -> None:
+        self.data_dir.mkdir(parents=True)
+        _write_json(
+            self.data_dir / "workspace.json",
+            {"version": 2, "id": WORKSPACE_UID, "name": "v5 authority"},
+        )
+        _write_json(
+            self.data_dir / "store-meta.json",
+            {"version": 2, "store_schema_version": 5, "migrations": {}},
+        )
+        _write_json(
+            self.data_dir / "reports.json",
+            {"version": 1, "reports": [], "idempotency": []},
         )
 
     def write_owner(self, store: Store | None = None) -> Store:
@@ -700,21 +715,47 @@ class AgentDispatchContractTests(IsolatedAuthorityTest):
                 load_envelope(stdout)
                 self.assert_no_canaries(stdout, stderr)
 
-    def test_existing_agent_apply_stays_on_characterized_legacy_path(self) -> None:
-        store = Mock()
-        with (
-            patch.object(cli, "Store", return_value=store) as store_type,
-            patch.object(cli, "apply_agent_update", return_value=8) as apply_update,
-        ):
+    def test_legacy_agent_apply_requires_explicit_authority_before_store(self) -> None:
+        with patch(
+            "workstack.owner_authority.Store",
+            side_effect=AssertionError("Store factory"),
+        ) as store_type:
             code, stdout, stderr = self.invoke_main(
                 ["agent", "apply", "--stdin", "--intent-id", "intent-123"],
                 stdin=b"agent",
             )
-        self.assertEqual(code, 8)
-        store_type.assert_called_once()
-        apply_update.assert_called_once_with(store, b"agent", "intent-123")
+        self.assertEqual(code, 2)
+        store_type.assert_not_called()
         self.assertEqual(stdout, "")
-        self.assertEqual(stderr, "")
+        self.assertIn("invalid_authority", stderr)
+
+    def test_legacy_agent_apply_succeeds_on_admitted_synthetic_authority(self) -> None:
+        task_id = self.make_v3()
+        packet = json.dumps({
+            "workspace_id": WORKSPACE_UID,
+            "task_id": task_id,
+            "expected_revision": 0,
+            "changes": {"title": "Applied after admission"},
+        }).encode("utf-8")
+        code, stdout, stderr = self.invoke_main(
+            [
+                "--data-dir",
+                str(self.data_dir),
+                "agent",
+                "--workspace-uid",
+                WORKSPACE_UID,
+                "apply",
+                "--stdin",
+                "--intent-id",
+                "intent-apply-1",
+            ],
+            stdin=packet,
+        )
+        self.assertEqual(code, 0, stderr)
+        receipt = json.loads(stdout)
+        self.assertEqual(receipt["meta"]["mode"], "exclusive-local-store")
+        self.assertEqual(receipt["data"]["title"], "Applied after admission")
+        self.assertEqual(receipt["data"]["revision"], 1)
 
 
 class AgentAuthorityRefusalTests(IsolatedAuthorityTest):
@@ -789,6 +830,81 @@ class AgentAuthorityRefusalTests(IsolatedAuthorityTest):
                 self.assertEqual(self.online_calls, [])
                 self.assertNotIn(SECRET_TASK, stdout)
                 self.assertNotIn(SECRET_TASK, stderr)
+
+    def test_v5_metadata_is_admitted_store_free_before_store_construction(self) -> None:
+        self.make_v5_metadata()
+        before = tuple(sorted(p.as_posix() for p in self.home.rglob("*")))
+        admissions: list[AuthorityAdmission] = []
+
+        def capturing_admit(
+            *,
+            data_dir: Path,
+            expected_workspace_uid: str,
+        ) -> AuthorityAdmission:
+            self.events.append(("admit", Path(data_dir), expected_workspace_uid))
+            admission = admit_authority(
+                data_dir=data_dir,
+                expected_workspace_uid=expected_workspace_uid,
+            )
+            admissions.append(admission)
+            return admission
+
+        code, _stdout, _stderr = self.run_command(
+            STATUS_COMMAND,
+            dependencies=self.dependencies(
+                admit_authority=capturing_admit,
+                store_factory=self.forbidden_store,
+            ),
+        )
+        after = tuple(sorted(p.as_posix() for p in self.home.rglob("*")))
+        self.assertEqual(before, after)
+        self.assertEqual(len(admissions), 1)
+        self.assertEqual(admissions[0].storage_format, "v5")
+        self.assertEqual(admissions[0].workspace_uid, WORKSPACE_UID)
+        self.assertEqual(
+            [event[0] for event in self.events],
+            ["admit", "store-construct"],
+        )
+        self.assertEqual(self.local_calls, [])
+        self.assertNotEqual(code, 0)
+
+    def test_exclusive_local_v5_status_and_context_require_activated_store(self) -> None:
+        from workstack.store import DEFAULTS, STORE_SCHEMA_VERSION
+
+        if STORE_SCHEMA_VERSION != 5 or "reports.json" not in DEFAULTS:
+            self.skipTest(
+                "blocked pending v5 Store activation and composition"
+            )
+        task_id = self.make_v3()
+        dependencies = self.dependencies(
+            create_running_server_backend=lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("running-server backend must not be selected")
+            ),
+        )
+        status_code, status_stdout, status_stderr = self.run_command(
+            STATUS_COMMAND,
+            dependencies=dependencies,
+        )
+        status = self.assert_success(
+            status_code,
+            status_stdout,
+            status_stderr,
+            command="agent.status",
+            transport="exclusive-local",
+        )
+        self.assertEqual(status["data"]["storage_format"], "v5")
+        context_code, context_stdout, context_stderr = self.run_command(
+            CONTEXT_COMMAND,
+            dependencies=dependencies,
+            task=task_id,
+        )
+        self.assert_success(
+            context_code,
+            context_stdout,
+            context_stderr,
+            command="agent.context",
+            transport="exclusive-local",
+        )
 
 
 class AgentBackendSelectionTests(IsolatedAuthorityTest):

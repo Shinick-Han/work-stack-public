@@ -1,0 +1,49 @@
+.multi-profile-connections__python-required,
+.multi-profile-connections__preview {
+  background: var(--ws-status-warning-surface);
+  border: 1px solid var(--ws-status-warning-border);
+  border-radius: 8px;
+  color: var(--ws-status-warning-text);
+  display: grid;
+  gap: 8px;
+  font-size: 9px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 10px 11px;
+}
+
+.multi-profile-connections__preview h3 {
+  color: var(--ws-text-primary);
+  font-size: 12px;
+  margin: 0;
+}
+
+.multi-profile-connections__preview dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.multi-profile-connections__preview dt {
+  color: var(--ws-text-secondary);
+  font-size: 10px;
+}
+
+.multi-profile-connections__preview dd {
+  align-items: center;
+  color: var(--ws-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+}
+
+.multi-profile-connections__preview-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.multi-profile-connections [role="alert"] code {
+  margin-right: 6px;
+}

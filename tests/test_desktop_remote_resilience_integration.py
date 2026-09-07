@@ -34,6 +34,7 @@ def write_remote_profile(root: Path) -> None:
         "local_forward_port": 18765,
         "remote_port": 8765,
         "workspace_id": WORKSPACE_ID,
+        "remote_python": "/srv/workstack/venv/bin/python",
     })
 
 
@@ -327,6 +328,192 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
         self.assertTrue(host._reconnect_remote_once(wait_for_active=True))
 
         host._replace_remote_connection.assert_not_called()
+
+
+class DesktopRemoteStartupAttemptTest(unittest.TestCase):
+    def _host_with_startup(self) -> object:
+        host = object.__new__(MODULE.WorkStackDesktopHost)
+        host.remote_profile = MODULE.RemoteConnectionProfile(
+            "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
+        )
+        host.remote_startup = MODULE.RemoteStartupStateMachine()
+        host.remote_monitor = None
+        host.remote_monitor_attempt_id = ""
+        host.remote_shutdown_requested = MODULE.threading.Event()
+        host.remote_recovery_required = MODULE.threading.Event()
+        host.remote_lifecycle_state = "IDLE"
+        host.remote_attempt_id = 0
+        host.remote_ready_attempt_id = 0
+        host._is_remote_session_healthy = mock.Mock(return_value=True)
+        host._is_remote_process_alive = mock.Mock(return_value=True)
+        host._reconnect_remote_once = mock.Mock(return_value=True)
+        host._publish_remote_connection_state = mock.Mock()
+        host._reload_workstack_after_reconnect = mock.Mock()
+        host._fail_closed_remote_authority = mock.Mock()
+        return host
+
+    def test_monitor_does_not_start_before_authority_ready(self) -> None:
+        host = self._host_with_startup()
+        host.remote_startup.begin()
+        with mock.patch.object(MODULE, "RemoteConnectionMonitor") as monitor_type:
+            host._start_remote_monitor()
+        monitor_type.assert_not_called()
+
+    def test_monitor_starts_once_after_ready_and_stops_once(self) -> None:
+        host = self._host_with_startup()
+        attempt = host.remote_startup.begin()
+        for state in (
+            MODULE.RemoteStartupState.STARTING_TUNNEL,
+            MODULE.RemoteStartupState.WAITING_REMOTE_READY,
+            MODULE.RemoteStartupState.VERIFYING_AUTHORITY,
+            MODULE.RemoteStartupState.READY,
+        ):
+            self.assertTrue(host.remote_startup.advance(attempt, state))
+        with mock.patch.object(MODULE, "RemoteConnectionMonitor") as monitor_type:
+            monitor = monitor_type.return_value
+            monitor.is_running = True
+            host._start_remote_monitor()
+            host._start_remote_monitor()
+            host._stop_remote_monitor()
+        monitor_type.assert_called_once()
+        monitor.start.assert_called_once_with()
+        monitor.stop.assert_called_once_with(timeout=5)
+        self.assertEqual(host.remote_startup.state, MODULE.RemoteStartupState.MONITORING)
+        self.assertIsNone(host.remote_monitor)
+
+    def test_stale_ready_callback_does_not_start_monitor(self) -> None:
+        host = self._host_with_startup()
+        first = host._begin_remote_attempt()
+        second = host._begin_remote_attempt()
+        self.assertNotEqual(first, second)
+        with mock.patch.object(MODULE, "RemoteConnectionMonitor") as monitor_type:
+            self.assertFalse(host._apply_remote_ready_if_current(first))
+            monitor_type.assert_not_called()
+        self.assertEqual(host.remote_startup.active_attempt_id, str(second))
+
+    def test_stop_then_late_ready_cannot_resurrect_tunnel(self) -> None:
+        host = self._host_with_startup()
+        host.remote_session_token = None
+        host.remote_ssh_process = None
+        host.remote_ssh_log = None
+        host._request_remote_stop_owned = mock.Mock()
+        host._trace = mock.Mock()
+        attempt = host._begin_remote_attempt()
+        host._stop_owned_remote_connection()
+        with mock.patch.object(MODULE, "RemoteConnectionMonitor") as monitor_type:
+            self.assertFalse(host._apply_remote_ready_if_current(attempt))
+            monitor_type.assert_not_called()
+        self.assertEqual(host.remote_startup.state, MODULE.RemoteStartupState.STOPPED)
+
+    def test_timeout_from_first_attempt_does_not_overwrite_second_success(self) -> None:
+        host = self._host_with_startup()
+        first = host._begin_remote_attempt()
+        second = host._begin_remote_attempt()
+        host._fail_remote_attempt(first)
+        self.assertTrue(host._advance_remote_startup(second, "STARTING_TUNNEL"))
+        self.assertTrue(host._advance_remote_startup(second, "WAITING_REMOTE_READY"))
+        self.assertTrue(host._advance_remote_startup(second, "VERIFYING_AUTHORITY"))
+        with mock.patch.object(MODULE, "RemoteConnectionMonitor") as monitor_type:
+            monitor_type.return_value.is_running = False
+            self.assertTrue(host._apply_remote_ready_if_current(second))
+        self.assertEqual(host.remote_startup.state, MODULE.RemoteStartupState.MONITORING)
+        self.assertEqual(host.remote_ready_attempt_id, second)
+
+
+class DesktopRemoteReplaceShutdownSeparationTest(unittest.TestCase):
+    def _host(self) -> object:
+        host = object.__new__(MODULE.WorkStackDesktopHost)
+        host.remote_profile = MODULE.RemoteConnectionProfile(
+            "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
+        )
+        host.remote_startup = MODULE.RemoteStartupStateMachine()
+        host.remote_monitor = None
+        host.remote_monitor_attempt_id = ""
+        host.remote_shutdown_requested = MODULE.threading.Event()
+        host.remote_recovery_required = MODULE.threading.Event()
+        host.remote_lifecycle_state = "IDLE"
+        host.remote_attempt_id = 0
+        host.remote_ready_attempt_id = 0
+        host.remote_session_token = "owned-token"
+        host.remote_session_token_hash = "owned-hash"
+        host.remote_ssh_log = None
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.pid = 42
+        host.remote_ssh_process = process
+        host._request_remote_stop_owned = mock.Mock()
+        host._ensure_remote_server = mock.Mock()
+        host._trace = mock.Mock()
+        return host
+
+    def test_replace_reaches_ensure_without_manufacturing_shutdown(self) -> None:
+        host = self._host()
+        monitor = mock.Mock()
+        monitor.is_running = True
+        host.remote_monitor = monitor
+        old_process = host.remote_ssh_process
+
+        self.assertTrue(host._replace_remote_connection())
+
+        host._ensure_remote_server.assert_called_once_with()
+        self.assertFalse(host.remote_shutdown_requested.is_set())
+        old_process.terminate.assert_called_once_with()
+        monitor.stop.assert_called_once_with(timeout=5)
+        host._request_remote_stop_owned.assert_called_once()
+
+    def test_form_closing_sets_shutdown_before_monitor_teardown(self) -> None:
+        host = self._host()
+        host.connection_registry_worker = mock.Mock()
+        host.server_started_by_host = False
+        host.server_stop_thread = None
+        host.remote_ssh_process = None
+        seen: list[bool] = []
+        monitor = mock.Mock()
+
+        def stop_monitor(*, timeout: int = 5) -> None:
+            seen.append(host.remote_shutdown_requested.is_set())
+
+        monitor.stop.side_effect = stop_monitor
+        host.remote_monitor = monitor
+
+        host._on_form_closing(None, None)
+
+        self.assertEqual(seen, [True])
+        self.assertTrue(host.remote_shutdown_requested.is_set())
+        host.connection_registry_worker.stop.assert_called_once_with(timeout=0)
+
+    def test_preexisting_shutdown_prevents_a_new_attempt(self) -> None:
+        host = self._host()
+        host.remote_shutdown_requested.set()
+        old_process = host.remote_ssh_process
+
+        self.assertFalse(host._replace_remote_connection())
+
+        host._ensure_remote_server.assert_not_called()
+        old_process.terminate.assert_not_called()
+        host._request_remote_stop_owned.assert_not_called()
+
+    def test_shutdown_after_start_stops_the_new_owned_connection(self) -> None:
+        host = self._host()
+        old_process = host.remote_ssh_process
+        new_process = mock.Mock()
+        new_process.poll.return_value = None
+        new_process.pid = 99
+
+        def start_then_request_shutdown() -> None:
+            host.remote_shutdown_requested.set()
+            host.remote_ssh_process = new_process
+            host.remote_session_token = "replacement-token"
+
+        host._ensure_remote_server.side_effect = start_then_request_shutdown
+
+        self.assertFalse(host._replace_remote_connection())
+
+        host._ensure_remote_server.assert_called_once_with()
+        old_process.terminate.assert_called_once_with()
+        new_process.terminate.assert_called_once_with()
+        self.assertIsNone(host.remote_ssh_process)
+        self.assertIsNone(host.remote_session_token)
 
 
 if __name__ == "__main__":

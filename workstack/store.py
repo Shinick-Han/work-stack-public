@@ -40,18 +40,55 @@ MAX_COMMIT_EVENTS = 3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Sequence
 
+from . import store_rosters
+from . import store_report_migration
 from .planning_status import (
     PlanningStatusValidationError,
     append_bootstrap,
     validate_and_project,
 )
+from .store_document_validation import (
+    ACTIVITY_DEFAULT,
+    AUXILIARY_DEFAULTS,
+    BACKLOG_DEFAULT,
+    IDENTITY_STORES,
+    MAX_REVISION,
+    REPORTS_DEFAULT,
+    StoreReadiness,
+    _canonical_uuid,
+    _compact_json,
+    _require_task_display_id_authority,
+    _stored_revision,
+    admitted_tasks,
+    decode_documents,
+    supported_roster,
+    validate_document_values,
+    validate_workspace,
+)
+from .store_errors import (
+    StoreAdoptionConflictError,
+    StoreCorruptError,
+    StoreExternalChangeError,
+)
+from .task_display_id import (
+    FIELD as TASK_DISPLAY_ID_HIGH_WATER,
+    TaskDisplayIdError,
+    admitted_high_water,
+    read_optional_high_water,
+    task_ids_from_records,
+)
+from .file_lease import StoreLockedError, _FileLease
 
 
-STORE_SCHEMA_VERSION = 3
-MAX_REVISION = 9_007_199_254_740_991
-IDENTITY_STORES = ("workspace.json", "backlog.json", "store-meta.json", "activity.json")
+# Schema 4 belongs to workstack.ssot, so the next collection-layout version is
+# 5: the nine released documents plus reports.json.
+STORE_SCHEMA_VERSION = 5
+
+
+_WORKSPACE_REQUIRED_KEYS = frozenset({"version", "id", "name"})
+_WORKSPACE_OPTIONAL_KEYS = frozenset({TASK_DISPLAY_ID_HIGH_WATER})
 
 
 def _workspace_default() -> dict[str, Any]:
@@ -73,26 +110,32 @@ def _store_meta_default() -> dict[str, Any]:
                 "origin": "fresh",
                 "source_sha256": None,
             },
+            "reports": {
+                "id": "workstack.reports.v5",
+                "origin": "fresh",
+                "source_sha256": None,
+            },
         },
     }
 
 
+# Composed from the payload shapes store_document_validation owns, so a shape
+# cannot drift between what this build writes and what the historical readers
+# accept. The two identity documents are built per store and stay None here.
 DEFAULTS: dict[str, dict[str, Any] | None] = {
     "workspace.json": None,
-    "backlog.json": {"version": 3, "tasks": []},
+    "backlog.json": copy.deepcopy(BACKLOG_DEFAULT),
     "store-meta.json": None,
-    "okr.json": {"version": 1, "objectives": []},
-    "worklog.json": {"version": 1, "days": {}},
-    "notes.json": {"version": 1, "notes": []},
-    "captures.json": {"version": 1, "captures": []},
-    "replies.json": {"version": 1, "replies": []},
-    "activity.json": {
-        "version": 2,
-        "activity": [],
-        "idempotency": [],
-        "planning_status": [],
-    },
+    **{name: copy.deepcopy(value) for name, value in AUXILIARY_DEFAULTS.items()},
+    "activity.json": copy.deepcopy(ACTIVITY_DEFAULT),
+    "reports.json": copy.deepcopy(REPORTS_DEFAULT),
 }
+
+# This build writes exactly the v5 roster. The check is here so a roster edit
+# cannot silently teach the historical readers a document their version never
+# had.
+if frozenset(DEFAULTS) != store_rosters.V5_DOCUMENT_NAMES:
+    raise RuntimeError("store defaults no longer match the frozen v5 roster")
 
 JOURNAL_NAME = ".workstack-journal.json"
 LOCK_NAME = ".workstack.lock"
@@ -102,64 +145,25 @@ STORE_MANIFEST_NAME = ".workstack-store-manifest.json"
 SYNC_ADOPTION_RECEIPT_NAME = ".workstack-sync-adoption-receipt.json"
 SYNC_REBIND_RECEIPT_NAME = ".workstack-sync-rebind-receipt.json"
 STORE_MANIFEST_VERSION = 1
+# Rollback archives written before an upgrade commits. The directory is not a
+# roster member and never becomes one, so an authority never treats its own
+# backup as authoritative data.
+MIGRATION_BACKUP_DIR = ".workstack-migration-backups"
 
 
-class StoreLockedError(OSError):
-    """Raised when another process owns the data-directory writer lease."""
-
-
-class StoreCorruptError(ValueError):
-    """Raised when persisted state cannot be safely interpreted."""
-
-
-class StoreExternalChangeError(RuntimeError):
-    """Raised when an unowned SSOT change freezes normal mutations."""
-
-    def __init__(self, status: Mapping[str, Any]) -> None:
-        super().__init__(
-            "authoritative store changed outside Work Stack; review synchronization status"
-        )
-        self.status = dict(status)
-
-
-class StoreAdoptionConflictError(RuntimeError):
-    """Raised when one sync-adoption key is reused for another candidate."""
+def _utc_stamp() -> str:
+    return (
+        dt.datetime.now(dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _serialized_json_bytes(value: Any) -> bytes:
     return (
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
-
-
-@dataclass(frozen=True)
-class StoreReadiness:
-    schema_version: int
-    workspace_uid: str
-    task_count: int
-    migration_origin: str
-
-
-def _canonical_uuid(value: Any, label: str) -> str:
-    if not isinstance(value, str):
-        raise StoreCorruptError("{} must be a canonical UUID string".format(label))
-    try:
-        parsed = uuid.UUID(value)
-    except (ValueError, AttributeError) as error:
-        raise StoreCorruptError("{} must be a canonical UUID string".format(label)) from error
-    if parsed.int == 0 or str(parsed) != value or parsed.variant != uuid.RFC_4122:
-        raise StoreCorruptError(
-            "{} must be a non-nil lowercase canonical RFC 4122 UUID".format(label)
-        )
-    return value
-
-
-def _stored_revision(value: Any, label: str) -> int:
-    if type(value) is not int or not 0 <= value <= MAX_REVISION:
-        raise StoreCorruptError(
-            "{} must be an integer between 0 and {}".format(label, MAX_REVISION)
-        )
-    return value
 
 
 def _default_for(name: str) -> dict[str, Any]:
@@ -173,120 +177,18 @@ def _default_for(name: str) -> dict[str, Any]:
     raise ValueError("unknown dynamic default: {}".format(name))
 
 
-def _compact_json(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
+def _validate_store_manifest_header(manifest: dict[str, Any]) -> tuple[str, ...]:
+    """Admit a baseline manifest and report the roster its version implies.
 
+    A released store that has not been upgraded yet carries the manifest its
+    own schema wrote, and that manifest is the baseline the upgrade has to
+    honour: it names the bytes Work Stack last committed, and refusing it would
+    make the owned migration impossible while doing nothing for safety. So a
+    manifest is admitted at any collection version this build can validate, and
+    judged against *that* version's roster. Schema 4, an unknown version and a
+    version newer than this build are refused exactly as before.
+    """
 
-def _validate_auxiliary_store(name: str, value: dict[str, Any]) -> None:
-    expected = DEFAULTS[name]
-    if expected is None or name in IDENTITY_STORES:
-        raise ValueError("auxiliary store validator received an identity store")
-    if set(value) != set(expected) or value.get("version") != expected["version"]:
-        raise StoreCorruptError("{} schema is invalid".format(name))
-    for key, default_value in expected.items():
-        if key == "version":
-            continue
-        if isinstance(default_value, list) and not isinstance(value.get(key), list):
-            raise StoreCorruptError("{}.{} must be an array".format(name, key))
-        if isinstance(default_value, dict) and not isinstance(value.get(key), dict):
-            raise StoreCorruptError("{}.{} must be an object".format(name, key))
-
-
-def _migration_evidence_records(
-    migrations: Any,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    if not isinstance(migrations, dict) or set(migrations) != {
-        "identity",
-        "planning_status",
-    }:
-        raise StoreCorruptError("store migration evidence is invalid")
-    identity = migrations.get("identity")
-    planning = migrations.get("planning_status")
-    expected = {"id", "origin", "source_sha256"}
-    if (
-        not isinstance(identity, dict)
-        or set(identity) != expected
-        or not isinstance(planning, dict)
-        or set(planning) != expected
-    ):
-        raise StoreCorruptError("store migration evidence is invalid")
-    return identity, planning
-
-
-def _validate_identity_migration(identity: dict[str, Any]) -> str:
-    origin = identity.get("origin")
-    source_sha256 = identity.get("source_sha256")
-    if origin == "fresh":
-        if identity.get("id") != "workstack.store.v2" or source_sha256 is not None:
-            raise StoreCorruptError("fresh store migration evidence is invalid")
-        return origin
-    if origin == "migrated_v1":
-        valid_digest = isinstance(source_sha256, str) and re.fullmatch(
-            r"sha256:[0-9a-f]{64}", source_sha256
-        )
-        if identity.get("id") != "workstack.store.v1-to-v2" or not valid_digest:
-            raise StoreCorruptError("v1 migration evidence is invalid")
-        return origin
-    raise StoreCorruptError("store migration origin is invalid")
-
-
-def _validate_planning_migration(planning: dict[str, Any]) -> None:
-    origin = planning.get("origin")
-    digest = planning.get("source_sha256")
-    if planning.get("id") != "workstack.planning-status.v1":
-        raise StoreCorruptError("planning-status migration evidence is invalid")
-    if origin == "fresh":
-        if digest is not None:
-            raise StoreCorruptError("fresh planning-status evidence is invalid")
-        return
-    if origin in {"migrated_v1", "migrated_v2"}:
-        if not (
-            isinstance(digest, str)
-            and re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
-        ):
-            raise StoreCorruptError("planning-status migration evidence is invalid")
-        return
-    raise StoreCorruptError("planning-status migration origin is invalid")
-
-
-def _validate_store_metadata(metadata: dict[str, Any]) -> str:
-    if set(metadata) != {"version", "store_schema_version", "migrations"}:
-        raise StoreCorruptError("store metadata has unknown or missing fields")
-    if metadata.get("version") != 2:
-        raise StoreCorruptError("store metadata version is unsupported")
-    schema_version = metadata.get("store_schema_version")
-    if schema_version != STORE_SCHEMA_VERSION:
-        if type(schema_version) is int and schema_version > STORE_SCHEMA_VERSION:
-            raise StoreCorruptError("store schema is newer than this Work Stack build")
-        raise StoreCorruptError("store schema version is invalid")
-    identity, planning = _migration_evidence_records(metadata.get("migrations"))
-    origin = _validate_identity_migration(identity)
-    _validate_planning_migration(planning)
-    return origin
-
-
-def _validate_ready_auxiliary_stores(values: Mapping[str, dict[str, Any]]) -> None:
-    for name in DEFAULTS:
-        if name not in IDENTITY_STORES:
-            _validate_auxiliary_store(name, values[name])
-
-
-def _validate_ready_activity(value: dict[str, Any]) -> None:
-    expected = DEFAULTS["activity.json"]
-    if (
-        not isinstance(expected, dict)
-        or set(value) != set(expected)
-        or value.get("version") != 2
-        or not isinstance(value.get("activity"), list)
-        or not isinstance(value.get("idempotency"), list)
-        or not isinstance(value.get("planning_status"), list)
-    ):
-        raise StoreCorruptError("activity.json schema is invalid")
-
-
-def _validate_store_manifest_header(manifest: dict[str, Any]) -> None:
     expected = {
         "version",
         "workspace_id",
@@ -299,13 +201,29 @@ def _validate_store_manifest_header(manifest: dict[str, Any]) -> None:
         raise StoreCorruptError("store manifest schema is invalid")
     if type(manifest.get("generation")) is not int or manifest["generation"] < 0:
         raise StoreCorruptError("store manifest generation is invalid")
-    if manifest.get("store_schema_version") != STORE_SCHEMA_VERSION:
-        raise StoreCorruptError("store manifest schema version is invalid")
+    try:
+        roster = supported_roster(manifest.get("store_schema_version"))
+    except StoreCorruptError as error:
+        raise StoreCorruptError("store manifest schema version is invalid") from error
     _canonical_uuid(manifest.get("workspace_id"), "store_manifest.workspace_id")
+    return roster
 
 
-def _validate_store_manifest_files(files: Any) -> None:
-    if not isinstance(files, dict) or set(files) != set(DEFAULTS):
+def _validate_store_manifest_files(
+    files: Any, roster: tuple[str, ...] | None = None
+) -> None:
+    """Judge a manifest roster, against this build's unless told otherwise.
+
+    The released callers outside this module ask the only question they have
+    ever asked — is this the roster this build writes — so omitting `roster`
+    keeps their answer unchanged. The store passes the roster the manifest's
+    own version implies, because a baseline left by an older schema is a
+    smaller roster and still a valid baseline.
+    """
+
+    if roster is None:
+        roster = tuple(sorted(DEFAULTS))
+    if not isinstance(files, dict) or set(files) != set(roster):
         raise StoreCorruptError("store manifest file roster is invalid")
     if any(
         not isinstance(value, str)
@@ -327,6 +245,32 @@ def _validate_store_manifest_task(task_id: Any, task: Any) -> None:
         or not re.fullmatch(r"sha256:[0-9a-f]{64}", task["digest"])
     ):
         raise StoreCorruptError("store manifest task baseline is invalid")
+
+
+def _task_semantics(backlog: Any) -> dict[str, dict[str, Any]]:
+    """The task baseline a manifest records, computed from one backlog value.
+
+    This is the whole of that computation, so the manifest a commit writes and
+    the manifest an upgrade checks are produced by the same rule. It takes the
+    decoded backlog rather than reading one, which is what lets a caller judge
+    the exact documents it already holds instead of whatever the path says a
+    moment later.
+    """
+
+    tasks = backlog.get("tasks") if isinstance(backlog, dict) else None
+    if not isinstance(tasks, list):
+        raise StoreCorruptError("backlog.tasks must be an array")
+    result: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        if not isinstance(task, dict) or not isinstance(task.get("id"), str):
+            raise StoreCorruptError("backlog task semantic baseline is invalid")
+        result[task["id"]] = {
+            "revision": _stored_revision(
+                task.get("revision"), "{}.revision".format(task["id"])
+            ),
+            "digest": "sha256:" + hashlib.sha256(_compact_json(task)).hexdigest(),
+        }
+    return result
 
 
 def _validate_store_manifest_tasks(tasks: Any) -> None:
@@ -412,232 +356,6 @@ def _validate_recovery_write(write: Any, seen: set[str]) -> None:
     expected = "sha256:" + hashlib.sha256(_compact_json(write["value"])).hexdigest()
     if not secrets.compare_digest(str(write["sha256"]), expected):
         raise StoreCorruptError("recovery journal value digest mismatch")
-
-
-def _backlog_identity_tasks(
-    backlog: dict[str, Any], version: int
-) -> list[Any]:
-    if set(backlog) != {"version", "tasks"} or backlog.get("version") != version:
-        raise StoreCorruptError("backlog identity schema is invalid")
-    tasks = backlog.get("tasks")
-    if not isinstance(tasks, list):
-        raise StoreCorruptError("backlog.tasks must be an array")
-    return tasks
-
-
-def _validated_task_id(source: dict[str, Any], label: str, seen: set[str]) -> str:
-    task_id = source.get("id")
-    if not isinstance(task_id, str) or not re.fullmatch(r"T-[0-9]{4,}", task_id):
-        raise StoreCorruptError("{}.id is invalid".format(label))
-    if task_id in seen:
-        raise StoreCorruptError("duplicate task id: {}".format(task_id))
-    seen.add(task_id)
-    return task_id
-
-
-def _validated_task_uid(
-    task: dict[str, Any],
-    task_id: str,
-    label: str,
-    workspace_uid: str,
-    seen: set[str],
-    migrate_legacy: bool,
-) -> str:
-    if "uid" in task:
-        task_uid = _canonical_uuid(task["uid"], "{}.uid".format(label))
-    elif migrate_legacy:
-        task_uid = str(uuid.uuid5(uuid.UUID(workspace_uid), task_id))
-        task["uid"] = task_uid
-    else:
-        raise StoreCorruptError("{}.uid is missing".format(label))
-    if task_uid in seen:
-        raise StoreCorruptError("duplicate persisted UUID: {}".format(task_uid))
-    seen.add(task_uid)
-    return task_uid
-
-
-def _validate_task_revision(
-    task: dict[str, Any], label: str, migrate_legacy: bool
-) -> None:
-    if "revision" in task:
-        _stored_revision(task["revision"], "{}.revision".format(label))
-    elif migrate_legacy:
-        task["revision"] = 0
-    else:
-        raise StoreCorruptError("{}.revision is missing".format(label))
-
-
-def _validate_task_status_fact(task: dict[str, Any], label: str, version: int) -> None:
-    if version != 3:
-        return
-    status_fact_id = task.get("status_fact_id")
-    if not isinstance(status_fact_id, str) or not re.fullmatch(
-        r"PS-[0-9]{6,}", status_fact_id
-    ):
-        raise StoreCorruptError("{}.status_fact_id is invalid".format(label))
-
-
-def _validated_task_identity(
-    source: Any,
-    index: int,
-    workspace_uid: str,
-    version: int,
-    migrate_legacy: bool,
-    seen_ids: set[str],
-    seen_uids: set[str],
-) -> dict[str, Any]:
-    label = "backlog.tasks[{}]".format(index)
-    if not isinstance(source, dict):
-        raise StoreCorruptError("{} must be an object".format(label))
-    task_id = _validated_task_id(source, label, seen_ids)
-    task = copy.deepcopy(source)
-    _validated_task_uid(
-        task, task_id, label, workspace_uid, seen_uids, migrate_legacy
-    )
-    _validate_task_revision(task, label, migrate_legacy)
-    _validate_task_status_fact(task, label, version)
-    return task
-
-
-def _validated_v2_identity_evidence(metadata: dict[str, Any]) -> dict[str, Any]:
-    if (
-        set(metadata) != {"version", "store_schema_version", "migration"}
-        or metadata.get("version") != 1
-        or metadata.get("store_schema_version") != 2
-        or not isinstance(metadata.get("migration"), dict)
-    ):
-        raise StoreCorruptError("v2 store migration evidence is invalid")
-    identity = copy.deepcopy(metadata["migration"])
-    if set(identity) != {"id", "origin", "source_sha256"}:
-        raise StoreCorruptError("v2 store migration evidence is invalid")
-    origin = identity.get("origin")
-    if origin == "fresh":
-        valid = (
-            identity.get("id") == "workstack.store.v2"
-            and identity.get("source_sha256") is None
-        )
-    elif origin == "migrated_v1":
-        valid = (
-            identity.get("id") == "workstack.store.v1-to-v2"
-            and re.fullmatch(
-                r"sha256:[0-9a-f]{64}", str(identity.get("source_sha256", ""))
-            )
-            is not None
-        )
-    else:
-        valid = False
-    if not valid:
-        raise StoreCorruptError("v2 identity evidence is invalid")
-    return identity
-
-
-def _validated_v2_activity(value: dict[str, Any]) -> dict[str, Any]:
-    activity = copy.deepcopy(value)
-    if (
-        set(activity) != {"version", "activity", "idempotency"}
-        or activity.get("version") != 1
-        or not isinstance(activity.get("activity"), list)
-        or not isinstance(activity.get("idempotency"), list)
-    ):
-        raise StoreCorruptError("v2 activity schema is invalid")
-    return activity
-
-
-def _validate_v2_auxiliary_stores(values: Mapping[str, dict[str, Any]]) -> None:
-    identity_stores = {
-        "workspace.json", "backlog.json", "store-meta.json", "activity.json"
-    }
-    for name in DEFAULTS:
-        if name not in identity_stores:
-            _validate_auxiliary_store(name, values[name])
-
-
-def _bootstrap_migrated_activity(
-    activity: dict[str, Any], tasks: list[dict[str, Any]], provenance: str
-) -> None:
-    activity["version"] = 2
-    activity["planning_status"] = []
-    created_at = (
-        dt.datetime.now(dt.timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
-    for task in tasks:
-        append_bootstrap(
-            activity,
-            task,
-            created_at=created_at,
-            actor="workstack.migration",
-            provenance=provenance,
-        )
-
-
-def _v3_migration_metadata(
-    identity: dict[str, Any], source_sha256: str
-) -> dict[str, Any]:
-    return {
-        "version": 2,
-        "store_schema_version": STORE_SCHEMA_VERSION,
-        "migrations": {
-            "identity": identity,
-            "planning_status": {
-                "id": "workstack.planning-status.v1",
-                "origin": "migrated_v2",
-                "source_sha256": source_sha256,
-            },
-        },
-    }
-
-
-class _FileLease:
-    """Small non-blocking cross-platform exclusive file lease."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.file: Any | None = None
-
-    def acquire(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.path.open("a+b")
-        try:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-                os.fsync(handle.fileno())
-            handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (OSError, IOError) as error:
-            handle.close()
-            raise StoreLockedError(
-                "the Work Stack data directory is already owned by another writer"
-            ) from error
-        self.file = handle
-
-    def release(self) -> None:
-        if self.file is None:
-            return
-        try:
-            self.file.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
-        finally:
-            self.file.close()
-            self.file = None
 
 
 class Store:
@@ -732,8 +450,8 @@ class Store:
             manifest = self._read_json_locked(self.store_manifest_path)
         except FileNotFoundError:
             return None
-        _validate_store_manifest_header(manifest)
-        _validate_store_manifest_files(manifest.get("files"))
+        roster = _validate_store_manifest_header(manifest)
+        _validate_store_manifest_files(manifest.get("files"), roster)
         _validate_store_manifest_tasks(manifest.get("tasks"))
         return manifest
 
@@ -741,21 +459,7 @@ class Store:
         return "sha256:" + hashlib.sha256(_compact_json(manifest)).hexdigest()
 
     def _task_semantics_locked(self) -> dict[str, dict[str, Any]]:
-        backlog = self._read_json_locked(self.path("backlog.json"))
-        tasks = backlog.get("tasks")
-        if not isinstance(tasks, list):
-            raise StoreCorruptError("backlog.tasks must be an array")
-        result: dict[str, dict[str, Any]] = {}
-        for task in tasks:
-            if not isinstance(task, dict) or not isinstance(task.get("id"), str):
-                raise StoreCorruptError("backlog task semantic baseline is invalid")
-            result[task["id"]] = {
-                "revision": _stored_revision(
-                    task.get("revision"), "{}.revision".format(task["id"])
-                ),
-                "digest": "sha256:" + hashlib.sha256(_compact_json(task)).hexdigest(),
-            }
-        return result
+        return _task_semantics(self._read_json_locked(self.path("backlog.json")))
 
     def _emit_event_locked(
         self, event_type: str, workspace_id: str, changed_files: list[str]
@@ -930,7 +634,9 @@ class Store:
         manifest: Mapping[str, Any], current_hashes: Mapping[str, str]
     ) -> list[str]:
         return sorted(
-            name for name in DEFAULTS if current_hashes[name] != manifest["files"][name]
+            name
+            for name in DEFAULTS
+            if current_hashes[name] != manifest["files"].get(name)
         )
 
     @staticmethod
@@ -1314,8 +1020,8 @@ class Store:
             quarantined_manifest = json.loads(quarantined_body.decode("utf-8"))
             if not isinstance(quarantined_manifest, dict):
                 raise ValueError("manifest must be an object")
-            _validate_store_manifest_header(quarantined_manifest)
-            _validate_store_manifest_files(quarantined_manifest.get("files"))
+            roster = _validate_store_manifest_header(quarantined_manifest)
+            _validate_store_manifest_files(quarantined_manifest.get("files"), roster)
             _validate_store_manifest_tasks(quarantined_manifest.get("tasks"))
         except (UnicodeError, ValueError) as error:
             raise StoreCorruptError(
@@ -1797,6 +1503,33 @@ class Store:
                 if temporary_lease is not None:
                     temporary_lease.release()
 
+    def try_acquire_writer_lease(self) -> _FileLease | None:
+        """Acquire the writer lease once, non-blocking, and retain that handle."""
+
+        with self._process_lock:
+            if self._server_lease is not None:
+                raise StoreLockedError("this Store already owns the writer lease")
+            lease = _FileLease(self.root / LOCK_NAME)
+            try:
+                lease.acquire()
+            except StoreLockedError:
+                return None
+            self._server_lease = lease
+            return lease
+
+    def release_writer_lease(self, handle: _FileLease | None) -> None:
+        """Release a retained writer lease exactly once."""
+
+        if handle is None:
+            return
+        with self._process_lock:
+            if self._server_lease is handle:
+                self._server_lease = None
+                handle.release()
+                return
+            if handle.file is not None:
+                raise ValueError("writer lease handle is not held by this Store")
+
     @contextmanager
     def server_lease(self) -> Iterator[None]:
         """Hold the only-writer lease for the complete HTTP server lifetime."""
@@ -1850,162 +1583,6 @@ class Store:
                     raise StoreExternalChangeError(status)
                 self._readiness = self._validate_ready_state_locked()
             return value
-
-    @staticmethod
-    def _validate_workspace(value: dict[str, Any], version: int) -> str:
-        if set(value) != {"version", "id", "name"} or value.get("version") != version:
-            raise StoreCorruptError("workspace identity schema is invalid")
-        workspace_uid = _canonical_uuid(value.get("id"), "workspace.id")
-        if not isinstance(value.get("name"), str) or not value["name"].strip():
-            raise StoreCorruptError("workspace.name must be a non-empty string")
-        return workspace_uid
-
-    @staticmethod
-    def _validate_task_identities(
-        backlog: dict[str, Any],
-        workspace_uid: str,
-        *,
-        version: int,
-        migrate_legacy: bool = False,
-    ) -> list[dict[str, Any]]:
-        tasks = _backlog_identity_tasks(backlog, version)
-        seen_ids: set[str] = set()
-        seen_uids: set[str] = {workspace_uid}
-        return [
-            _validated_task_identity(
-                source,
-                index,
-                workspace_uid,
-                version,
-                migrate_legacy,
-                seen_ids,
-                seen_uids,
-            )
-            for index, source in enumerate(tasks)
-        ]
-
-    def _load_required_store_values_locked(self) -> dict[str, dict[str, Any]]:
-        values: dict[str, dict[str, Any]] = {}
-        for name in DEFAULTS:
-            try:
-                values[name] = self._read_json_locked(self.path(name))
-            except FileNotFoundError as error:
-                raise StoreCorruptError(
-                    "required store is missing: {}".format(self.path(name))
-                ) from error
-        return values
-
-    def _validate_ready_state_locked(self) -> StoreReadiness:
-        values = self._load_required_store_values_locked()
-        workspace_uid = self._validate_workspace(values["workspace.json"], 2)
-        tasks = self._validate_task_identities(
-            values["backlog.json"], workspace_uid, version=3
-        )
-        origin = _validate_store_metadata(values["store-meta.json"])
-        _validate_ready_auxiliary_stores(values)
-        activity = values["activity.json"]
-        _validate_ready_activity(activity)
-        try:
-            validate_and_project(values["backlog.json"], activity)
-        except PlanningStatusValidationError as error:
-            raise StoreCorruptError(str(error)) from error
-        return StoreReadiness(
-            schema_version=STORE_SCHEMA_VERSION,
-            workspace_uid=workspace_uid,
-            task_count=len(tasks),
-            migration_origin=origin,
-        )
-
-
-    def _migrate_v1_locked(
-        self,
-        workspace: dict[str, Any],
-        backlog: dict[str, Any],
-        legacy_values: Mapping[str, dict[str, Any]],
-    ) -> StoreReadiness:
-        workspace_uid = self._validate_workspace(workspace, 1)
-        tasks = self._validate_task_identities(
-            backlog, workspace_uid, version=1, migrate_legacy=True
-        )
-        source = {
-            name: legacy_values[name]
-            for name in DEFAULTS
-            if name != "store-meta.json"
-        }
-        source_sha256 = "sha256:" + hashlib.sha256(_compact_json(source)).hexdigest()
-        migrated_workspace = copy.deepcopy(workspace)
-        migrated_workspace["version"] = 2
-        migrated_activity = copy.deepcopy(legacy_values["activity.json"])
-        if set(migrated_activity) != {"version", "activity", "idempotency"} or migrated_activity.get("version") != 1:
-            raise StoreCorruptError("legacy activity schema is invalid")
-        migrated_activity["version"] = 2
-        migrated_activity["planning_status"] = []
-        created_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        for task in tasks:
-            append_bootstrap(
-                migrated_activity,
-                task,
-                created_at=created_at,
-                actor="workstack.migration",
-                provenance="store.v1",
-            )
-        migrated_backlog = {"version": 3, "tasks": tasks}
-        metadata = {
-            "version": 2,
-            "store_schema_version": STORE_SCHEMA_VERSION,
-            "migrations": {
-                "identity": {
-                    "id": "workstack.store.v1-to-v2",
-                    "origin": "migrated_v1",
-                    "source_sha256": source_sha256,
-                },
-                "planning_status": {
-                    "id": "workstack.planning-status.v1",
-                    "origin": "migrated_v1",
-                    "source_sha256": source_sha256,
-                },
-            },
-        }
-        writes = {
-            name: copy.deepcopy(value)
-            for name, value in legacy_values.items()
-            if name != "store-meta.json"
-        }
-        writes.update({
-            "workspace.json": migrated_workspace,
-            "backlog.json": migrated_backlog,
-            "activity.json": migrated_activity,
-            "store-meta.json": metadata,
-        })
-        self.save_many(
-            writes,
-            operation_id="store-migrate-v1-v3-{}".format(source_sha256[7:23]),
-        )
-        return self._validate_ready_state_locked()
-
-    def _migrate_v2_locked(
-        self, values: Mapping[str, dict[str, Any]]
-    ) -> StoreReadiness:
-        workspace_uid = self._validate_workspace(values["workspace.json"], 2)
-        tasks = self._validate_task_identities(
-            values["backlog.json"], workspace_uid, version=2
-        )
-        identity = _validated_v2_identity_evidence(values["store-meta.json"])
-        activity = _validated_v2_activity(values["activity.json"])
-        _validate_v2_auxiliary_stores(values)
-        source_sha256 = "sha256:" + hashlib.sha256(_compact_json(dict(values))).hexdigest()
-        _bootstrap_migrated_activity(activity, tasks, "store.v2")
-        backlog = {"version": 3, "tasks": tasks}
-        metadata = _v3_migration_metadata(identity, source_sha256)
-        self.save_many(
-            {
-                "backlog.json": backlog,
-                "activity.json": activity,
-                "store-meta.json": metadata,
-            },
-            operation_id="store-migrate-v2-v3-{}".format(source_sha256[7:23]),
-        )
-        return self._validate_ready_state_locked()
 
     def _atomic_write_locked(self, path: Path, value: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2219,9 +1796,17 @@ class Store:
         return writes
 
     def _assert_recovery_targets_safe_locked(
-        self, writes: list[dict[str, Any]]
+        self, manifest: Mapping[str, Any] | None, writes: list[dict[str, Any]]
     ) -> None:
-        manifest = self._read_manifest_locked()
+        """Refuse a replay whose targets hold bytes Work Stack never wrote.
+
+        A target the baseline does not name yet — the tenth document, during an
+        interrupted upgrade — is safe only while it is absent or already holds
+        exactly what the journal intends. Any other content under that name is
+        an unowned change and is refused rather than laundered into a
+        completed migration.
+        """
+
         if manifest is None:
             return
         for write in writes:
@@ -2234,18 +1819,40 @@ class Store:
             intended = "sha256:" + hashlib.sha256(
                 _serialized_json_bytes(write["value"])
             ).hexdigest()
-            if current not in {manifest["files"][write["name"]], intended}:
+            if current not in {manifest["files"].get(write["name"]), intended}:
                 raise StoreCorruptError(
                     "recovery target changed outside Work Stack; journal retained"
                 )
+
+    @staticmethod
+    def _replayable_baseline(
+        manifest: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """The baseline a replay may extend, or None when it must be rebuilt.
+
+        A manifest an older schema left behind still names the bytes recovery
+        is allowed to replace, and it is used for exactly that. It cannot
+        describe the roster the journal completes, so carrying it forward would
+        publish a baseline claiming the old version over the new generation.
+        The manifest is neither deleted nor ignored: publication is deferred to
+        `_finish_initialization_locked`, which rebuilds it from the generation
+        that actually committed.
+        """
+
+        if manifest is None:
+            return None
+        if manifest["store_schema_version"] != STORE_SCHEMA_VERSION:
+            return None
+        return manifest
 
     def _recover_locked(self) -> None:
         if not self.journal_path.exists():
             return
         journal = self._read_json_locked(self.journal_path)
         writes = self._validate_journal(journal)
-        self._assert_recovery_targets_safe_locked(writes)
-        manifest = self._read_manifest_locked()
+        baseline = self._read_manifest_locked()
+        self._assert_recovery_targets_safe_locked(baseline, writes)
+        manifest = self._replayable_baseline(baseline)
         self._local.replace_expectations = {
             write["name"]: (
                 "sha256:" + hashlib.sha256(self.path(write["name"]).read_bytes()).hexdigest()
@@ -2280,6 +1887,58 @@ class Store:
         self._generation += 1
         self._recovered_files = recovered_files
 
+
+    def _read_documents_locked(self, roster: tuple[str, ...]) -> dict[str, bytes]:
+        """The one acquisition: every document of a roster, read exactly once."""
+
+        bodies: dict[str, bytes] = {}
+        for name in roster:
+            try:
+                bodies[name] = self.path(name).read_bytes()
+            except FileNotFoundError as error:
+                raise StoreCorruptError(
+                    "required store is missing: {}".format(self.path(name))
+                ) from error
+        return bodies
+
+    @staticmethod
+    def _decoded_documents(
+        bodies: Mapping[str, bytes],
+    ) -> dict[str, dict[str, Any]]:
+        """Decode held document bytes through the one shared decoder."""
+
+        return decode_documents(bodies)
+
+    @staticmethod
+    def validate_document_values(
+        values: object, /, *, schema_version: object
+    ) -> StoreReadiness:
+        """Judge already-decoded documents as exactly one schema version.
+
+        Opens nothing, initializes nothing and mutates nothing. The archive
+        verifier and the ready-state check are both real callers, so a rule
+        cannot hold for a live store and not for a backup of one.
+        """
+
+        return validate_document_values(values, schema_version=schema_version)
+
+    def _load_required_store_values_locked(self) -> dict[str, dict[str, Any]]:
+        values: dict[str, dict[str, Any]] = {}
+        for name in DEFAULTS:
+            try:
+                values[name] = self._read_json_locked(self.path(name))
+            except FileNotFoundError as error:
+                raise StoreCorruptError(
+                    "required store is missing: {}".format(self.path(name))
+                ) from error
+        return values
+
+    def _validate_ready_state_locked(self) -> StoreReadiness:
+        return validate_document_values(
+            self._load_required_store_values_locked(),
+            schema_version=STORE_SCHEMA_VERSION,
+        )
+
     def _initialize_fresh_locked(self) -> StoreReadiness:
         workspace = _workspace_default()
         fresh = {
@@ -2292,45 +1951,288 @@ class Store:
             )
             for name in DEFAULTS
         }
-        self.save_many(fresh, operation_id="store-initialize-v3")
+        self.save_many(fresh, operation_id="store-initialize-v5")
         return self._validate_ready_state_locked()
 
-    def _existing_store_values_locked(
-        self, existing: set[str]
-    ) -> dict[str, dict[str, Any]]:
-        required_legacy = set(DEFAULTS) - {"store-meta.json"}
-        if existing not in (set(DEFAULTS), required_legacy):
+    @staticmethod
+    def _detected_schema(
+        existing: set[str], values: Mapping[str, dict[str, Any]]
+    ) -> int:
+        """Which collection version this directory already is.
+
+        v2 and v3 hold the same nine names, so only the metadata record they
+        actually carry separates them; that is the signature the released store
+        already used.
+        """
+
+        if existing == set(store_rosters.V5_DOCUMENT_NAMES):
+            return 5
+        if existing == set(store_rosters.V1_DOCUMENT_NAMES):
+            if (
+                values["workspace.json"].get("version") != 1
+                or values["backlog.json"].get("version") != 1
+            ):
+                raise StoreCorruptError("store migration is partial or missing evidence")
+            return 1
+        if existing != set(store_rosters.V3_DOCUMENT_NAMES):
             missing = sorted(set(DEFAULTS) - existing)
             raise StoreCorruptError(
                 "required store roster is incomplete: {}".format(", ".join(missing))
             )
-        values = {
-            name: self._read_json_locked(self.path(name))
-            for name in existing
-        }
-        for name in required_legacy - set(IDENTITY_STORES):
-            _validate_auxiliary_store(name, values[name])
-        return values
-
-    def _existing_store_readiness_locked(
-        self, existing: set[str], values: dict[str, dict[str, Any]]
-    ) -> StoreReadiness:
-        workspace = values["workspace.json"]
-        backlog = values["backlog.json"]
-        if "store-meta.json" not in existing:
-            if workspace.get("version") != 1 or backlog.get("version") != 1:
-                raise StoreCorruptError("store migration is partial or missing evidence")
-            return self._migrate_v1_locked(workspace, backlog, values)
         metadata = values["store-meta.json"]
         is_v2 = (
             metadata.get("version") == 1
             and metadata.get("store_schema_version") == 2
-            and backlog.get("version") == 2
+            and values["backlog.json"].get("version") == 2
             and values["activity.json"].get("version") == 1
         )
-        if is_v2:
-            return self._migrate_v2_locked(values)
+        return 2 if is_v2 else 3
+
+    def _migration_backup_dir(self) -> Path:
+        return self.root / MIGRATION_BACKUP_DIR
+
+    def _prebackup_target_locked(
+        self, detected: int, bodies: Mapping[str, bytes]
+    ) -> Path:
+        """Where this exact source becomes a rollback archive, deterministically."""
+
+        digest = store_report_migration.source_digest(self._decoded_documents(bodies))
+        directory = self._migration_backup_dir()
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise StoreCorruptError("migration backup directory is not a directory")
+        target = directory / "workstack-premigration-v{}-{}.zip".format(
+            detected, digest[7:23]
+        )
+        if target.is_symlink():
+            raise StoreCorruptError("migration backup path is a symlink")
+        return target
+
+    def _verify_prebackup_locked(
+        self,
+        target: Path,
+        detected: int,
+        bodies: Mapping[str, bytes],
+        readiness: StoreReadiness,
+        expected_digest: str,
+    ) -> str:
+        """Prove the rollback archive from the path it would be rolled back from.
+
+        Verification is the shared read-only archive verifier, which takes one
+        image of the path and answers every question from it: the container's
+        directory, the manifest header, the roster the detected version
+        implies, every member digest, and the documents admitted under that
+        *old* schema. Nothing is initialized and no authoritative document is
+        re-read, so the archive is judged against the very bytes still held
+        from the one acquisition. A promise of a verified rollback that was
+        never read back is not a verified rollback.
+
+        The verdict is then bound to `expected_digest`, the digest of the bytes
+        this migration packed. Validating one image and rolling back from
+        another is the same failure as never reading the archive at all, so the
+        image that verified must be the image this attempt produced, and the
+        digest that proves it is returned for the journal to revalidate.
+        """
+
+        try:
+            verified = store_report_migration.verify_archive_file(target)
+        except ValueError as error:
+            raise StoreCorruptError(
+                "migration rollback backup did not verify"
+            ) from error
+        if (
+            verified.store_schema_version != detected
+            or verified.workspace_id != readiness.workspace_uid
+            or verified.bodies != dict(bodies)
+            or not secrets.compare_digest(verified.digest, expected_digest)
+        ):
+            raise StoreCorruptError("migration rollback backup did not verify")
+        return verified.digest
+
+    def _persist_prebackup_locked(
+        self, detected: int, bodies: Mapping[str, bytes], readiness: StoreReadiness
+    ) -> tuple[Path, str]:
+        """Write and verify the rollback archive before the journal exists.
+
+        The name is derived from the detected version and the digest of the
+        detected bytes, so a retry after a crash lands on the same file instead
+        of leaving a new one behind on every attempt. An existing file is
+        reused only when it is byte-identical; anything else present under that
+        name is a refusal, never an overwrite. Either way the file is then read
+        back and verified, so a reused archive is held to the same contract as
+        one this attempt wrote. Any refusal here happens before `save_many`, so
+        the old generation and every authoritative byte are left as they were.
+
+        The path and the digest of the image that actually verified are both
+        returned, because the journal has to be able to say that the archive it
+        is about to depend on is still the one that passed.
+        """
+
+        target = self._prebackup_target_locked(detected, bodies)
+        packed = store_report_migration.pack_backup_archive(
+            dict(bodies),
+            workspace_id=readiness.workspace_uid,
+            store_schema_version=detected,
+            created=dt.datetime(1980, 1, 1, tzinfo=dt.timezone.utc),
+        )
+        if target.exists():
+            if target.read_bytes() != packed["body"]:
+                raise StoreCorruptError(
+                    "an unrelated migration backup already holds this name"
+                )
+        else:
+            self._atomic_write_bytes_locked(target, packed["body"])
+        digest = self._verify_prebackup_locked(
+            target, detected, bodies, readiness, packed["digest"]
+        )
+        return target, digest
+
+    def _rebind_prebackup_locked(self, target: Path, verified_digest: str) -> None:
+        """Say the archive about to be depended on is still the one that passed.
+
+        Verification held one image and reported its digest; this reads the
+        final path once more and refuses unless it is still that same image.
+        The journal is what makes the upgrade authoritative, so the last thing
+        established before it is that the rollback the journal presumes still
+        exists byte for byte at the path a rollback would read.
+        """
+
+        try:
+            image = target.read_bytes()
+        except OSError as error:
+            raise StoreCorruptError(
+                "migration rollback backup did not verify"
+            ) from error
+        current = "sha256:" + hashlib.sha256(image).hexdigest()
+        if not secrets.compare_digest(current, verified_digest):
+            raise StoreCorruptError("migration rollback backup did not verify")
+
+    def _upgrade_locked(
+        self,
+        detected: int,
+        bodies: Mapping[str, bytes],
+        values: Mapping[str, dict[str, Any]],
+        readiness: StoreReadiness,
+    ) -> StoreReadiness:
+        digest = store_report_migration.source_digest(values)
+        target, verified_digest = self._persist_prebackup_locked(
+            detected, bodies, readiness
+        )
+        writes, operation_id = store_report_migration.plan_upgrade(
+            detected, values, digest, now=_utc_stamp()
+        )
+        self._rebind_prebackup_locked(target, verified_digest)
+        self.save_many(writes, operation_id=operation_id)
         return self._validate_ready_state_locked()
+
+    @staticmethod
+    def _assert_upgrade_source_bytes_owned(
+        manifest: Mapping[str, Any], bodies: Mapping[str, bytes]
+    ) -> None:
+        """Every held document must still be the byte the manifest recorded."""
+
+        for name, body in bodies.items():
+            recorded = manifest["files"].get(name)
+            if recorded is None:
+                continue
+            if recorded != "sha256:" + hashlib.sha256(body).hexdigest():
+                raise StoreCorruptError(
+                    "upgrade source changed outside Work Stack; "
+                    "store left at its detected version"
+                )
+
+    @staticmethod
+    def _assert_upgrade_source_tasks_owned(
+        manifest: Mapping[str, Any], values: Mapping[str, dict[str, Any]]
+    ) -> None:
+        """The manifest's task baseline must be the one the held backlog means.
+
+        File digests say the bytes are unchanged; they say nothing about the
+        baseline recorded beside them. A manifest whose task revisions or task
+        digests describe some other backlog is not the baseline of this
+        generation, and carrying it into the upgrade would publish revisions
+        the held documents never had.
+
+        A backlog whose tasks cannot yield a baseline under this rule is a
+        legacy shape that predates the baseline, so it is consistent only with
+        a manifest that claims none.
+        """
+
+        try:
+            expected = _task_semantics(values["backlog.json"])
+        except StoreCorruptError:
+            expected = {}
+        if manifest["tasks"] != expected:
+            raise StoreCorruptError(
+                "upgrade source task baseline does not match its manifest; "
+                "store left at its detected version"
+            )
+
+    def _assert_upgrade_source_owned_locked(
+        self,
+        bodies: Mapping[str, bytes],
+        values: Mapping[str, dict[str, Any]],
+        readiness: StoreReadiness,
+    ) -> None:
+        """Refuse to upgrade a generation that already drifted from its baseline.
+
+        The manifest a released build left behind names the workspace Work
+        Stack owned, the bytes it last committed and the task baseline those
+        bytes meant. All three have to hold. A manifest whose workspace is not
+        the one the held documents declare is a baseline for a different store,
+        and this migration would silently republish the identity of whichever
+        one it happened to read; hash-equal files do not make two workspaces
+        the same workspace. When a document this migration just read differs
+        from the recorded byte, or the recorded task baseline is not what the
+        held backlog means, the difference is an unowned change, and upgrading
+        would rewrite it into a new schema, a new journal and new evidence —
+        laundering it into accepted history.
+
+        Detection belongs here, before the rollback archive and before the
+        journal, so a drifted or foreign store is left exactly as it was found
+        and a retry refuses the same way. Every question is answered from
+        `bodies` and `values`, the documents this attempt already holds, so the
+        generation admitted is the generation judged.
+        """
+
+        manifest = self._read_manifest_locked()
+        if manifest is None:
+            return
+        if manifest["store_schema_version"] != readiness.schema_version:
+            raise StoreCorruptError(
+                "upgrade source manifest schema does not match the detected source; "
+                "store left at its detected version"
+            )
+        if manifest["workspace_id"] != readiness.workspace_uid:
+            raise StoreCorruptError(
+                "upgrade source manifest belongs to another workspace; "
+                "store left at its detected version"
+            )
+        self._assert_upgrade_source_bytes_owned(manifest, bodies)
+        self._assert_upgrade_source_tasks_owned(manifest, values)
+
+    def _admit_or_upgrade_locked(self, existing: set[str]) -> StoreReadiness:
+        bodies = self._read_documents_locked(tuple(sorted(existing)))
+        values = self._decoded_documents(bodies)
+        detected = self._detected_schema(existing, values)
+        readiness = validate_document_values(values, schema_version=detected)
+        if detected == STORE_SCHEMA_VERSION:
+            return readiness
+        self._assert_upgrade_source_owned_locked(bodies, values, readiness)
+        return self._upgrade_locked(detected, bodies, values, readiness)
+
+    def initialize(self) -> StoreReadiness:
+        with self.transaction():
+            self._recover_locked()
+            existing = {
+                name
+                for name in store_rosters.V5_DOCUMENT_NAMES
+                if self.path(name).exists()
+            }
+            if not existing:
+                self._readiness = self._initialize_fresh_locked()
+            else:
+                self._readiness = self._admit_or_upgrade_locked(existing)
+            return self._finish_initialization_locked()
 
     def _finish_initialization_locked(self) -> StoreReadiness:
         if self._recovered_files:
@@ -2339,19 +2241,6 @@ class Store:
         self._inspect_sync_locked()
         assert self._readiness is not None
         return self._readiness
-
-    def initialize(self) -> StoreReadiness:
-        with self.transaction():
-            self._recover_locked()
-            existing = {name for name in DEFAULTS if self.path(name).exists()}
-            if not existing:
-                self._readiness = self._initialize_fresh_locked()
-            else:
-                values = self._existing_store_values_locked(existing)
-                self._readiness = self._existing_store_readiness_locked(
-                    existing, values
-                )
-            return self._finish_initialization_locked()
 
     def seed_demo(self, source_root: Path | str) -> bool:
         """Copy tracked demo fixtures only into a wholly empty runtime core."""
@@ -2373,10 +2262,10 @@ class Store:
                 fixtures[name] = self._read_json_locked(fixture_path)
             fixture_backlog = fixtures["backlog.json"]
             if fixture_backlog.get("version") == 1:
-                workspace_uid = self._validate_workspace(
+                workspace_uid = validate_workspace(
                     self.load("workspace.json"), 2
                 )
-                tasks = self._validate_task_identities(
+                tasks = admitted_tasks(
                     fixture_backlog,
                     workspace_uid,
                     version=1,

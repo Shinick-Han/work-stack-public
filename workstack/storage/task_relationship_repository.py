@@ -207,9 +207,20 @@ class V3TaskRelationshipAdapter:
             planning_appended=len(after["planning_status"]) > planning_count,
         )
 
-    @staticmethod
-    def hard_delete_task(_task_id: str, _expected_revision: int) -> None:
-        raise TaskRelationshipError("task_hard_delete_unsupported")
+    def hard_delete_task(self, task_id: str, expected_revision: int) -> None:
+        from .task_deletion_transaction import (
+            TaskDeletionTransactionError,
+            commit_v3_hard_delete,
+        )
+
+        try:
+            commit_v3_hard_delete(self.stack.store, task_id, expected_revision)
+        except TaskDeletionTransactionError as error:
+            if error.code == "not_found":
+                raise TaskRelationshipError("not_found") from error
+            if error.code == "revision_conflict":
+                raise TaskRelationshipError("revision_conflict") from error
+            raise TaskRelationshipError("invalid_request") from error
 
 
 def _v3_changes(changes: Mapping[str, Any]) -> dict[str, Any]:

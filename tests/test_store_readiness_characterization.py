@@ -147,7 +147,7 @@ class StoreReadinessCharacterizationTest(unittest.TestCase):
         first = Store(self.valid).initialize()
         second = Store(self.valid).initialize()
         self.assertEqual(first, second)
-        self.assertEqual(first.schema_version, 3)
+        self.assertEqual(first.schema_version, 5)
         self.assertEqual(first.task_count, 1)
         self.assertEqual(first.migration_origin, "fresh")
 

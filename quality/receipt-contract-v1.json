@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "required_receipt_fields": [
+    "step_id",
+    "description",
+    "host",
+    "user",
+    "cwd",
+    "started_utc",
+    "finished_utc",
+    "base_sha",
+    "worktree",
+    "changed_paths",
+    "commands",
+    "command_exit_codes",
+    "exit_code",
+    "stdout_bytes",
+    "stderr_bytes",
+    "stdout_sha256",
+    "stderr_sha256",
+    "kind",
+    "oracle"
+  ],
+  "required_spec_fields": [
+    "step_id",
+    "description",
+    "worktree",
+    "base_sha",
+    "cwd",
+    "changed_paths",
+    "kind",
+    "oracle",
+    "commands",
+    "output_dir"
+  ],
+  "argv_only": true,
+  "shell_strings_rejected": true,
+  "expected_red_never_rewrites_exit_to_zero": true
+}

@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StrictMode } from 'react'
-import { vi } from 'vitest'
+import { vi, afterEach } from 'vitest'
 import { api } from '../../api/client'
 import type { Task, TaskDetail, WorkspaceProjection } from '../../domain/types'
 import { TaskDrawer } from './TaskDrawer'
@@ -847,4 +847,219 @@ test('an unrelated edit on a Task with an omitted field never emits an empty ref
 
   await waitFor(() => expect(patches).toHaveLength(1))
   expect(patches[0]).toEqual({ priority: 'P1', revision: task.revision })
+})
+
+const deletionPreviewPayload = {
+  backup: {
+    created: false,
+    location: '/runtime/task-deletion-backups/pending',
+    retention: 'retain-until-operator-purge',
+  },
+  modified_references: { notes: [], tasks: [] },
+  preview_token: 'preview-token-1',
+  removed_task_owned_records: {
+    activity_events: 0,
+    idempotency_keys: 0,
+    notes: 0,
+    planning_events: 0,
+    replies: 0,
+    work_sessions: 0,
+    worklog_entries: 0,
+  },
+  store_digest: 'digest-1',
+  task: { id: task.id, revision: task.revision, title: task.title, uid: task.uid },
+  unlinked_captures: { actions: 0, captures: [] },
+}
+
+const deletionReceiptPayload = {
+  backup: { digest: 'sha256:abc', location: '/runtime/task-deletion-backups/file.zip' },
+  deleted: true as const,
+  display_id_high_water: 12,
+  generation: 4,
+  revision: task.revision,
+  task_id: task.id,
+  task_uid: task.uid,
+}
+
+function mountFocusFallbacks() {
+  const fallback = document.createElement('button')
+  fallback.setAttribute('data-workspace-focus-fallback', '')
+  fallback.setAttribute('data-d4a-focus-fixture', 'fallback')
+  fallback.textContent = 'Board'
+  document.body.appendChild(fallback)
+  const nav = document.createElement('button')
+  nav.setAttribute('aria-current', 'page')
+  nav.setAttribute('data-d4a-focus-fixture', 'nav')
+  nav.textContent = 'Inbox'
+  document.body.appendChild(nav)
+  return { fallback, nav }
+}
+
+afterEach(() => {
+  document.querySelectorAll('[data-d4a-focus-fixture]').forEach((node) => node.remove())
+})
+
+test('applies the workspace projection and focus handoff only after a confirmed permanent delete', async () => {
+  const remainingWorkspace: WorkspaceProjection = { ...workspace, tasks: [], edges: [] }
+  const siblingWorkspace: WorkspaceProjection = {
+    ...workspace,
+    tasks: [task, { ...task, id: 'T-0002', uid: '22222222-2222-2222-8222-222222222222', title: 'Keep' }],
+    edges: [{ source: task.id, target: 'T-0002', kind: 'blocks' }],
+  }
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-1234' } })
+    if (url.endsWith('/api/v1/workspace')) return jsonResponse({ data: remainingWorkspace })
+    if (url.endsWith(`/api/v1/tasks/${task.id}/deletion-preview`)) {
+      return jsonResponse({ data: deletionPreviewPayload })
+    }
+    if (url.endsWith(`/api/v1/tasks/${task.id}`) && init?.method === 'DELETE') {
+      return jsonResponse({ data: deletionReceiptPayload })
+    }
+    if (url.endsWith(`/api/v1/tasks/${task.id}`)) return jsonResponse({ data: detail(task) })
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const { fallback } = mountFocusFallbacks()
+  const client = createClient()
+  const onClose = vi.fn()
+  const view = render(
+    <QueryClientProvider client={client}>
+      <WorkspaceObserver initial={siblingWorkspace} />
+      <TaskDrawer onClose={onClose} onNotice={vi.fn()} taskId={task.id} workspace={siblingWorkspace} />
+    </QueryClientProvider>,
+  )
+  onClose.mockImplementation(() => view.unmount())
+
+  await screen.findByDisplayValue(task.title)
+  await userEvent.click(screen.getByRole('button', { name: 'More task actions' }))
+  const permanent = screen.getByRole('region', { name: 'Delete permanently' })
+  await userEvent.click(within(permanent).getByRole('button', { name: 'Delete permanently…' }))
+  const confirm = await within(permanent).findByLabelText(`Type ${task.id} to confirm permanent deletion`)
+  await userEvent.type(confirm, task.id)
+  await userEvent.click(within(permanent).getByRole('button', { name: 'Delete permanently' }))
+
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+  await waitFor(() => expect(client.getQueryData(['task', task.id])).toBeUndefined())
+  await waitFor(() => {
+    const cached = client.getQueryData<WorkspaceProjection>(['workspace'])
+    expect(cached?.tasks.some((item) => item.id === task.id)).toBe(false)
+    expect(cached?.edges.some((edge) => edge.source === task.id || edge.target === task.id)).toBe(false)
+  })
+  await waitFor(() => expect(document.activeElement).toBe(fallback))
+})
+
+test('Drop keeps the drawer open and never applies the permanent-delete projection', async () => {
+  const dropped = { ...task, revision: task.revision + 1, status: 'dropped' as const }
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-1234' } })
+    if (url.endsWith(`/api/v1/tasks/${task.id}`) && init?.method === 'PATCH') {
+      return jsonResponse({ data: dropped })
+    }
+    if (url.endsWith(`/api/v1/tasks/${task.id}`)) return jsonResponse({ data: detail(task) })
+    throw new Error(`Unexpected request: ${url}`)
+  }))
+  const client = createClient()
+  const onClose = vi.fn()
+  render(
+    <QueryClientProvider client={client}>
+      <WorkspaceObserver initial={workspace} />
+      <TaskDrawer onClose={onClose} onNotice={vi.fn()} taskId={task.id} workspace={workspace} />
+    </QueryClientProvider>,
+  )
+
+  await screen.findByDisplayValue(task.title)
+  await userEvent.click(screen.getByRole('button', { name: 'More task actions' }))
+  const drop = screen.getByRole('region', { name: 'Drop Task' })
+  await userEvent.click(within(drop).getByRole('button', { name: 'Drop Task…' }))
+  await userEvent.type(within(drop).getByLabelText(`Type ${task.id} to confirm`), task.id)
+  await userEvent.click(within(drop).getByRole('button', { name: 'Drop Task' }))
+
+  await waitFor(() => {
+    const cached = client.getQueryData<WorkspaceProjection>(['workspace'])
+    expect(cached?.tasks.find((item) => item.id === task.id)?.status).toBe('dropped')
+  })
+  expect(onClose).not.toHaveBeenCalled()
+  expect(client.getQueryData(['task', task.id])).toMatchObject({ task: dropped })
+  expect(screen.getByLabelText(`Task ${task.id}`)).toBeInTheDocument()
+})
+
+test('preserves the workspace cache and selection when permanent delete does not commit', async () => {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-1234' } })
+    if (url.endsWith(`/api/v1/tasks/${task.id}/deletion-preview`)) {
+      return jsonResponse({ data: deletionPreviewPayload })
+    }
+    if (url.endsWith(`/api/v1/tasks/${task.id}`) && init?.method === 'DELETE') {
+      return jsonResponse({ error: { code: 'preview_stale', message: 'preview_stale' } }, 409)
+    }
+    if (url.endsWith(`/api/v1/tasks/${task.id}`)) return jsonResponse({ data: detail(task) })
+    throw new Error(`Unexpected request: ${url}`)
+  }))
+  const client = createClient()
+  const onClose = vi.fn()
+  render(
+    <QueryClientProvider client={client}>
+      <WorkspaceObserver initial={workspace} />
+      <TaskDrawer onClose={onClose} onNotice={vi.fn()} taskId={task.id} workspace={workspace} />
+    </QueryClientProvider>,
+  )
+
+  await screen.findByDisplayValue(task.title)
+  await userEvent.click(screen.getByRole('button', { name: 'More task actions' }))
+  const permanent = screen.getByRole('region', { name: 'Delete permanently' })
+  await userEvent.click(within(permanent).getByRole('button', { name: 'Delete permanently…' }))
+  const confirm = await within(permanent).findByLabelText(`Type ${task.id} to confirm permanent deletion`)
+  await userEvent.type(confirm, task.id)
+  await userEvent.click(within(permanent).getByRole('button', { name: 'Delete permanently' }))
+
+  expect(await screen.findByRole('alert')).toBeInTheDocument()
+  expect(onClose).not.toHaveBeenCalled()
+  expect(client.getQueryData<WorkspaceProjection>(['workspace'])?.tasks.some((item) => item.id === task.id)).toBe(true)
+  expect(client.getQueryData(['task', task.id])).toMatchObject({ task: { id: task.id } })
+  expect(screen.getByLabelText(`Task ${task.id}`)).toBeInTheDocument()
+})
+
+test('falls back to the active primary-nav control when the workspace fallback is absent', async () => {
+  const remainingWorkspace: WorkspaceProjection = { ...workspace, tasks: [], edges: [] }
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-1234' } })
+    if (url.endsWith('/api/v1/workspace')) return jsonResponse({ data: remainingWorkspace })
+    if (url.endsWith(`/api/v1/tasks/${task.id}/deletion-preview`)) {
+      return jsonResponse({ data: deletionPreviewPayload })
+    }
+    if (url.endsWith(`/api/v1/tasks/${task.id}`) && init?.method === 'DELETE') {
+      return jsonResponse({ data: deletionReceiptPayload })
+    }
+    if (url.endsWith(`/api/v1/tasks/${task.id}`)) return jsonResponse({ data: detail(task) })
+    throw new Error(`Unexpected request: ${url}`)
+  }))
+  const nav = document.createElement('button')
+  nav.setAttribute('aria-current', 'page')
+  nav.setAttribute('data-d4a-focus-fixture', 'nav')
+  nav.textContent = 'Inbox'
+  document.body.appendChild(nav)
+  const client = createClient()
+  const onClose = vi.fn()
+  const view = render(
+    <QueryClientProvider client={client}>
+      <WorkspaceObserver initial={workspace} />
+      <TaskDrawer onClose={onClose} onNotice={vi.fn()} taskId={task.id} workspace={workspace} />
+    </QueryClientProvider>,
+  )
+  onClose.mockImplementation(() => view.unmount())
+
+  await screen.findByDisplayValue(task.title)
+  await userEvent.click(screen.getByRole('button', { name: 'More task actions' }))
+  const permanent = screen.getByRole('region', { name: 'Delete permanently' })
+  await userEvent.click(within(permanent).getByRole('button', { name: 'Delete permanently…' }))
+  const confirm = await within(permanent).findByLabelText(`Type ${task.id} to confirm permanent deletion`)
+  await userEvent.type(confirm, task.id)
+  await userEvent.click(within(permanent).getByRole('button', { name: 'Delete permanently' }))
+
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+  await waitFor(() => expect(document.activeElement).toBe(nav))
 })

@@ -1,0 +1,176 @@
+/* Local report draft editor. Inherits the product font and theme tokens; every
+   colour is a token so the modal follows light and dark with the rest of the app. */
+
+.report-draft-editor {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  color: var(--ws-text-primary);
+  font: inherit;
+}
+
+.report-draft-editor__coordinate {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  margin: 0;
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-meta, 0.75rem);
+}
+
+.report-draft-editor__coordinate span {
+  overflow-wrap: anywhere;
+}
+
+.report-draft-editor__uid {
+  font-family: 'Cascadia Code', Consolas, monospace;
+}
+
+.report-draft-editor__stale,
+.report-draft-editor__regenerated,
+.report-draft-editor__notice,
+.report-draft-editor__status {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.report-draft-editor__stale {
+  background: var(--ws-status-warning-surface);
+  border-color: var(--ws-status-warning-border);
+  color: var(--ws-status-warning-text);
+}
+
+.report-draft-editor__notice {
+  background: var(--ws-status-danger-surface);
+  border-color: var(--ws-status-danger-border);
+  color: var(--ws-status-danger-text);
+}
+
+.report-draft-editor__status,
+.report-draft-editor__regenerated {
+  background: var(--ws-surface-sunken);
+  color: var(--ws-text-secondary);
+}
+
+dialog.report-draft-editor__confirm {
+  max-width: min(30rem, calc(100vw - 32px));
+  margin: auto;
+  padding: 14px 16px;
+  background: var(--ws-surface-raised);
+  border: 1px solid var(--ws-border-accent);
+  border-radius: 10px;
+  color: var(--ws-text-primary);
+  font: inherit;
+}
+
+dialog.report-draft-editor__confirm[open] {
+  display: grid;
+  gap: 10px;
+}
+
+/* The same scrim token the shared dialog uses, so the nested prompt reads as
+   part of the product rather than a second visual language. */
+dialog.report-draft-editor__confirm::backdrop {
+  background: var(--ws-backdrop);
+}
+
+.report-draft-editor__confirm h3 {
+  margin: 0;
+  font-size: 0.9375rem;
+}
+
+.report-draft-editor__confirm p {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.report-draft-editor__confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.report-draft-editor__field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.report-draft-editor__field > span {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-eyebrow, 0.6875rem);
+  text-transform: uppercase;
+}
+
+.report-draft-editor__textarea {
+  width: 100%;
+  min-width: 0;
+  /* Tall enough to edit in, short enough that the footer stays reachable inside
+     the dialog on a small viewport. */
+  min-height: min(48vh, 26rem);
+  padding: 10px 11px;
+  background: var(--ws-control-bg);
+  border: 1px solid var(--ws-control-border);
+  border-radius: 8px;
+  color: var(--ws-text-primary);
+  font: 0.8125rem/1.6 'Cascadia Code', Consolas, monospace;
+  resize: vertical;
+}
+
+.report-draft-editor__count {
+  margin: 0;
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-meta, 0.75rem);
+}
+
+.report-draft-editor__render {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  min-width: 0;
+}
+
+.report-draft-editor__reading {
+  width: 100%;
+  max-height: 30vh;
+  margin: 0;
+  padding: 10px 11px;
+  overflow: auto;
+  background: var(--ws-surface-sunken);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 8px;
+  color: var(--ws-text-secondary);
+  font: 0.8125rem/1.6 'Cascadia Code', Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.report-draft-editor__footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+/* The close control sits apart from the acting controls on a wide footer and
+   simply wraps with them when there is no room. */
+.report-draft-editor__footer .report-draft-editor__close {
+  margin-left: auto;
+}
+
+@media (max-width: 640px) {
+  .report-draft-editor__textarea {
+    min-height: 40vh;
+  }
+
+  .report-draft-editor__footer .report-draft-editor__close {
+    margin-left: 0;
+  }
+}

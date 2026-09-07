@@ -210,6 +210,22 @@ class StorageMigrationConversionTests(unittest.TestCase):
         self.assertEqual(conversion.conversion_digest, canonical_sha256(conversion.artifact_values()))
         self.assertEqual(conversion.conversion_digest, EXPECTED_CONVERSION_DIGEST)
 
+    def test_task_display_id_high_water_is_copied_exactly_when_present(self) -> None:
+        documents = _load("populated")
+        documents["workspace.json"]["task_display_id_high_water"] = 9
+        conversion = convert_v3_documents(
+            documents, candidate_created_at=CANDIDATE_CREATED_AT
+        )
+        self.assertEqual(conversion.store["task_display_id_high_water"], 9)
+        self.assertNotIn("task_display_id_high_water", conversion.workspace)
+        require_valid_by_format(conversion.store)
+        shuffled = _shuffled_records(documents)
+        again = convert_v3_documents(
+            shuffled, candidate_created_at=CANDIDATE_CREATED_AT
+        )
+        self.assertEqual(again.store["task_display_id_high_water"], 9)
+        self.assertEqual(conversion.conversion_digest, again.conversion_digest)
+
     def test_invalid_candidate_instant_fails_without_echoing_source(self) -> None:
         documents = _load("populated")
         documents["workspace.json"]["name"] = "PRIVATE_WORKSPACE_NAME"

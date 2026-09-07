@@ -5,14 +5,17 @@ Oracle self-test seam (not part of the M0 product ABI):
 
     admit(*, data_dir, expected_workspace_uid, format_probe, uid_probe, store_factory) -> str
 
-- format_probe(data_dir) -> "v3" | "v4" | None  (None means missing/unknown authority)
+- format_probe(data_dir) -> "v3" | "v4" | "v5" | None
+  (None means missing, mixed, unknown, or newer-than-admitted authority)
 - uid_probe(data_dir) -> str                    (actual workspace UID)
 - store_factory() -> object                     (records every Store construction)
 
+Admitted labels are exactly v3 and v5. v4 stays a pre-Store refusal.
+
 Invariants:
-- refusal cases (missing, v4, UID mismatch) must not construct Store  -> P0-STORE-BEFORE-PREFLIGHT
+- refusal cases (missing, v4, mixed, newer, UID mismatch) must not construct Store  -> P0-STORE-BEFORE-PREFLIGHT
 - refusals must leave the authority tree byte-identical               -> P0-PREFLIGHT-TREE-MUTATION
-- the admitted case constructs Store exactly once.
+- each admitted format constructs Store exactly once.
 
 Usage:
     python -I probe_authority_preflight.py --subject <module.py> --report <report.json>
@@ -36,6 +39,9 @@ PROBE_NAME = "authority-preflight"
 VIOLATION_STORE = "P0-STORE-BEFORE-PREFLIGHT"
 VIOLATION_TREE = "P0-PREFLIGHT-TREE-MUTATION"
 VIOLATION_EXCEPTION = "P0-PREFLIGHT-EXCEPTION"
+
+FORMAT_ORACLE = ("v3", "v4", "v5", None)
+ADMITTED_LABELS = ("v3", "v5")
 
 EXPECTED_UID = "2f0c6a10-5a4e-4a3f-9c6d-7c1f4f6b9e21"
 OTHER_UID = "9d3b1c55-8e21-4f0a-b7a2-5e9d0a1c3f77"
@@ -101,6 +107,8 @@ def run_scenario(admit) -> tuple[str, list[dict[str, Any]]]:
             ("missing", root / "missing", None, OTHER_UID),
             ("v4", authority_dir, "v4", EXPECTED_UID),
             ("uid-mismatch", authority_dir, "v3", OTHER_UID),
+            ("mixed", authority_dir, None, EXPECTED_UID),
+            ("newer", authority_dir, None, EXPECTED_UID),
         ]
         total_calls = 0
         for name, data_dir, probe_format, actual_uid in cases:
@@ -149,6 +157,69 @@ def run_scenario(admit) -> tuple[str, list[dict[str, Any]]]:
         digest_after = _tree_digest(root)
         if digest_before != digest_after:
             violations.append({"id": VIOLATION_TREE, "observed": {"tree_digest_after": digest_after, "authority_paths_unchanged": False}, "expected": {"tree_digest_unchanged": True, "total_store_calls": 1}})
+        return "violation" if violations else "pass", violations
+
+
+def run_admitted_labels(admit) -> tuple[str, list[dict[str, Any]]]:
+    """Prove each admitted label constructs Store once without mutating the tree.
+
+    Historical mutant golden files pin run_scenario() to the v3 admitted constructor
+    plus the original refusal IDs. v5 is exercised here so a v3-only subject fails
+    this oracle without changing sentinel rejection strength on those mutants.
+    """
+
+    violations: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="p0-probe-p1-admitted-") as temporary:
+        root = Path(temporary)
+        authority_dir = root / "authority"
+        authority_dir.mkdir()
+        (authority_dir / "authority.json").write_bytes(AUTHORITY_BYTES)
+        digest_before = _tree_digest(root)
+        for label in ADMITTED_LABELS:
+            store_factory = _StoreFactory()
+            case_name = "admitted-%s" % label
+            try:
+                admitted = admit(
+                    data_dir=authority_dir,
+                    expected_workspace_uid=EXPECTED_UID,
+                    format_probe=lambda _data_dir, _fmt=label: _fmt,
+                    uid_probe=lambda _data_dir: EXPECTED_UID,
+                    store_factory=store_factory,
+                )
+            except Exception as error:
+                violations.append(
+                    {
+                        "id": VIOLATION_EXCEPTION,
+                        "observed": {"case": case_name, "error": type(error).__name__},
+                        "expected": {"case": case_name, "error": None},
+                    }
+                )
+                continue
+            if not isinstance(admitted, str):
+                violations.append(
+                    {
+                        "id": VIOLATION_EXCEPTION,
+                        "observed": {"case": case_name, "returned": type(admitted).__name__},
+                        "expected": {"case": case_name, "returned": "str"},
+                    }
+                )
+            if store_factory.calls != 1:
+                violations.append(
+                    {
+                        "id": VIOLATION_STORE,
+                        "observed": {"case": case_name, "store_calls": store_factory.calls},
+                        "expected": {"case": case_name, "store_calls": 1},
+                    }
+                )
+        digest_after = _tree_digest(root)
+        if digest_before != digest_after:
+            violations.append(
+                {
+                    "id": VIOLATION_TREE,
+                    "observed": {"tree_digest_after": digest_after, "authority_paths_unchanged": False},
+                    "expected": {"tree_digest_unchanged": True},
+                }
+            )
         return "violation" if violations else "pass", violations
 
 

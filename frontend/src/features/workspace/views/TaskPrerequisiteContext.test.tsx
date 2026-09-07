@@ -39,9 +39,9 @@ function scopeKey(filters: Parameters<typeof completedVisibilityScopeKey>[1] = {
 }
 
 describe('anchor resolution', () => {
-  it('invites a selection when there is no anchor', () => {
+  it('occupies no space at all when there is no anchor', () => {
     const tasks = [task('T-A')]
-    render(
+    const { container } = render(
       <TaskPrerequisiteContext
         anchorTaskId={null}
         onClearReveal={vi.fn()}
@@ -49,7 +49,8 @@ describe('anchor resolution', () => {
         projection={project(tasks, null)}
       />,
     )
-    expect(screen.getByText('Select a Task to see its prerequisites.')).toBeVisible()
+    expect(container).toBeEmptyDOMElement()
+    expect(screen.queryByRole('region', { name: 'Prerequisite context' })).toBeNull()
   })
 
   it('renders the anchor identity and reports a Task with no prerequisites', () => {
@@ -66,8 +67,8 @@ describe('anchor resolution', () => {
     expect(screen.getByText('This Task has no prerequisites.')).toBeVisible()
   })
 
-  it('shows nothing for an anchor that is not canonical', () => {
-    render(
+  it('occupies no space for an anchor that is not canonical', () => {
+    const { container } = render(
       <TaskPrerequisiteContext
         anchorTaskId="GHOST"
         onClearReveal={vi.fn()}
@@ -75,7 +76,117 @@ describe('anchor resolution', () => {
         projection={project([task('T-A')], 'GHOST')}
       />,
     )
-    expect(screen.getByText('Select a Task to see its prerequisites.')).toBeVisible()
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('appears and disappears across null, missing and real anchors', () => {
+    const tasks = [task('T-A', { dependencies: ['D-1'] }), task('D-1', { status: 'done' })]
+    const node = (anchorTaskId: string | null) => (
+      <TaskPrerequisiteContext
+        anchorTaskId={anchorTaskId}
+        onClearReveal={vi.fn()}
+        onReveal={vi.fn()}
+        projection={project(tasks, anchorTaskId)}
+      />
+    )
+    const { container, rerender } = render(node(null))
+    expect(container).toBeEmptyDOMElement()
+
+    rerender(node('T-A'))
+    expect(screen.getByRole('region', { name: 'Prerequisite context' })
+      .getAttribute('data-anchor-task')).toBe('T-A')
+    // The preserved feedback still names the anchor and its hidden completion.
+    expect(within(screen.getByRole('list', { name: 'Prerequisite summary' }))
+      .getByText('Completed · hidden').nextSibling).toHaveTextContent('1')
+
+    rerender(node('GHOST'))
+    expect(container).toBeEmptyDOMElement()
+
+    rerender(node('T-A'))
+    expect(screen.getByRole('heading', { name: 'Prerequisites for T-A' })).toBeVisible()
+
+    rerender(node(null))
+    expect(container).toBeEmptyDOMElement()
+
+    rerender(node('T-A'))
+    expect(screen.getByRole('heading', { name: 'Prerequisites for T-A' })).toBeVisible()
+  })
+})
+
+/**
+ * The handoff intent recorded when a toggle is activated belongs to the anchor
+ * that rendered it. Removing the panel now unmounts every control, so the
+ * intent must die with the anchor instead of waiting for a successor that only
+ * a later, unrelated anchor would supply.
+ */
+describe('focus handoff across anchor changes', () => {
+  const tasks = [
+    task('T-A', { dependencies: ['D-1'] }),
+    task('T-B', { dependencies: ['D-2'] }),
+    task('D-1', { status: 'done' }),
+    task('D-2', { status: 'done' }),
+  ]
+
+  function node(
+    anchorTaskId: string | null,
+    reveal: CompletedVisibilityReveal | null = null,
+  ) {
+    return (
+      <TaskPrerequisiteContext
+        anchorTaskId={anchorTaskId}
+        onClearReveal={vi.fn()}
+        onReveal={vi.fn()}
+        projection={project(tasks, anchorTaskId, reveal)}
+      />
+    )
+  }
+
+  function revealOf(anchorTaskId: string, taskIds: readonly string[]) {
+    return { anchorTaskId, scopeKey: scopeKey(), taskIds: [...taskIds] }
+  }
+
+  async function activateReveal(user: ReturnType<typeof userEvent.setup>) {
+    const reveal = screen.getByRole('button', { name: 'Reveal completed prerequisites' })
+    reveal.focus()
+    await user.keyboard('{Enter}')
+    expect(reveal).toHaveFocus()
+  }
+
+  it('hands focus to the surviving Clear control when Reveal removes itself', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(node('T-A'))
+    await activateReveal(user)
+
+    // The reveal settles: its own control is gone and Clear takes its place.
+    rerender(node('T-A', revealOf('T-A', ['D-1'])))
+    expect(screen.queryByRole('button', { name: 'Reveal completed prerequisites' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Clear temporary reveal' })).toHaveFocus()
+  })
+
+  it('drops the intent when the anchor is cleared before the reveal settles', async () => {
+    const user = userEvent.setup()
+    const { container, rerender } = render(node('T-A'))
+    await activateReveal(user)
+
+    rerender(node(null, revealOf('T-A', ['D-1'])))
+    expect(container).toBeEmptyDOMElement()
+
+    // The same anchor comes back with its Clear control; nothing may claim focus.
+    rerender(node('T-A', revealOf('T-A', ['D-1'])))
+    expect(screen.getByRole('button', { name: 'Clear temporary reveal' })).not.toHaveFocus()
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('drops the intent when a different anchor takes over', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(node('T-A'))
+    await activateReveal(user)
+
+    rerender(node('T-B', revealOf('T-B', ['D-2'])))
+    expect(screen.getByRole('region', { name: 'Prerequisite context' })
+      .getAttribute('data-anchor-task')).toBe('T-B')
+    expect(screen.getByRole('button', { name: 'Clear temporary reveal' })).not.toHaveFocus()
+    expect(document.activeElement).toBe(document.body)
   })
 })
 

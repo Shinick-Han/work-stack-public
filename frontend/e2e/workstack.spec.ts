@@ -1,4 +1,5 @@
 import AxeBuilder from '@axe-core/playwright'
+import { readFile } from 'node:fs/promises'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 
 type ThemeName = 'dark' | 'light'
@@ -237,6 +238,55 @@ test('Objective Hub scrolls inside a viewport-pinned shell', async ({ page }) =>
   await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
 })
 
+test('Objective Hub keeps quarter, Save, and KR controls usable at 1250 and 1100', async ({ page }) => {
+  for (const width of [1250, 1100] as const) {
+    await page.setViewportSize({ width, height: 800 })
+    await page.goto('/?surface=objectives&objective=O-1')
+    await expect(page.getByLabel('Objective quarter')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Save Objective' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Save KR' }).first()).toBeVisible()
+
+    const layout = await page.evaluate(() => {
+      const rect = (selector: string) => {
+        const element = document.querySelector<HTMLElement>(selector)
+        if (!element) throw new Error(`Missing ${selector}`)
+        const bounds = element.getBoundingClientRect()
+        return { left: bounds.left, right: bounds.right, width: bounds.width }
+      }
+      const main = document.querySelector<HTMLElement>('.app-main')
+      if (!main) throw new Error('Missing .app-main')
+      return {
+        hub: rect('.objective-hub'),
+        krButton: rect('.kr-row > .button'),
+        krDescription: rect('.kr-row > label:nth-child(1) input'),
+        krRange: rect('.kr-row input[type="range"]'),
+        krTarget: rect('.kr-row > label:nth-child(2) input'),
+        mainClientWidth: main.clientWidth,
+        mainScrollWidth: main.scrollWidth,
+        overview: rect('.objective-overview'),
+        quarter: rect('.objective-editor label:nth-child(2) input'),
+        save: rect('.objective-editor > .button'),
+        viewportWidth: window.innerWidth,
+      }
+    })
+
+    expect(layout.viewportWidth).toBe(width)
+    expect(layout.quarter.left).toBeGreaterThanOrEqual(layout.overview.left - 1)
+    expect(layout.save.left).toBeGreaterThanOrEqual(layout.overview.left - 1)
+    expect(layout.quarter.right).toBeLessThanOrEqual(layout.overview.right + 1)
+    expect(layout.save.right).toBeLessThanOrEqual(layout.overview.right + 1)
+    expect(layout.quarter.right).toBeLessThanOrEqual(layout.hub.right + 1)
+    expect(layout.save.right).toBeLessThanOrEqual(layout.hub.right + 1)
+    expect(layout.quarter.right).toBeLessThanOrEqual(width + 1)
+    expect(layout.save.right).toBeLessThanOrEqual(width + 1)
+    expect(layout.mainScrollWidth).toBeLessThanOrEqual(layout.mainClientWidth + 1)
+    expect(layout.krDescription.width).toBeGreaterThanOrEqual(140)
+    expect(layout.krTarget.width).toBeGreaterThanOrEqual(120)
+    expect(layout.krRange.width).toBeGreaterThanOrEqual(80)
+    expect(layout.krButton.width).toBeGreaterThanOrEqual(44)
+  }
+})
+
 test('Objective Hub explains execution readiness and opens a blocked aligned Task', async ({ page }) => {
   await page.goto('/?surface=objectives&objective=O-4')
   const readiness = page.getByLabel('Objective execution readiness')
@@ -384,6 +434,155 @@ test('Treemap objective navigation focuses the matching Objective in Workspace',
   await expect(page).toHaveURL(/objective=O-1/)
 })
 
+async function treemapFocusIds(page: Page) {
+  const navigator = page.getByRole('navigation', { name: 'Treemap objective navigation' })
+  return navigator.getByRole('button', { name: /^Focus objective / }).evaluateAll((buttons) => (
+    buttons.map((button) => button.getAttribute('aria-label')?.replace(/^Focus objective /, '') ?? '')
+  ))
+}
+
+async function dragTreemapHandle(page: Page, fromName: string, toName: string) {
+  const from = page.getByRole('button', { name: fromName })
+  const to = page.getByRole('button', { name: toName })
+  await expect(from).toBeVisible()
+  await expect(to).toBeVisible()
+  await from.scrollIntoViewIfNeeded()
+  await to.scrollIntoViewIfNeeded()
+  await from.scrollIntoViewIfNeeded()
+  const fromBox = await from.boundingBox()
+  const toBox = await to.boundingBox()
+  if (!fromBox || !toBox) throw new Error(`Missing bounding box for ${fromName} or ${toName}`)
+  await page.mouse.move(fromBox.x + fromBox.width / 2, fromBox.y + fromBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(toBox.x + toBox.width / 2, toBox.y + toBox.height / 2, { steps: 16 })
+  await page.mouse.up()
+}
+
+function treemapStorageKeys() {
+  return Object.keys(localStorage).filter((key) => (
+    key.startsWith('workstack:local-view:v1:') && key.endsWith(':treemap')
+  ))
+}
+
+async function expectO2BeforeO1(page: Page) {
+  await expect.poll(async () => {
+    const ids = await treemapFocusIds(page)
+    const first = ids.indexOf('O-1')
+    const second = ids.indexOf('O-2')
+    return first >= 0 && second >= 0 && first > second
+  }).toBe(true)
+}
+
+async function cancelPointerMove(page: Page, name: string) {
+  const handle = page.getByRole('button', { name })
+  await handle.scrollIntoViewIfNeeded()
+  const box = await handle.boundingBox()
+  if (!box) throw new Error(`Missing bounding box for ${name}`)
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 24, box.y + box.height / 2, { steps: 8 })
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+}
+
+async function expectTreemapPointerPersistence(page: Page, width: number, height: number) {
+  await page.setViewportSize({ width, height })
+  await page.goto('/?view=treemap')
+  const navigator = page.getByRole('navigation', { name: 'Treemap objective navigation' })
+  await expect(navigator.getByRole('button', { name: 'Move objective O-1' })).toBeVisible()
+  await expect(navigator.getByRole('button', { name: 'Move objective O-2' })).toBeVisible()
+  await expect(navigator.getByRole('button', { name: 'Focus objective O-2' })).toBeVisible()
+
+  const before = await treemapFocusIds(page)
+  expect(before.indexOf('O-1')).toBeGreaterThanOrEqual(0)
+  expect(before.indexOf('O-2')).toBeGreaterThan(before.indexOf('O-1'))
+
+  await dragTreemapHandle(page, 'Move objective O-1', 'Focus objective O-2')
+  await expect(page.locator('.wsv-treemap-live')).toHaveText(/Moved objective O-1 to position (?!1 of)\d+ of \d+/)
+  await expectO2BeforeO1(page)
+  await expect.poll(async () => (await page.evaluate(treemapStorageKeys)).length).toBeGreaterThan(0)
+
+  await page.reload()
+  await expect(page.getByRole('navigation', { name: 'Treemap objective navigation' })).toBeVisible()
+  await expectO2BeforeO1(page)
+
+  await page.getByRole('button', { name: 'Reset treemap order' }).click()
+  await expect.poll(async () => (await page.evaluate(treemapStorageKeys)).length).toBe(0)
+  expect(await treemapFocusIds(page)).toEqual(before)
+
+  await cancelPointerMove(page, 'Move objective O-1')
+  expect(await page.evaluate(treemapStorageKeys)).toEqual([])
+  expect(await treemapFocusIds(page)).toEqual(before)
+
+  await page.getByRole('button', { name: 'Move objective O-1' }).focus()
+  await page.keyboard.press('Enter')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.wsv-treemap-live')).toHaveText(/Moved objective O-1 to position/)
+  const afterKeyboard = await treemapFocusIds(page)
+  expect(afterKeyboard[0]).not.toBe('O-1')
+  expect(afterKeyboard).toContain('O-1')
+  expect(afterKeyboard).not.toEqual(before)
+}
+
+test('Treemap pointer and keyboard reorder persist at desktop width', async ({ page }) => {
+  await expectTreemapPointerPersistence(page, 1280, 800)
+})
+
+test('Treemap pointer and keyboard reorder persist at a 640-width viewport', async ({ page }) => {
+  await expectTreemapPointerPersistence(page, 640, 800)
+})
+
+test('Treemap pointer and keyboard reorder persist at a narrow width', async ({ page }) => {
+  await expectTreemapPointerPersistence(page, 390, 844)
+})
+
+async function expectTreemapCaptureLossCancel(page: Page, width: number, height: number) {
+  await page.setViewportSize({ width, height })
+  await page.goto('/?view=treemap')
+  const handle = page.getByRole('button', { name: 'Move objective O-1' })
+  await expect(handle).toBeVisible()
+  const before = await treemapFocusIds(page)
+  await handle.scrollIntoViewIfNeeded()
+  const box = await handle.boundingBox()
+  if (!box) throw new Error('Missing bounding box for Move objective O-1')
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 28, box.y + box.height / 2, { steps: 8 })
+  await expect(page.locator('.wsv-treemap-live')).toHaveText(/Picked up objective O-1/)
+  await expect(handle).toHaveAttribute('aria-pressed', 'true')
+  const released = await page.locator('[data-treemap-surface]').evaluate((el) => {
+    if (!(el instanceof HTMLElement)) return false
+    const raw = el.dataset.treemapPointerId ?? ''
+    if (!/^\d+$/.test(raw)) return false
+    const pointerId = Number(raw)
+    if (typeof el.hasPointerCapture !== 'function' || !el.hasPointerCapture(pointerId)) return false
+    el.releasePointerCapture(pointerId)
+    return true
+  })
+  expect(released).toBe(true)
+  await page.mouse.move(box.x + box.width / 2 + 29, box.y + box.height / 2, { steps: 1 })
+  await expect(page.locator('.wsv-treemap-live')).toHaveText('Move cancelled')
+  await expect(handle).not.toHaveAttribute('aria-pressed', 'true')
+  expect(await page.evaluate(treemapStorageKeys)).toEqual([])
+  expect(await treemapFocusIds(page)).toEqual(before)
+  await page.mouse.up()
+  expect(await page.evaluate(treemapStorageKeys)).toEqual([])
+  expect(await treemapFocusIds(page)).toEqual(before)
+}
+
+test('Treemap lostpointercapture cancels a held pointer drag at desktop width', async ({ page }) => {
+  await expectTreemapCaptureLossCancel(page, 1280, 800)
+})
+
+test('Treemap lostpointercapture cancels a held pointer drag at a 640-width viewport', async ({ page }) => {
+  await expectTreemapCaptureLossCancel(page, 640, 800)
+})
+
+test('Treemap lostpointercapture cancels a held pointer drag at a narrow width', async ({ page }) => {
+  await expectTreemapCaptureLossCancel(page, 390, 844)
+})
+
 test('Board and Table expose advisory dependency blockers with direct navigation', async ({ page }) => {
   const boardCard = page.locator('article[aria-label^="T-0002:"]')
   const boardBlocker = boardCard.getByRole('button', { name: /Blocked by T-0001/ })
@@ -489,11 +688,72 @@ test('Focus records a human work session without changing planning status', asyn
   await page.goto('/?surface=review')
   await expect(page.getByRole('heading', { name: 'Turn execution into evidence.' })).toBeVisible()
   await expect(
-    page.getByText(`Playwright completed human session for ${taskId}`, { exact: true }),
+    page.getByLabel('entries').getByText(`Playwright completed human session for ${taskId}`, { exact: true }),
   ).toBeVisible()
 })
 
+test('Daily report generates explicitly and downloads the exact source-backed markdown', async ({ page }) => {
+  let requests = 0
+  page.on('request', (request) => {
+    if (request.url().includes('/api/v1/reports/daily-preview')) requests += 1
+  })
+  await page.goto('/?surface=review')
+  const report = page.getByRole('region', { name: 'Daily report', exact: true })
+  await expect(report.getByRole('button', { name: 'Generate report', exact: true })).toBeVisible()
+  expect(requests).toBe(0)
+  await expect(report.locator('.daily-report-document')).toHaveCount(0)
+  const response = page.waitForResponse((item) => item.url().includes('/api/v1/reports/daily-preview'))
+  await report.getByRole('button', { name: 'Generate report', exact: true }).click()
+  const returned = await response
+  expect(returned.status()).toBe(200)
+  const { data } = await returned.json()
+  expect(data.source_digest).toMatch(/^sha256:[0-9a-f]{64}$/)
+  await expect(report.locator('.daily-report-document')).toBeVisible()
+  const downloadEvent = page.waitForEvent('download')
+  await report.getByRole('button', { name: 'Download .md', exact: true }).click()
+  const download = await downloadEvent
+  expect(download.suggestedFilename()).toBe(`workstack-daily-${data.preview.period.date}.md`)
+  expect(await readFile((await download.path())!, 'utf8')).toBe(data.preview.markdown)
+  expect(requests).toBe(1)
+})
+
+test('Daily report generation errors remain actionable without rendering a document', async ({ page }) => {
+  await page.route('**/api/v1/reports/daily-preview?*', (route) => route.fulfill({
+    status: 422,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: { code: 'report_preview_unavailable', message: 'Report fixture unavailable', details: {} } }),
+  }))
+  await page.goto('/?surface=review')
+  const report = page.getByRole('region', { name: 'Daily report', exact: true })
+  await report.getByRole('button', { name: 'Generate report', exact: true }).click()
+  await expect(report.getByText('Report fixture unavailable')).toBeVisible()
+  await expect(report.locator('.daily-report-document')).toHaveCount(0)
+  await expect(report.getByRole('button', { name: 'Retry report', exact: true })).toBeEnabled()
+})
+
+async function seedRetainedSyncEvents(page: Page) {
+  const session = await page.request.get('/api/v1/session')
+  expect(session.ok()).toBeTruthy()
+  const payload = await session.json() as { data: { csrf_token: string } }
+  const origin = new URL(page.url()).origin
+  const stamp = `${Date.now()}`
+  for (let index = 0; index < 18; index += 1) {
+    const response = await page.request.post('/api/v1/notes', {
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Origin: origin,
+        'X-WorkStack-CSRF': payload.data.csrf_token,
+        'Idempotency-Key': `e2e.retained-sync.${stamp}.${index}`,
+      },
+      data: { text: `Retained sync seed ${index + 1}`, links: [] },
+    })
+    expect(response.ok(), await response.text()).toBeTruthy()
+  }
+}
+
 test('a committed planning change refreshes another open tab', async ({ context, page }) => {
+  await seedRetainedSyncEvents(page)
   await page.goto('/?view=table')
   const secondPage = await context.newPage()
   await secondPage.goto('/?view=table')
@@ -658,6 +918,86 @@ test('200 percent reflow-equivalent viewport keeps core planning actions operabl
   await expect(page.getByRole('textbox', { name: 'Task title' })).toBeVisible()
 })
 
+function boardStatusColumn(page: Page, status: 'open' | 'started' | 'done' | 'dropped') {
+  return page.locator('[data-containment="board-column"]').filter({
+    has: page.locator(`#wsv-column-${status}`),
+  })
+}
+
+function boardLiveRegion(page: Page) {
+  return page.locator('[id^="DndLiveRegion"]')
+}
+
+async function firstOpenBoardCard(page: Page) {
+  const card = boardStatusColumn(page, 'open').locator('[data-containment="board-card"]').first()
+  await expect(card).toBeVisible()
+  const taskId = (await card.getAttribute('aria-label'))?.split(':')[0]
+  expect(taskId).toMatch(/^T-\d+$/)
+  return { card, taskId: taskId as string }
+}
+
+async function dragBoardCardOntoColumn(page: Page, card: Locator, column: Locator) {
+  const origin = card.locator('.wsv-priority')
+  const from = await origin.boundingBox()
+  const to = await column.boundingBox()
+  if (!from || !to) {
+    throw new Error('Board column geometry was not measurable')
+  }
+  const startX = from.x + Math.min(10, from.width / 2)
+  const startY = from.y + from.height / 2
+  const dropX = to.x + to.width / 2
+  const dropY = to.y + Math.min(56, Math.max(24, to.height / 4))
+  await page.mouse.move(startX, startY)
+  await page.mouse.down()
+  await page.mouse.move(startX + 12, startY, { steps: 4 })
+  await page.mouse.move(dropX, dropY, { steps: 16 })
+  await expect(boardLiveRegion(page)).toContainText(/In progress/)
+  await page.mouse.up()
+}
+
+async function keyboardMoveBoardCardRight(page: Page, card: Locator) {
+  const handle = card.getByRole('button', { name: /^Move / })
+  await handle.focus()
+  await page.keyboard.press('Space')
+  await expect(page.locator('.wsv-task-card.is-dragging').first()).toBeVisible()
+  await expect(boardLiveRegion(page)).toContainText(/Picked up|is over/)
+  await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 0)))
+  await page.keyboard.press('ArrowRight')
+  await expect(boardLiveRegion(page)).toContainText(/In progress/)
+  await page.keyboard.press('Space')
+}
+
+const boardGeometryViewports = [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+] as const
+
+for (const viewport of boardGeometryViewports) {
+  test(`board pointer drop follows In progress column geometry at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await page.goto('/?view=board')
+    const started = boardStatusColumn(page, 'started')
+    const done = boardStatusColumn(page, 'done')
+    const { card, taskId } = await firstOpenBoardCard(page)
+    await dragBoardCardOntoColumn(page, card, started)
+    await expect(page.getByText(`${taskId} moved to started`)).toBeVisible()
+    await expect(started.locator(`article[aria-label^="${taskId}:"]`)).toBeVisible()
+    await expect(done.locator(`article[aria-label^="${taskId}:"]`)).toHaveCount(0)
+  })
+
+  test(`board keyboard ArrowRight moves one adjacent status at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await page.goto('/?view=board')
+    const started = boardStatusColumn(page, 'started')
+    const done = boardStatusColumn(page, 'done')
+    const { card, taskId } = await firstOpenBoardCard(page)
+    await keyboardMoveBoardCardRight(page, card)
+    await expect(page.getByText(`${taskId} moved to started`)).toBeVisible()
+    await expect(started.locator(`article[aria-label^="${taskId}:"]`)).toBeVisible()
+    await expect(done.locator(`article[aria-label^="${taskId}:"]`)).toHaveCount(0)
+  })
+}
+
 const axeSurfaceCases = [
   { name: 'Graph', path: '/?view=graph' },
   { name: 'Board', path: '/?view=board' },
@@ -682,3 +1022,45 @@ for (const { name, path } of axeSurfaceCases) {
     expect(blockers, `${path}: ${blockers.map(({ id, help }) => `${id}: ${help}`).join('; ')}`).toEqual([])
   })
 }
+
+test('Table Manual keyboard order persists across reload without planning writes', async ({ page }) => {
+  const mutations: string[] = []
+  page.on('request', (request) => {
+    if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.method())) {
+      mutations.push(`${request.method()} ${request.url()}`)
+    }
+  })
+  await page.goto('/?view=table')
+  await expect(page.getByRole('tabpanel', { name: 'table workspace view' })).toBeVisible()
+  await page.getByRole('button', { name: 'Manual order', exact: true }).click()
+  const firstId = await page.locator('tbody tr').first().getAttribute('data-task-id')
+  expect(firstId).toBeTruthy()
+  await page.getByRole('button', { name: `Reorder ${firstId}` }).focus()
+  await page.keyboard.press('Enter')
+  await page.keyboard.press('End')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('tbody tr').last()).toHaveAttribute('data-task-id', firstId as string)
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'Manual order', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('tbody tr').last()).toHaveAttribute('data-task-id', firstId as string)
+  expect(mutations, 'table reorder must issue no planning mutation').toEqual([])
+})
+
+test('Table Manual pointer reorder works in a narrow viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 480 })
+  await page.goto('/?view=table')
+  await expect(page.getByRole('tabpanel', { name: 'table workspace view' })).toBeVisible()
+  await page.getByRole('button', { name: 'Manual order', exact: true }).click()
+  const first = page.locator('tbody tr').first()
+  const firstId = await first.getAttribute('data-task-id')
+  expect(firstId).toBeTruthy()
+  const handle = page.getByRole('button', { name: `Reorder ${firstId}` })
+  const last = page.locator('tbody tr').last()
+  await handle.dragTo(last)
+  await expect(page.locator('tbody tr').last()).toHaveAttribute('data-task-id', firstId as string)
+  const result = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze()
+  const blockers = result.violations.filter(({ impact }) => impact === 'serious' || impact === 'critical')
+  expect(blockers, blockers.map(({ id, help }) => `${id}: ${help}`).join('; ')).toEqual([])
+})

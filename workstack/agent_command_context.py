@@ -11,6 +11,14 @@ from workstack.agent_cli_contract import (
     ContextRequest,
     render_outcome,
 )
+from workstack.agent_context_pack import (
+    build_planning_blocks,
+    is_known_view,
+    is_planning_view,
+    planning_omitted,
+    shrink_planning_data,
+    validate_planning_data,
+)
 
 __all__ = ("handle_context",)
 
@@ -27,6 +35,7 @@ OMITTED_CATEGORIES = (
     "work_sessions",
 )
 OVERFLOW_MARKER = "recent_worklog_overflow"
+PLANNING_MATERIAL_KEYS = ("context", "objectives", "tasks")
 CONTEXT_TOO_LARGE_MSG = "the Task core projection alone exceeds the envelope bound"
 INTERNAL_ERROR_MSG = "unexpected exception; envelope is content-free"
 LOOKBACK_DAYS = 30
@@ -153,85 +162,196 @@ def _context_size(
     )
 
 
+def _planning_material(raw: dict[str, Any]) -> dict[str, Any]:
+    """The extra read material a planning-v1 backend must have supplied."""
+
+    material = raw.get("planning")
+    if type(material) is not dict or set(material) != set(PLANNING_MATERIAL_KEYS):
+        raise ValueError("backend planning material is missing or malformed")
+    return material
+
+
+def _require_backend_context(
+    raw: object,
+) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]]:
+    """Admit one backend mapping or raise; the caller maps that to internal_error."""
+
+    if not isinstance(raw, dict):
+        raise ValueError("backend context result must be a mapping")
+    workspace_uid = raw["workspace_uid"]
+    transport = raw["transport"]
+    raw_task = raw["task"]
+    raw_entries = raw["entries"]
+    if (
+        not isinstance(workspace_uid, str)
+        or not isinstance(transport, str)
+        or not isinstance(raw_task, dict)
+        or not isinstance(raw_entries, list)
+        or any(not isinstance(entry, dict) for entry in raw_entries)
+    ):
+        raise ValueError("backend context result has an invalid shape")
+    return workspace_uid, transport, raw_task, raw_entries
+
+
+def _planning_outcome(
+    *,
+    raw: dict[str, Any],
+    request: ContextRequest,
+    task: dict[str, Any],
+    entries: list[dict[str, Any]],
+    overflow: bool,
+    transport: str,
+    workspace_uid: str,
+) -> AgentOutcome:
+    """The opt-in planning-v1 answer: core plus three capped, bounded blocks."""
+
+    material = _planning_material(raw)
+    blocks, overflowed = build_planning_blocks(
+        task_id=request.task_id,
+        objectives=material["objectives"],
+        tasks=material["tasks"],
+        context=material["context"],
+    )
+    omitted = planning_omitted(overflowed=overflowed)
+    if overflow:
+        omitted.append(OVERFLOW_MARKER)
+    data: dict[str, Any] = {
+        "workspace_uid": workspace_uid,
+        "task": task,
+        "recent_worklog": entries,
+        "omitted": omitted,
+    }
+    data.update(blocks)
+
+    def size(candidate: dict[str, Any]) -> int:
+        return _context_size(
+            data=candidate,
+            task_id=request.task_id,
+            transport=transport,
+            workspace_uid=workspace_uid,
+        )
+
+    if not shrink_planning_data(
+        data=data,
+        overflowed=overflowed,
+        core_overflow_marker=OVERFLOW_MARKER,
+        core_overflowed=overflow,
+        size=size,
+        limit=ENVELOPE_MAX_BYTES,
+    ):
+        return _failure(code="context_too_large", message=CONTEXT_TOO_LARGE_MSG)
+    # Nothing planning-shaped is rendered unvalidated: the frozen contract module
+    # validates the core half and the key set, this validates the blocks in full.
+    validate_planning_data(data, core_overflow_marker=OVERFLOW_MARKER)
+    outcome = _make_outcome(
+        data=data,
+        error_code=None,
+        error_message=None,
+        task_id=request.task_id,
+        transport=transport,
+        workspace_uid=workspace_uid,
+    )
+    render_outcome(outcome=outcome)
+    return outcome
+
+
+def _core_outcome(
+    *,
+    request: ContextRequest,
+    task: dict[str, Any],
+    entries: list[dict[str, Any]],
+    overflow: bool,
+    transport: str,
+    workspace_uid: str,
+) -> AgentOutcome:
+    """The default core-v1 answer: Task allowlist plus the bounded worklog."""
+
+    omitted = list(OMITTED_CATEGORIES)
+    if overflow:
+        omitted.append(OVERFLOW_MARKER)
+    data: dict[str, Any] = {
+        "workspace_uid": workspace_uid,
+        "task": task,
+        "recent_worklog": entries,
+        "omitted": omitted,
+    }
+    core = dict(data)
+    core["recent_worklog"] = []
+    if (
+        _context_size(
+            data=core,
+            task_id=request.task_id,
+            transport=transport,
+            workspace_uid=workspace_uid,
+        )
+        > ENVELOPE_MAX_BYTES
+    ):
+        return _failure(code="context_too_large", message=CONTEXT_TOO_LARGE_MSG)
+
+    while (
+        _context_size(
+            data=data,
+            task_id=request.task_id,
+            transport=transport,
+            workspace_uid=workspace_uid,
+        )
+        > ENVELOPE_MAX_BYTES
+    ):
+        if not entries:
+            return _failure(code="context_too_large", message=CONTEXT_TOO_LARGE_MSG)
+        entries.pop()
+        if not overflow:
+            overflow = True
+            data["omitted"] = list(OMITTED_CATEGORIES) + [OVERFLOW_MARKER]
+
+    outcome = _make_outcome(
+        data=data,
+        error_code=None,
+        error_message=None,
+        task_id=request.task_id,
+        transport=transport,
+        workspace_uid=workspace_uid,
+    )
+    render_outcome(outcome=outcome)
+    return outcome
+
+
 def handle_context(
     *,
     request: ContextRequest,
     backend: AgentBackend,
     today: datetime.date,
 ) -> AgentOutcome:
+    # A view this build does not implement is refused BEFORE any backend read.
+    # The CLI already rejects an unknown --view at the parser, so reaching here
+    # means a direct caller; silently answering core-v1 would hide that.
+    if not is_known_view(getattr(request, "view", None)):
+        return _failure(code="internal_error", message=INTERNAL_ERROR_MSG)
     try:
         raw = backend.context(request=request, today=today)
-        if not isinstance(raw, dict):
-            raise ValueError("backend context result must be a mapping")
-        workspace_uid = raw["workspace_uid"]
-        transport = raw["transport"]
-        raw_task = raw["task"]
-        raw_entries = raw["entries"]
-        if (
-            not isinstance(workspace_uid, str)
-            or not isinstance(transport, str)
-            or not isinstance(raw_task, dict)
-            or not isinstance(raw_entries, list)
-            or any(not isinstance(entry, dict) for entry in raw_entries)
-        ):
-            raise ValueError("backend context result has an invalid shape")
-
+        workspace_uid, transport, raw_task, raw_entries = _require_backend_context(raw)
         task = _project_task(raw_task)
         filtered = _filter_entries(raw_entries, request.task_id, today)
         projected = [_project_entry(entry) for entry in filtered]
         entries = projected[:MAX_ENTRIES]
         overflow = len(projected) > MAX_ENTRIES
-
-        omitted = list(OMITTED_CATEGORIES)
-        if overflow:
-            omitted.append(OVERFLOW_MARKER)
-        data: dict[str, Any] = {
-            "workspace_uid": workspace_uid,
-            "task": task,
-            "recent_worklog": entries,
-            "omitted": omitted,
-        }
-
-        core = dict(data)
-        core["recent_worklog"] = []
-        if (
-            _context_size(
-                data=core,
-                task_id=request.task_id,
+        if is_planning_view(request.view):
+            return _planning_outcome(
+                raw=raw,
+                request=request,
+                task=task,
+                entries=entries,
+                overflow=overflow,
                 transport=transport,
                 workspace_uid=workspace_uid,
             )
-            > ENVELOPE_MAX_BYTES
-        ):
-            return _failure(code="context_too_large", message=CONTEXT_TOO_LARGE_MSG)
-
-        while (
-            _context_size(
-                data=data,
-                task_id=request.task_id,
-                transport=transport,
-                workspace_uid=workspace_uid,
-            )
-            > ENVELOPE_MAX_BYTES
-        ):
-            if not entries:
-                return _failure(
-                    code="context_too_large", message=CONTEXT_TOO_LARGE_MSG
-                )
-            entries.pop()
-            if not overflow:
-                overflow = True
-                data["omitted"] = list(OMITTED_CATEGORIES) + [OVERFLOW_MARKER]
-
-        outcome = _make_outcome(
-            data=data,
-            error_code=None,
-            error_message=None,
-            task_id=request.task_id,
+        return _core_outcome(
+            request=request,
+            task=task,
+            entries=entries,
+            overflow=overflow,
             transport=transport,
             workspace_uid=workspace_uid,
         )
-        render_outcome(outcome=outcome)
-        return outcome
     except Exception:
         return _failure(code="internal_error", message=INTERNAL_ERROR_MSG)

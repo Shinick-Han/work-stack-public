@@ -3,12 +3,14 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from workstack import cli
+from workstack.owner_authority import EXCLUSIVE_LOCAL_HELD, acquire_owner_authority
 from workstack.storage.canonical import canonical_json_bytes
 from workstack.storage.migration_conversion import convert_v3_documents
 
@@ -140,20 +142,43 @@ class CliV4BackupCharacterizationTests(unittest.TestCase):
             ])
 
     def test_released_nonstorage_command_still_constructs_v3_store_and_workstack(self) -> None:
-        store = mock.Mock()
+        from workstack.store import Store
+
+        data_dir = self.root / "released-v3"
+        runtime = self.root / "runtime"
+        runtime.mkdir()
         stack = mock.Mock()
         stack.list_tasks.return_value = []
-        with mock.patch.object(cli, "Store", return_value=store) as store_type:
+        acquires: list[tuple[str, bool, object]] = []
+
+        def counting_acquire(**kwargs: object):
+            authority = acquire_owner_authority(**kwargs)
+            acquires.append((authority.state, authority.lease is not None, authority))
+            return authority
+
+        with mock.patch.dict(os.environ, {"WORK_STACK_RUNTIME": str(runtime)}, clear=False):
+            isolated = Store(data_dir)
+            isolated.initialize()
             with mock.patch.object(cli, "WorkStack", return_value=stack) as stack_type:
-                status, payload = self.run_cli([
-                    "--data-dir", str(self.root / "released-v3"),
-                    "backlog", "list",
-                ])
+                with mock.patch(
+                    "workstack.cli_routing.acquire_owner_authority", counting_acquire
+                ):
+                    status, payload = self.run_cli([
+                        "--data-dir", str(data_dir),
+                        "backlog", "list",
+                    ])
 
         self.assertEqual(status, 0)
         self.assertEqual(payload, [])
-        store_type.assert_called_once_with(str(self.root / "released-v3"))
-        stack_type.assert_called_once_with(store, initialize=True)
+        self.assertEqual(len(acquires), 1)
+        state, held, authority = acquires[0]
+        self.assertEqual(state, EXCLUSIVE_LOCAL_HELD)
+        self.assertTrue(held, "ordinary dispatch must hold one writer lease")
+        self.assertTrue(authority._released)
+        stack_type.assert_called_once()
+        held_store = stack_type.call_args.args[0]
+        self.assertEqual(Path(held_store.root), data_dir.resolve())
+        stack_type.assert_called_once_with(held_store, initialize=True)
         stack.list_tasks.assert_called_once_with("active")
 
 

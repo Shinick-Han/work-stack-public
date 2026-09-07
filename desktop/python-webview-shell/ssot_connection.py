@@ -10,18 +10,48 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import shutil
 import socket
 import subprocess
+import sys
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+_SHELL_DIR = str(Path(__file__).resolve().parent)
+if _SHELL_DIR not in sys.path:
+    sys.path.insert(0, _SHELL_DIR)
+
+from remote_command_contract import (
+    LOOPBACK_HOST,
+    RemoteCommandError,
+    generate_session_token,
+    join_probe_command,
+    join_serve_command,
+    join_stop_owned_command,
+    require_remote_python,
+    token_hash,
+    validated_posix_path,
+)
+
+STABLE_PROBE_CODES = frozenset(
+    {
+        "SSH_AUTH_FAILED",
+        "REMOTE_PYTHON_NOT_FOUND",
+        "REMOTE_PYTHON_TOO_OLD",
+        "REMOTE_APP_MISMATCH",
+        "REMOTE_WORKSPACE_MISMATCH",
+        "REMOTE_LOCK_OWNED",
+        "REMOTE_PROTOCOL_INVALID",
+        "REMOTE_SESSION_TOKEN_INVALID",
+        "REMOTE_PYTHON_REQUIRED",
+        "R5_OWNERSHIP_NOT_IMPLEMENTED",
+    }
+)
+
 
 REMOTE_CONNECTION_FILE = "remote-connection.json"
 SSH_HOST_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,254}$")
-LOOPBACK_HOST = "127.0.0.1"
 
 
 @dataclass(frozen=True)
@@ -32,6 +62,7 @@ class RemoteConnectionProfile:
     local_forward_port: int
     workspace_id: str
     remote_port: int = 8765
+    remote_python: str | None = None
 
 
 def _validated_port(value: object, field: str) -> int:
@@ -41,16 +72,10 @@ def _validated_port(value: object, field: str) -> int:
 
 
 def _validated_remote_path(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value.startswith("/"):
-        raise ValueError(f"{field} must be an absolute Linux path")
-    if "\x00" in value or "\r" in value or "\n" in value:
-        raise ValueError(f"{field} contains an invalid control character")
-    if any(part in {".", ".."} for part in value.split("/")):
-        raise ValueError(f"{field} must not contain '.' or '..' path segments")
-    normalized = value.rstrip("/") or "/"
-    if normalized == "/":
-        raise ValueError(f"{field} must not be the Linux filesystem root")
-    return normalized
+    try:
+        return validated_posix_path(value, field)
+    except RemoteCommandError as error:
+        raise ValueError(str(error)) from error
 
 
 def _validated_workspace_id(value: object) -> str:
@@ -76,15 +101,16 @@ def _validate_remote_shape(raw: dict[object, object]) -> None:
         "remote_data_dir",
         "local_forward_port",
         "workspace_id",
+        "remote_python",
     }
     allowed = required | {"remote_port"}
-    missing = required - set(raw)
     unexpected = set(raw) - allowed
-    if missing:
-        raise RuntimeError(f"Remote connection draft is missing: {', '.join(sorted(missing))}")
     if unexpected:
         fields = ", ".join(sorted(str(field) for field in unexpected))
         raise RuntimeError(f"Remote connection draft has unsupported fields: {fields}")
+    missing = required - set(raw)
+    if missing:
+        raise RuntimeError(f"Remote connection draft is missing: {', '.join(sorted(missing))}")
 
 
 def _validated_alias(value: object) -> str:
@@ -107,8 +133,9 @@ def _normalize_remote_draft(raw: dict[object, object]) -> dict[str, object]:
             "local_forward_port": _validated_port(raw["local_forward_port"], "local_forward_port"),
             "workspace_id": _validated_workspace_id(raw["workspace_id"]),
             "remote_port": _validated_port(raw.get("remote_port", 8765), "remote_port"),
+            "remote_python": require_remote_python(raw["remote_python"]),
         }
-    except (AttributeError, ValueError) as error:
+    except (AttributeError, ValueError, RemoteCommandError) as error:
         raise RuntimeError(f"Remote connection draft is invalid: {error}") from error
 
 
@@ -134,6 +161,7 @@ def connection_profile_from_draft(draft: dict[str, object]) -> RemoteConnectionP
         local_forward_port=int(normalized["local_forward_port"]),
         workspace_id=str(normalized["workspace_id"]),
         remote_port=int(normalized["remote_port"]),
+        remote_python=str(normalized["remote_python"]),
     )
 
 
@@ -210,35 +238,23 @@ def profile_with_runtime_forward_port(profile: RemoteConnectionProfile) -> Remot
     return replace(profile, local_forward_port=runtime_port)
 
 
-def build_remote_server_command(profile: RemoteConnectionProfile) -> str:
-    runner = f"{profile.remote_app_dir}/run_work_stack.py"
-    identity_store = f"{profile.remote_data_dir}/store-meta.json"
-    workspace_store = f"{profile.remote_data_dir}/workspace.json"
-    arguments = [
-        "python3",
-        runner,
-        "--data-dir",
-        profile.remote_data_dir,
-        "graph",
-        "serve",
-        "--host",
-        LOOPBACK_HOST,
-        "--port",
-        str(profile.remote_port),
-        "--public-port",
-        str(profile.local_forward_port),
-        "--exit-with-parent",
-    ]
-    prefix = (
-        f"test -f {shlex.quote(identity_store)} && "
-        f"test -f {shlex.quote(workspace_store)} && "
-        f"cd -- {shlex.quote(profile.remote_app_dir)} && exec "
+def build_remote_server_command(
+    profile: RemoteConnectionProfile, session_token: object = None
+) -> str:
+    return join_serve_command(
+        remote_python=profile.remote_python,
+        remote_app_dir=profile.remote_app_dir,
+        remote_data_dir=profile.remote_data_dir,
+        remote_port=profile.remote_port,
+        local_forward_port=profile.local_forward_port,
+        session_token=session_token,
     )
-    return prefix + " ".join(shlex.quote(argument) for argument in arguments)
 
 
 def build_ssh_tunnel_command(
-    profile: RemoteConnectionProfile, ssh_executable: str
+    profile: RemoteConnectionProfile,
+    ssh_executable: str,
+    session_token: object = None,
 ) -> list[str]:
     return [
         ssh_executable,
@@ -257,24 +273,17 @@ def build_ssh_tunnel_command(
         f"{LOOPBACK_HOST}:{profile.local_forward_port}:{LOOPBACK_HOST}:{profile.remote_port}",
         "--",
         profile.ssh_host_alias,
-        build_remote_server_command(profile),
+        build_remote_server_command(profile, session_token=session_token),
     ]
 
 
 def build_ssh_check_command(
     profile: RemoteConnectionProfile, ssh_executable: str
 ) -> list[str]:
-    runner = f"{profile.remote_app_dir}/run_work_stack.py"
-    remote_check = " && ".join(
-        (
-            f"test -f {shlex.quote(runner)}",
-            f"test -d {shlex.quote(profile.remote_data_dir)}",
-            f"test -f {shlex.quote(profile.remote_data_dir + '/store-meta.json')}",
-            f"test -f {shlex.quote(profile.remote_data_dir + '/workspace.json')}",
-            "command -v python3 >/dev/null 2>&1",
-            f"cd -- {shlex.quote(profile.remote_app_dir)}",
-            f"python3 {shlex.quote(runner)} --help >/dev/null 2>&1",
-        )
+    remote_check = join_probe_command(
+        remote_python=profile.remote_python,
+        remote_app_dir=profile.remote_app_dir,
+        remote_data_dir=profile.remote_data_dir,
     )
     return [
         ssh_executable,
@@ -288,6 +297,32 @@ def build_ssh_check_command(
         "--",
         profile.ssh_host_alias,
         remote_check,
+    ]
+
+
+def build_ssh_stop_owned_command(
+    profile: RemoteConnectionProfile,
+    ssh_executable: str,
+    session_token: object,
+) -> list[str]:
+    remote_stop = join_stop_owned_command(
+        remote_python=profile.remote_python,
+        remote_app_dir=profile.remote_app_dir,
+        remote_data_dir=profile.remote_data_dir,
+        session_token=session_token,
+    )
+    return [
+        ssh_executable,
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "--",
+        profile.ssh_host_alias,
+        remote_stop,
     ]
 
 
@@ -310,14 +345,37 @@ def run_remote_connection_check(profile: RemoteConnectionProfile) -> None:
     _require_successful_check(result)
 
 
+def _stable_probe_code(text: str) -> str | None:
+    line = (text or "").strip().splitlines()
+    if not line:
+        return None
+    code = line[0].split(":", 1)[0].strip()
+    if code in STABLE_PROBE_CODES:
+        return code
+    return None
+
+
 def _require_successful_check(result: subprocess.CompletedProcess[str]) -> None:
     if result.returncode == 0:
         return
-    detail = (result.stderr or "").strip().splitlines()
-    suffix = f" Last SSH message: {detail[-1][:300]}" if detail else ""
+    stderr = result.stderr or ""
+    code = _stable_probe_code(stderr)
+    lowered = stderr.lower()
+    if (
+        code == "SSH_AUTH_FAILED"
+        or "host key" in lowered
+        or "permission denied" in lowered
+        or result.returncode == 255
+    ):
+        raise RuntimeError(
+            "SSH connection check failed. Confirm the host alias, known-host key, "
+            "SSH agent, remote paths, and remote_python."
+        )
+    if code:
+        raise RuntimeError(f"SSH connection check failed: {code}")
     raise RuntimeError(
         "SSH connection check failed. Confirm the host alias, known-host key, "
-        "SSH agent, remote paths, and python3." + suffix
+        "SSH agent, remote paths, and remote_python."
     )
 
 

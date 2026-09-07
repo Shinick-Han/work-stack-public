@@ -14,13 +14,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 
-from workstack.store import DEFAULTS
+from workstack.store_rosters import V3_SORTED_DOCUMENT_NAMES
 
 from .canonical import CanonicalJsonError, canonical_json_bytes, canonical_sha256
 
 
 V3_SOURCE_BACKUP_FORMAT = "workstack.v3-source-backup.v1"
-V3_SOURCE_FILES = tuple(sorted(DEFAULTS))
+V3_SOURCE_FILES = V3_SORTED_DOCUMENT_NAMES
 V3_SOURCE_BACKUP_MANIFEST = "manifest.json"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)

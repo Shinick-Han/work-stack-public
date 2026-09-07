@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, createIdempotencyKey } from '../../api/client'
+import { api, createIdempotencyKey, type TaskDeletionPreview, type TaskPermanentDeletionReceipt } from '../../api/client'
 import { Button } from '../../components/Primitives'
 import { Dialog } from '../../components/Dialog'
 import { TASK_PRIORITIES, TASK_STATUSES, type Task, type TaskPriority, type TaskStatus } from '../../domain/types'
@@ -8,34 +8,197 @@ import { getErrorMessage, priorityLabels, statusLabels } from '../../utils/forma
 interface TaskActionsDialogProps {
   open: boolean
   task: Task
+  workspaceUid: string
   onClose: () => void
-  onDeleted?: () => void
+  onPermanentlyDeleted?: (receipt: TaskPermanentDeletionReceipt) => void
   onSaved: (task: Task) => void
   onNotice: (message: string, tone?: 'success' | 'error') => void
 }
 
-export function TaskActionsDialog({ open, task, onClose, onDeleted, onSaved, onNotice }: TaskActionsDialogProps) {
+function ownedRemovalSummary(preview: TaskDeletionPreview) {
+  const owned = preview.removed_task_owned_records
+  return [
+    `${owned.activity_events} activity events`,
+    `${owned.idempotency_keys} idempotency keys`,
+    `${owned.notes} notes`,
+    `${owned.planning_events} planning events`,
+    `${owned.replies} replies`,
+    `${owned.work_sessions} work sessions`,
+    `${owned.worklog_entries} worklog entries`,
+  ].join(', ')
+}
+
+function DropTaskSection({
+  confirmation,
+  onCancel,
+  onConfirmation,
+  onOpen,
+  onSubmit,
+  open,
+  pending,
+  task,
+}: {
+  confirmation: string
+  onCancel: () => void
+  onConfirmation: (value: string) => void
+  onOpen: () => void
+  onSubmit: (event: FormEvent) => void
+  open: boolean
+  pending: string | null
+  task: Task
+}) {
+  if (task.status === 'dropped') {
+    return <p className="task-action-danger__deleted" role="status">This Task has already been dropped from active work.</p>
+  }
+  if (!open) {
+    return <Button disabled={pending !== null} onClick={onOpen} variant="danger">Drop Task…</Button>
+  }
+  return (
+    <form className="task-action-delete-confirmation" onSubmit={onSubmit}>
+      <label className="field">
+        <span>Type <strong>{task.id}</strong> to confirm</span>
+        <input
+          autoComplete="off"
+          autoFocus
+          disabled={pending !== null}
+          onChange={(event) => onConfirmation(event.target.value)}
+          value={confirmation}
+        />
+      </label>
+      <p>This appends a Dropped transition; it does not rewrite or erase prior records. The Task stays recoverable and filterable.</p>
+      <div>
+        <Button disabled={pending !== null} onClick={onCancel} type="button" variant="ghost">Cancel</Button>
+        <Button disabled={pending !== null || confirmation !== task.id} type="submit" variant="danger">
+          {pending === 'drop' ? 'Dropping…' : 'Drop Task'}
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+function PermanentDeleteSummary({ preview }: { preview: TaskDeletionPreview }) {
+  const modified = preview.modified_references
+  const captures = preview.unlinked_captures
+  return (
+    <dl className="task-action-list">
+      <div>
+        <dt>Task</dt>
+        <dd>{preview.task.id} · {preview.task.title}</dd>
+      </div>
+      <div>
+        <dt>Revision</dt>
+        <dd>{preview.task.revision}</dd>
+      </div>
+      <div>
+        <dt>UID</dt>
+        <dd>{preview.task.uid}</dd>
+      </div>
+      <div>
+        <dt>Owned records removed</dt>
+        <dd>{ownedRemovalSummary(preview)}</dd>
+      </div>
+      <div>
+        <dt>Modified references</dt>
+        <dd>{modified.notes.length} notes, {modified.tasks.length} tasks</dd>
+      </div>
+      <div>
+        <dt>Unlinked captures</dt>
+        <dd>{captures.actions} actions, {captures.captures.length} captures</dd>
+      </div>
+      <div>
+        <dt>Backup</dt>
+        <dd>{preview.backup.retention} · {preview.backup.location}</dd>
+      </div>
+    </dl>
+  )
+}
+
+function PermanentDeleteSection({
+  confirmation,
+  onCancel,
+  onConfirmation,
+  onStart,
+  onSubmit,
+  pending,
+  preview,
+  task,
+}: {
+  confirmation: string
+  onCancel: () => void
+  onConfirmation: (value: string) => void
+  onStart: () => void
+  onSubmit: (event: FormEvent) => void
+  pending: string | null
+  preview: TaskDeletionPreview | null
+  task: Task
+}) {
+  if (!preview) {
+    return (
+      <Button disabled={pending !== null} onClick={onStart} variant="danger">
+        {pending === 'preview' ? 'Loading preview…' : 'Delete permanently…'}
+      </Button>
+    )
+  }
+  return (
+    <form className="task-action-delete-confirmation" onSubmit={onSubmit}>
+      <PermanentDeleteSummary preview={preview} />
+      <label className="field">
+        <span>Type <strong>{task.id}</strong> to confirm permanent deletion</span>
+        <input
+          autoComplete="off"
+          autoFocus
+          disabled={pending !== null}
+          onChange={(event) => onConfirmation(event.target.value)}
+          value={confirmation}
+        />
+      </label>
+      <p>This permanently removes the Task. There is no Undo.</p>
+      <div>
+        <Button disabled={pending !== null} onClick={onCancel} type="button" variant="ghost">Cancel</Button>
+        <Button disabled={pending !== null || confirmation !== task.id} type="submit" variant="danger">
+          {pending === 'permanent-delete' ? 'Deleting permanently…' : 'Delete permanently'}
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+export function TaskActionsDialog({
+  open,
+  task,
+  workspaceUid,
+  onClose,
+  onPermanentlyDeleted,
+  onSaved,
+  onNotice,
+}: TaskActionsDialogProps) {
   const [note, setNote] = useState('')
   const [subtaskTitle, setSubtaskTitle] = useState('')
   const [subtaskPriority, setSubtaskPriority] = useState<TaskPriority>('P2')
-  const [deleteOpen, setDeleteOpen] = useState(false)
-  const [deleteConfirmation, setDeleteConfirmation] = useState('')
+  const [dropOpen, setDropOpen] = useState(false)
+  const [dropConfirmation, setDropConfirmation] = useState('')
+  const [preview, setPreview] = useState<TaskDeletionPreview | null>(null)
+  const [permanentConfirmation, setPermanentConfirmation] = useState('')
   const [pending, setPending] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const noteIntentKey = useRef<string | null>(null)
   const subtaskIntentKey = useRef<string | null>(null)
+  const permanentIntentKey = useRef<string | null>(null)
 
   useEffect(() => {
     if (!open) {
       setNote('')
       setSubtaskTitle('')
       setSubtaskPriority('P2')
-      setDeleteOpen(false)
-      setDeleteConfirmation('')
+      setDropOpen(false)
+      setDropConfirmation('')
+      setPreview(null)
+      setPermanentConfirmation('')
       setPending(null)
       setError(null)
       noteIntentKey.current = null
       subtaskIntentKey.current = null
+      permanentIntentKey.current = null
     }
   }, [open])
 
@@ -81,18 +244,69 @@ export function TaskActionsDialog({ open, task, onClose, onDeleted, onSaved, onN
     }
   }
 
-  const deleteTask = (event: FormEvent) => {
+  const dropTask = (event: FormEvent) => {
     event.preventDefault()
-    if (deleteConfirmation !== task.id || task.status === 'dropped') return
+    if (dropConfirmation !== task.id || task.status === 'dropped') return
     void run(
-      'delete',
+      'drop',
       () => api.patchTask(task.id, { status: 'dropped', revision: task.revision }),
-      `${task.id} deleted from active work; immutable history preserved`,
-      {
-        committed: (authoritative) => authoritative.status === 'dropped',
-        afterCommit: () => onDeleted?.(),
-      },
+      `${task.id} dropped from active work; immutable history preserved`,
+      { committed: (authoritative) => authoritative.status === 'dropped' },
     )
+  }
+
+  const restartPermanentPreview = () => {
+    permanentIntentKey.current = null
+    setPreview(null)
+    setPermanentConfirmation('')
+  }
+
+  const startPermanentPreview = async () => {
+    if (pending) return
+    permanentIntentKey.current ??= createIdempotencyKey()
+    const intentKey = permanentIntentKey.current
+    setPending('preview')
+    setError(null)
+    try {
+      const result = await api.previewTaskDeletion(
+        task.id,
+        {
+          revision: task.revision,
+          workspace_uid: workspaceUid,
+          client_request_id: intentKey,
+        },
+        intentKey,
+      )
+      setPreview(result)
+    } catch (reason) {
+      setError(getErrorMessage(reason))
+      onNotice(getErrorMessage(reason), 'error')
+    } finally {
+      setPending(null)
+    }
+  }
+
+  const commitPermanentDelete = async (event: FormEvent) => {
+    event.preventDefault()
+    const intentKey = permanentIntentKey.current
+    if (!preview || permanentConfirmation !== task.id || pending || !intentKey) return
+    setPending('permanent-delete')
+    setError(null)
+    try {
+      const receipt = await api.permanentlyDeleteTask(task.id, {
+        previewToken: preview.preview_token,
+        confirm: task.id,
+        revision: task.revision,
+        idempotencyKey: intentKey,
+      })
+      onNotice(`${task.id} permanently deleted`)
+      onPermanentlyDeleted?.(receipt)
+    } catch (reason) {
+      setError(getErrorMessage(reason))
+      onNotice(getErrorMessage(reason), 'error')
+    } finally {
+      setPending(null)
+    }
   }
 
   const addNote = (event: FormEvent) => {
@@ -179,39 +393,40 @@ export function TaskActionsDialog({ open, task, onClose, onDeleted, onSaved, onN
           </form>
         </section>
       </div>
-      <section aria-labelledby="task-actions-delete" className="task-action-danger">
+      <section aria-labelledby="task-actions-drop" className="task-action-danger">
         <div>
-          <h3 id="task-actions-delete">Delete Task</h3>
+          <h3 id="task-actions-drop">Drop Task</h3>
           <p>
             Remove this Task from active work without erasing its immutable SSOT and Activity history.
-            Related Tasks may remain blocked until their links are updated.
+            Related Tasks may remain blocked until their links are updated. Dropped work stays recoverable and filterable.
           </p>
         </div>
-        {task.status === 'dropped' ? (
-          <p className="task-action-danger__deleted" role="status">This Task has already been deleted from active work.</p>
-        ) : deleteOpen ? (
-          <form className="task-action-delete-confirmation" onSubmit={deleteTask}>
-            <label className="field">
-              <span>Type <strong>{task.id}</strong> to confirm</span>
-              <input
-                autoComplete="off"
-                autoFocus
-                disabled={pending !== null}
-                onChange={(event) => setDeleteConfirmation(event.target.value)}
-                value={deleteConfirmation}
-              />
-            </label>
-            <p>This appends a Dropped transition; it does not rewrite or erase prior records.</p>
-            <div>
-              <Button disabled={pending !== null} onClick={() => { setDeleteOpen(false); setDeleteConfirmation('') }} variant="ghost">Cancel</Button>
-              <Button disabled={pending !== null || deleteConfirmation !== task.id} type="submit" variant="danger">
-                {pending === 'delete' ? 'Deleting…' : 'Delete Task'}
-              </Button>
-            </div>
-          </form>
-        ) : (
-          <Button disabled={pending !== null} onClick={() => setDeleteOpen(true)} variant="danger">Delete Task…</Button>
-        )}
+        <DropTaskSection
+          confirmation={dropConfirmation}
+          onCancel={() => { setDropOpen(false); setDropConfirmation('') }}
+          onConfirmation={setDropConfirmation}
+          onOpen={() => setDropOpen(true)}
+          onSubmit={dropTask}
+          open={dropOpen}
+          pending={pending}
+          task={task}
+        />
+      </section>
+      <section aria-labelledby="task-actions-permanent" className="task-action-danger">
+        <div>
+          <h3 id="task-actions-permanent">Delete permanently</h3>
+          <p>Permanently remove this Task and its owned records after a read-only preview. This cannot be undone.</p>
+        </div>
+        <PermanentDeleteSection
+          confirmation={permanentConfirmation}
+          onCancel={restartPermanentPreview}
+          onConfirmation={setPermanentConfirmation}
+          onStart={() => { void startPermanentPreview() }}
+          onSubmit={(event) => { void commitPermanentDelete(event) }}
+          pending={pending}
+          preview={preview}
+          task={task}
+        />
       </section>
       {error ? <div className="inline-error" role="alert">{error}</div> : null}
     </Dialog>

@@ -2,7 +2,13 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
 
-import { MultiProfileConnectionCenter } from './MultiProfileConnectionCenter'
+import {
+  MultiProfileConnectionCenter,
+  activationReplacementKind,
+  decideActivationPersist,
+  decideMetadataSave,
+  registryWriteConflictError,
+} from './MultiProfileConnectionCenter'
 import { connectionRegistryHostMessageSchema } from './connectionRegistryHostBridge'
 
 interface WebViewMessageEvent extends Event { data?: unknown }
@@ -22,7 +28,38 @@ const localProfile = {
   expected_workspace_id: workspaceId,
   data_dir: 'C:/WorkStack/planning-ssot',
 }
+const remotePython = '/opt/workstack/venv/bin/python'
+const unrelatedId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const unrelatedWorkspaceId = '55555555-5555-4555-8555-555555555555'
+const staleSshId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+const unrelatedLocal = {
+  profile_id: unrelatedId,
+  label: 'Other local',
+  kind: 'local' as const,
+  enabled: true,
+  live_updates: true,
+  expected_workspace_id: unrelatedWorkspaceId,
+  data_dir: 'C:/WorkStack/other-ssot',
+}
+const staleSsh = {
+  profile_id: staleSshId,
+  label: 'Stale SSH',
+  kind: 'ssh' as const,
+  enabled: false,
+  live_updates: true,
+  expected_workspace_id: workspaceId,
+  ssh_host_alias: 'old-linux',
+  remote_app_dir: '/srv/old/app',
+  remote_data_dir: '/srv/old/ssot',
+  preferred_forward_port: 18766,
+  remote_port: 8765,
+}
 const registry = { schema_version: 1 as const, active_profile_id: profileId, profiles: [localProfile] }
+const replacementRegistry = {
+  schema_version: 1 as const,
+  active_profile_id: profileId,
+  profiles: [localProfile, staleSsh, unrelatedLocal],
+}
 
 function installHost() {
   let listener: ((event: WebViewMessageEvent) => void) | undefined
@@ -56,12 +93,43 @@ function success(request: { request_id: string; operation: string }, result: unk
   }
 }
 
-function loadRegistry(host: ReturnType<typeof installHost>) {
+function loadRegistry(
+  host: ReturnType<typeof installHost>,
+  loaded: { schema_version: 1; active_profile_id: string | null; profiles: readonly object[] } = registry,
+) {
   const request = lastRequest(host, 'get-registry')
-  const response = success(request, { registry, registry_digest: registryDigest })
+  const response = success(request, { registry: loaded, registry_digest: registryDigest })
   const parsed = connectionRegistryHostMessageSchema.safeParse(response)
   if (!parsed.success) throw new Error(JSON.stringify(parsed.error.issues))
   host.receive(response)
+}
+
+async function fillSshDraft(label = 'Work Linux') {
+  await userEvent.clear(screen.getByLabelText('Profile label'))
+  await userEvent.type(screen.getByLabelText('Profile label'), label)
+  await userEvent.type(screen.getByLabelText('SSH host alias'), 'work-linux')
+  await userEvent.type(screen.getByLabelText('Remote app directory'), '/srv/workstack/app')
+  await userEvent.type(screen.getByLabelText('Remote SSOT directory'), '/srv/workstack/ssot')
+}
+
+async function addTestedSsh(host: ReturnType<typeof installHost>, actualWorkspaceId = workspaceId) {
+  await userEvent.click(screen.getByRole('button', { name: 'Add SSH' }))
+  host.receive(success(lastRequest(host, 'discover-ssh-aliases'), { aliases: ['work-linux'] }))
+  await fillSshDraft()
+  await userEvent.type(screen.getByLabelText('Remote Python executable'), remotePython)
+  await userEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+  const testRequest = lastRequest(host, 'test-profile')
+  expect(testRequest.profile.remote_python).toBe(remotePython)
+  host.receive(success(testRequest, {
+    profile_id: testRequest.profile.profile_id,
+    kind: 'ssh',
+    status: 'ready',
+    actual_workspace_id: actualWorkspaceId,
+    product_version: '1.0.6',
+    protocol_version: 1,
+    proof_id: proofId,
+  }))
+  return testRequest.profile
 }
 
 afterEach(() => {
@@ -111,8 +179,11 @@ test('lists exact profile authority details and exposes accessible local and SSH
   const discovery = lastRequest(host, 'discover-ssh-aliases')
   host.receive(success(discovery, { aliases: ['work-linux', 'build-box'] }))
   expect(screen.getByLabelText('SSH host alias')).toHaveAttribute('list', 'workstack-ssh-aliases')
+  expect(screen.getByLabelText('Remote Python executable')).toHaveValue('')
   expect(screen.getByText('Remote SSH SSOT')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Test connection' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Save profile' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Save and activate after restart' })).toBeDisabled()
 
   await userEvent.tab()
   expect(document.activeElement).not.toBe(document.body)
@@ -490,4 +561,326 @@ test('ignores a reply whose request id does not match the pending removal', asyn
 
   expect(removeButton()).toBeVisible()
   expect(screen.queryByText(/Removed the saved connection profile/)).not.toBeInTheDocument()
+})
+
+test('keeps Test, Save, and Activate unavailable until Remote Python is a valid absolute path', async () => {
+  const host = installHost()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  render(<MultiProfileConnectionCenter activationEnabled onClose={vi.fn()} open enabled />)
+  loadRegistry(host)
+
+  await userEvent.click(screen.getByRole('button', { name: 'Add SSH' }))
+  host.receive(success(lastRequest(host, 'discover-ssh-aliases'), { aliases: ['work-linux'] }))
+  await fillSshDraft()
+  expect(screen.getByText(/Remote Python executable is required/)).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Test connection' })).toBeDisabled()
+
+  for (const invalid of ['python3', '/', '/usr/bin/../bin/python']) {
+    await userEvent.clear(screen.getByLabelText('Remote Python executable'))
+    await userEvent.type(screen.getByLabelText('Remote Python executable'), invalid)
+    expect(screen.getByRole('button', { name: 'Test connection' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save profile' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save and activate after restart' })).toBeDisabled()
+  }
+
+  await userEvent.clear(screen.getByLabelText('Remote Python executable'))
+  await userEvent.type(screen.getByLabelText('Remote Python executable'), remotePython)
+  expect(screen.getByRole('button', { name: 'Test connection' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Save profile' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Save and activate after restart' })).toBeDisabled()
+})
+
+test('loads a legacy SSH row that still needs Remote Python before retest', async () => {
+  const host = installHost()
+  render(<MultiProfileConnectionCenter activationEnabled onClose={vi.fn()} open enabled />)
+  loadTwoProfiles(host)
+
+  expect(within(screen.getByRole('list')).getByRole('button', { name: /Saved remote[\s\S]*Needs Remote Python/ })).toBeVisible()
+  await userEvent.click(within(screen.getByRole('list')).getByRole('button', { name: /Saved remote[\s\S]*Needs Remote Python/ }))
+  expect(screen.getByLabelText('Remote Python executable')).toHaveValue('')
+  expect(screen.getByText(/Remote Python executable is required/)).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Test connection' })).toBeDisabled()
+})
+
+test('replaces same-UID Local with SSH using one activate-profile candidate after confirmation', async () => {
+  const host = installHost()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  render(<MultiProfileConnectionCenter activationEnabled onClose={vi.fn()} open enabled />)
+  loadRegistry(host, replacementRegistry)
+
+  expect(within(screen.getByRole('list')).getByRole('button', { name: /Stale SSH[\s\S]*Needs Remote Python/ })).toHaveTextContent('Needs Remote Python')
+  const ssh = await addTestedSsh(host)
+  await userEvent.click(screen.getByRole('button', { name: 'Save and activate after restart' }))
+
+  expect(screen.getByRole('heading', { name: 'Replace the active workspace after restart' })).toBeVisible()
+  expect(screen.getAllByText('Local planning').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('Work Linux').length).toBeGreaterThan(0)
+  expect(screen.getAllByText(workspaceId).length).toBeGreaterThan(1)
+  expect(screen.getByText(/Restart is required after this save/)).toBeVisible()
+  expect(host.requests().some((request) => request.operation === 'activate-profile')).toBe(false)
+  expect(host.requests().some((request) => request.operation === 'save-registry')).toBe(false)
+
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm save and activate after restart' }))
+  const activate = lastRequest(host, 'activate-profile')
+  expect(host.requests().filter((request) => request.operation === 'activate-profile')).toHaveLength(1)
+  expect(host.requests().some((request) => request.operation === 'save-registry')).toBe(false)
+  expect(activate.registry.active_profile_id).toBe(ssh.profile_id)
+  expect(activate.registry.profiles.map((profile: { profile_id: string }) => profile.profile_id)).toEqual([
+    localProfile.profile_id, staleSsh.profile_id, unrelatedLocal.profile_id, ssh.profile_id,
+  ])
+  expect(activate.registry.profiles[0]).toEqual({ ...localProfile, enabled: false })
+  expect(activate.registry.profiles[1]).toEqual(staleSsh)
+  expect(activate.registry.profiles[2]).toEqual(unrelatedLocal)
+  expect(activate.registry.profiles[3]).toEqual({
+    ...ssh,
+    enabled: true,
+    expected_workspace_id: workspaceId,
+    remote_python: remotePython,
+  })
+  host.receive(success(activate, {
+    registry: activate.registry,
+    registry_digest: `sha256:${'e'.repeat(64)}`,
+    restart_required: true,
+  }))
+  expect(screen.getByText('Profile saved. Restart Work Stack to activate this workspace.')).toBeVisible()
+  expect(screen.queryByText(/switched now/i)).not.toBeInTheDocument()
+})
+
+test('keeps the active Local enabled when confirming a different-UID SSH activation', async () => {
+  const host = installHost()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  render(<MultiProfileConnectionCenter activationEnabled onClose={vi.fn()} open enabled />)
+  loadRegistry(host)
+
+  const ssh = await addTestedSsh(host, replacementWorkspaceId)
+  await userEvent.click(screen.getByRole('button', { name: 'Save and activate after restart' }))
+  expect(screen.getByRole('heading', { name: 'Activate a different workspace after restart' })).toBeVisible()
+  expect(screen.getAllByText(workspaceId).length).toBeGreaterThan(0)
+  expect(screen.getAllByText(replacementWorkspaceId).length).toBeGreaterThan(0)
+
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm save and activate after restart' }))
+  const activate = lastRequest(host, 'activate-profile')
+  expect(activate.registry.profiles[0]).toEqual(localProfile)
+  expect(activate.registry.profiles.at(-1)).toEqual({
+    ...ssh,
+    enabled: true,
+    expected_workspace_id: replacementWorkspaceId,
+    remote_python: remotePython,
+  })
+})
+
+test('writes nothing when the activation preview is cancelled', async () => {
+  const host = installHost()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  render(<MultiProfileConnectionCenter activationEnabled onClose={vi.fn()} open enabled />)
+  loadRegistry(host)
+
+  await addTestedSsh(host)
+  await userEvent.click(screen.getByRole('button', { name: 'Save and activate after restart' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+  expect(host.requests().some((request) => request.operation === 'activate-profile' || request.operation === 'save-registry')).toBe(false)
+  expect(screen.getByRole('button', { name: 'Save and activate after restart' })).toBeEnabled()
+})
+
+test('renders a public owner-lock code instead of raw remote stderr', async () => {
+  const host = installHost()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  render(<MultiProfileConnectionCenter activationEnabled onClose={vi.fn()} open enabled />)
+  loadRegistry(host)
+
+  await userEvent.click(screen.getByRole('button', { name: 'Add SSH' }))
+  host.receive(success(lastRequest(host, 'discover-ssh-aliases'), { aliases: ['work-linux'] }))
+  await fillSshDraft()
+  await userEvent.type(screen.getByLabelText('Remote Python executable'), remotePython)
+  await userEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+  const testRequest = lastRequest(host, 'test-profile')
+  host.receive({
+    type: 'workstack-connection-registry-response',
+    schema_version: 1,
+    request_id: testRequest.request_id,
+    operation: 'test-profile',
+    ok: false,
+    error: { code: 'remote_lock_owned', message: 'The remote workspace is owned by another live session.' },
+  })
+
+  const alert = screen.getByRole('alert')
+  expect(alert).toHaveTextContent('remote_lock_owned')
+  expect(alert).toHaveTextContent('The remote workspace is owned by another live session.')
+  expect(alert.textContent).not.toMatch(/pid=|id_rsa|token|C:\\secret/)
+  expect(screen.queryByText('Details')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Save and activate after restart' })).toBeDisabled()
+})
+
+test('uses local copy and Details PID while dropping secret host text and unknown detail fields', async () => {
+  const host = installHost()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  render(<MultiProfileConnectionCenter activationEnabled onClose={vi.fn()} open enabled />)
+  loadRegistry(host)
+
+  await userEvent.click(screen.getByRole('button', { name: 'Add SSH' }))
+  host.receive(success(lastRequest(host, 'discover-ssh-aliases'), { aliases: ['work-linux'] }))
+  await fillSshDraft()
+  await userEvent.type(screen.getByLabelText('Remote Python executable'), remotePython)
+  await userEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+  const testRequest = lastRequest(host, 'test-profile')
+  host.receive({
+    type: 'workstack-connection-registry-response',
+    schema_version: 1,
+    request_id: testRequest.request_id,
+    operation: 'test-profile',
+    ok: false,
+    error: {
+      code: 'remote_lock_owned',
+      message: 'REMOTE_LOCK_OWNED token=leak-me C:/secret/id_rsa stderr=/tmp/owner.log pid=9',
+      details: { pid: 4242 },
+    },
+  })
+
+  const rendered = document.body.textContent ?? ''
+  expect(screen.getByRole('alert')).toHaveTextContent('The remote workspace is owned by another live session.')
+  expect(screen.getByRole('alert')).not.toHaveTextContent('token=leak-me')
+  expect(screen.getByRole('alert')).not.toHaveTextContent('C:/secret/id_rsa')
+  expect(screen.getByText('Details')).toBeVisible()
+  expect(rendered).toMatch(/PID 4242/)
+  expect(rendered).not.toContain('token=leak-me')
+  expect(rendered).not.toContain('C:/secret/id_rsa')
+  expect(rendered).not.toContain('/tmp/owner.log')
+  expect(rendered).not.toContain('pid=9')
+  expect(rendered).not.toContain('stderr')
+})
+
+test('unknown host error codes fail closed to ssh_test_failed without leaking the payload', async () => {
+  const host = installHost()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  render(<MultiProfileConnectionCenter activationEnabled onClose={vi.fn()} open enabled />)
+  loadRegistry(host)
+
+  await userEvent.click(screen.getByRole('button', { name: 'Add SSH' }))
+  host.receive(success(lastRequest(host, 'discover-ssh-aliases'), { aliases: ['work-linux'] }))
+  await fillSshDraft()
+  await userEvent.type(screen.getByLabelText('Remote Python executable'), remotePython)
+  await userEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+  const testRequest = lastRequest(host, 'test-profile')
+  host.receive({
+    type: 'workstack-connection-registry-response',
+    schema_version: 1,
+    request_id: testRequest.request_id,
+    operation: 'test-profile',
+    ok: false,
+    error: {
+      code: 'owner_token_leak',
+      message: 'ssh -i C:/secret/id_rsa work-linux token=leak-me',
+    },
+  })
+
+  const rendered = document.body.textContent ?? ''
+  const alert = screen.getByRole('alert')
+  expect(alert).toHaveTextContent('ssh_test_failed')
+  expect(alert).toHaveTextContent('The SSH profile could not be verified.')
+  expect(rendered).not.toContain('owner_token_leak')
+  expect(rendered).not.toContain('token=leak-me')
+  expect(rendered).not.toContain('C:/secret/id_rsa')
+  expect(rendered).not.toContain('ssh -i')
+})
+
+test('registry_conflict invalidates proof and does not retry activation', async () => {
+  const host = installHost()
+  render(<MultiProfileConnectionCenter activationEnabled onClose={vi.fn()} open enabled />)
+  loadRegistry(host)
+
+  await userEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+  const testRequest = lastRequest(host, 'test-profile')
+  host.receive(success(testRequest, {
+    profile_id: profileId, kind: 'local', status: 'ready', actual_workspace_id: workspaceId,
+    product_version: '1.0.6', protocol_version: 1, proof_id: proofId,
+  }))
+  await userEvent.click(screen.getByRole('button', { name: 'Save and activate after restart' }))
+  const activate = lastRequest(host, 'activate-profile')
+  host.receive({
+    type: 'workstack-connection-registry-response',
+    schema_version: 1,
+    request_id: activate.request_id,
+    operation: 'activate-profile',
+    ok: false,
+    error: { code: 'registry_conflict', message: 'The connection registry changed. Reload and try again.' },
+  })
+
+  expect(screen.getByRole('alert')).toHaveTextContent('registry_conflict')
+  expect(screen.getByRole('button', { name: 'Save and activate after restart' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Save profile' })).toBeDisabled()
+  expect(host.requests().filter((request) => request.operation === 'activate-profile')).toHaveLength(1)
+})
+
+test('activationReplacementKind keeps same-id and missing-active as none', () => {
+  const next = { ...localProfile, profile_id: inactiveId }
+  expect(activationReplacementKind(undefined, next)).toBe('none')
+  expect(activationReplacementKind(localProfile, localProfile)).toBe('none')
+  expect(activationReplacementKind(localProfile, { ...next, expected_workspace_id: workspaceId })).toBe('same-authority')
+  expect(activationReplacementKind(localProfile, { ...next, expected_workspace_id: replacementWorkspaceId })).toBe('different-authority')
+})
+
+test('registryWriteConflictError preserves empty-registry save vs activate codes', () => {
+  const empty = { schema_version: 1 as const, active_profile_id: null, profiles: [] }
+  expect(registryWriteConflictError(empty, true)).toEqual({
+    code: 'operation_failed',
+    message: 'Your first profile must be saved and activated together.',
+  })
+  expect(registryWriteConflictError(empty, false)).toEqual({
+    code: 'registry_conflict',
+    message: 'Your first profile must be saved and activated together.',
+  })
+  expect(registryWriteConflictError(registry, true)).toEqual({
+    code: 'registry_conflict',
+    message: 'This profile conflicts with the current connection registry.',
+  })
+})
+
+test('decideMetadataSave requires a digest and otherwise emits a save candidate', () => {
+  expect(decideMetadataSave(registry, undefined, localProfile)).toEqual({ action: 'unavailable' })
+  const decision = decideMetadataSave(registry, registryDigest, { ...localProfile, label: 'Renamed' })
+  expect(decision).toEqual({
+    action: 'save',
+    expectedRegistryDigest: registryDigest,
+    candidate: {
+      schema_version: 1,
+      active_profile_id: profileId,
+      profiles: [{ ...localProfile, label: 'Renamed' }],
+    },
+  })
+})
+
+test('decideActivationPersist previews replacements and activates when no live peer is replaced', () => {
+  expect(decideActivationPersist(registry, undefined, localProfile, proofId, registryDigest)).toEqual({ action: 'unavailable' })
+  expect(decideActivationPersist(registry, registryDigest, localProfile, undefined, registryDigest)).toEqual({
+    action: 'error',
+    invalidateProof: true,
+    error: {
+      code: 'test_required',
+      message: 'Test this exact profile against the current registry before scheduling activation.',
+    },
+  })
+  const staleWrite = { ...staleSsh, remote_python: remotePython, enabled: true }
+  const same = decideActivationPersist(replacementRegistry, registryDigest, staleWrite, proofId, registryDigest)
+  expect(same.action).toBe('preview')
+  if (same.action === 'preview') {
+    expect(same.preview.kind).toBe('same-authority')
+    expect(same.preview.current).toEqual(localProfile)
+    expect(same.preview.next).toEqual(staleWrite)
+    expect(same.preview.candidate.profiles.find((profile) => profile.profile_id === profileId)?.enabled).toBe(false)
+    expect(same.preview.candidate.profiles.find((profile) => profile.profile_id === unrelatedId)?.enabled).toBe(true)
+  }
+  const differentWrite = { ...inactiveProfile, remote_python: remotePython, enabled: true }
+  const different = decideActivationPersist(twoProfileRegistry, registryDigest, differentWrite, proofId, registryDigest)
+  expect(different.action).toBe('preview')
+  if (different.action === 'preview') {
+    expect(different.preview.kind).toBe('different-authority')
+    expect(different.preview.candidate.profiles.find((profile) => profile.profile_id === profileId)?.enabled).toBe(true)
+  }
+  const self = decideActivationPersist(registry, registryDigest, { ...localProfile, enabled: true }, proofId, registryDigest)
+  expect(self.action).toBe('activate')
+  if (self.action === 'activate') {
+    expect(self.candidate.active_profile_id).toBe(profileId)
+    expect(self.candidate.profiles).toEqual([{ ...localProfile, enabled: true }])
+  }
 })

@@ -1,0 +1,226 @@
+/* Uses Work Stack theme variables from generated/theme-tokens.css (already on :root) and the
+   named product type steps from styles.css (--ws-type-*), so this panel cannot drift off the
+   hierarchy the sidebar and the Objective Hub share. */
+
+.outcome-navigator {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: fit-content;
+  max-width: min(18rem, 100%);
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-control-label);
+}
+
+.outcome-navigator__trigger {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.45rem;
+  min-height: var(--ws-control-min-height);
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--ws-control-border);
+  border-radius: 0.4rem;
+  background: var(--ws-control-bg);
+  color: var(--ws-text-primary);
+  font: inherit;
+  font-size: var(--ws-type-control-label);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.outcome-navigator__trigger[aria-expanded="true"] {
+  border-color: var(--ws-border-accent);
+}
+
+.outcome-navigator__summary {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-meta);
+  font-weight: 600;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outcome-navigator__trigger:focus-visible {
+  outline: 2px solid var(--ws-focus-ring);
+  outline-offset: 2px;
+}
+
+.outcome-navigator__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  box-sizing: border-box;
+  min-width: 16rem;
+  max-width: 18rem;
+  min-height: 0;
+  max-height: min(24rem, calc(100dvh - 5.5rem));
+  padding: 0.6rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--ws-surface-overlay);
+  border: 1px solid var(--ws-border-default);
+  border-radius: 0.5rem;
+  box-shadow: var(--ws-shadow-lg);
+}
+
+.outcome-navigator__panel[hidden] {
+  display: none;
+}
+
+.outcome-navigator__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.outcome-navigator__filters > button,
+.outcome-navigator__kr {
+  border: 1px solid var(--ws-control-border);
+  border-radius: 0.35rem;
+  background: var(--ws-control-bg);
+  color: var(--ws-text-secondary);
+  font: inherit;
+  font-size: var(--ws-type-control-label);
+  text-align: left;
+  cursor: pointer;
+}
+
+.outcome-navigator__filters > button {
+  min-height: var(--ws-control-min-height);
+  padding: 0.2rem 0.5rem;
+}
+
+.outcome-navigator__filters > button[aria-pressed="true"],
+.outcome-navigator__kr[aria-pressed="true"] {
+  border-color: var(--ws-selection-border);
+  background: var(--ws-surface-selected);
+  color: var(--ws-text-primary);
+}
+
+.outcome-navigator__filters > button:focus-visible,
+.outcome-navigator__kr:focus-visible,
+.outcome-navigator__objective > summary:focus-visible {
+  outline: 2px solid var(--ws-focus-ring);
+  outline-offset: 2px;
+}
+
+.outcome-navigator__empty {
+  margin: 0;
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-meta);
+}
+
+.outcome-navigator__objective {
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 0.4rem;
+  background: var(--ws-surface-base);
+  padding: 0.2rem 0.35rem;
+}
+
+.outcome-navigator__objective > summary {
+  cursor: pointer;
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-meta);
+  font-weight: 700;
+  letter-spacing: .07em;
+}
+
+.outcome-navigator__kr-list {
+  list-style: none;
+  margin: 0.35rem 0 0.2rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.outcome-navigator__kr {
+  display: grid;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0.35rem 0.4rem;
+}
+
+.outcome-navigator__kr strong {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-meta);
+  letter-spacing: .07em;
+}
+
+.outcome-navigator__kr-text {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-item-title);
+}
+
+.outcome-navigator__kr-counts,
+.outcome-navigator__kr-progress {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-meta);
+}
+
+.board-outcome-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.28rem;
+  margin: 0 0 0.35rem;
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-meta);
+}
+
+.board-outcome-breadcrumb__trail {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.board-outcome-breadcrumb__sep {
+  color: var(--ws-type-label-ink);
+}
+
+.board-outcome-breadcrumb button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ws-text-secondary);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.board-outcome-breadcrumb button:focus-visible {
+  outline: 2px solid var(--ws-focus-ring);
+  outline-offset: 2px;
+}
+
+.board-outcome-breadcrumb__unaligned,
+.board-outcome-breadcrumb__unresolved {
+  color: var(--ws-text-muted);
+}
+
+@media (max-width: 720px) {
+  .outcome-navigator {
+    max-width: none;
+    width: 100%;
+  }
+
+  .outcome-navigator__panel {
+    right: 0;
+    min-width: 0;
+    max-width: none;
+    max-height: min(70vh, calc(100dvh - 5rem));
+  }
+}

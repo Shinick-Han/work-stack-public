@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import unittest
@@ -10,7 +11,11 @@ from tests.test_profile_inspection import (
     MODULE,
     OTHER_WORKSPACE_ID,
     WORKSPACE_ID,
-    create_store,
+    _CORE_SEAM,
+    _REPORTS_EMPTY,
+    _SKIP_CORE,
+    REPORTS_DOCUMENT_NAME,
+    forbid_store_construction,
     local_candidate,
     ssh_candidate,
     tree_hashes,
@@ -97,6 +102,20 @@ class ProfileInspectionV4Test(unittest.TestCase):
             )
         self.assertEqual(raised.exception.code, "mixed_store")
 
+        reports_mixed = self.root / "reports-mixed"
+        shutil.copytree(self.v4, reports_mixed)
+        (reports_mixed / REPORTS_DOCUMENT_NAME).write_text(
+            json.dumps(_REPORTS_EMPTY), encoding="utf-8"
+        )
+        with forbid_store_construction():
+            with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                MODULE.inspect_profile(
+                    local_candidate(reports_mixed),
+                    enable_format_neutral=True,
+                    format_neutral_local_inspector=inspect_inactive_v4_authority,
+                )
+        self.assertEqual(raised.exception.code, "mixed_store")
+
         future = self.root / "future"
         shutil.copytree(self.v4, future)
         store = read_v4(future).store
@@ -111,9 +130,35 @@ class ProfileInspectionV4Test(unittest.TestCase):
             )
         self.assertEqual(raised.exception.code, "invalid_store")
 
+    def test_dangling_collection_markers_refuse_before_v4_inspector(self) -> None:
+        before = tree_hashes(self.root)
+        original_is_symlink = Path.is_symlink
+        markers = (MODULE.V3_DOCUMENT_NAMES | {REPORTS_DOCUMENT_NAME}) - {"workspace.json"}
+        for name in sorted(markers):
+            with self.subTest(marker=name):
+                marker = self.v4 / name
+                self.assertFalse(marker.exists())
+                inspector = mock.Mock(side_effect=AssertionError("v4 inspector reached"))
+
+                def dangling(path: Path) -> bool:
+                    return path == marker or original_is_symlink(path)
+
+                # Model dangling-link occupancy on hosts without symlink privileges.
+                with mock.patch.object(Path, "is_symlink", dangling):
+                    with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                        MODULE.inspect_profile(
+                            local_candidate(self.v4), enable_format_neutral=True,
+                            format_neutral_local_inspector=inspector,
+                        )
+                self.assertEqual(raised.exception.code, "mixed_store")
+                inspector.assert_not_called()
+        self.assertEqual(tree_hashes(self.root), before)
+
+    @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
     def test_v3_opt_in_reports_stable_exact_byte_roster_digest(self) -> None:
         data = self.root / "v3"
-        workspace_id = create_store(data, self.root / "runtime")
+        shutil.copytree(FIXTURE, data)
+        workspace_id = json.loads((data / "workspace.json").read_bytes())["id"]
         before = tree_hashes(self.root)
 
         first = MODULE.inspect_profile(

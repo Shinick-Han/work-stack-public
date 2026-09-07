@@ -236,3 +236,138 @@ describe('outcome coordinate rows', () => {
     expect(readSavedFilters()[0].outcomeFilter).toEqual(coordinate)
   })
 })
+
+function typedOutcomeRow(patch: Record<string, unknown> = {}) {
+  return {
+    id: 'outcome-ok',
+    name: 'Outcome view',
+    objectiveId: 'all',
+    priority: 'all',
+    readiness: 'all',
+    timing: 'all',
+    search: '',
+    status: 'open',
+    view: 'graph',
+    outcomeFilter: { kind: 'pair', objectiveId: 'O-A::B', keyResultId: 'KR-X' },
+    ...patch,
+  }
+}
+
+function validLegacyRow(patch: Record<string, unknown> = {}) {
+  const row: Record<string, unknown> = {
+    id: 'legacy-ok',
+    name: 'Legacy view',
+    objectiveId: 'all',
+    priority: 'all',
+    search: '',
+    status: 'all',
+    view: 'graph',
+    ...patch,
+  }
+  return row
+}
+
+test('keeps valid saved views when one stored record is malformed', () => {
+  const raw = JSON.stringify([
+    validLegacyRow(),
+    storedRow({ id: 'bad', token: 'no' }),
+    typedOutcomeRow(),
+  ])
+  window.localStorage.setItem(SAVED_FILTERS_KEY, raw)
+  const setItem = vi.spyOn(Storage.prototype, 'setItem')
+  const removeItem = vi.spyOn(Storage.prototype, 'removeItem')
+  try {
+    const rows = readSavedFilters()
+    expect(rows).toHaveLength(2)
+    expect(rows.map((row) => row.id)).toEqual(['legacy-ok', 'outcome-ok'])
+    expect(rows[0]).toMatchObject({
+      id: 'legacy-ok',
+      name: 'Legacy view',
+      readiness: 'all',
+      timing: 'all',
+      doneVisibility: 'show',
+      outcomeFilter: { kind: 'all' },
+    })
+    expect(rows[1]).toMatchObject({
+      id: 'outcome-ok',
+      outcomeFilter: { kind: 'pair', objectiveId: 'O-A::B', keyResultId: 'KR-X' },
+    })
+    expect(setItem).not.toHaveBeenCalled()
+    expect(removeItem).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem(SAVED_FILTERS_KEY)).toBe(raw)
+  } finally {
+    setItem.mockRestore()
+    removeItem.mockRestore()
+  }
+})
+
+test('preserves a valid row that follows an invalid sibling', () => {
+  window.localStorage.setItem(
+    SAVED_FILTERS_KEY,
+    JSON.stringify([
+      storedRow({ id: 'bad-first', token: 'no' }),
+      storedRow({ id: 'good-last' }),
+    ]),
+  )
+  const rows = readSavedFilters()
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({ id: 'good-last', doneVisibility: 'show' })
+  expect(window.localStorage.getItem(SAVED_FILTERS_KEY)).not.toBeNull()
+})
+
+test('removes a stored empty array because no valid row survives', () => {
+  window.localStorage.setItem(SAVED_FILTERS_KEY, '[]')
+  expect(readSavedFilters()).toEqual([])
+  expect(window.localStorage.getItem(SAVED_FILTERS_KEY)).toBeNull()
+})
+
+test('clears storage when every stored record is invalid', () => {
+  window.localStorage.setItem(
+    SAVED_FILTERS_KEY,
+    JSON.stringify([
+      storedRow({ id: 'bad-a', token: 'no' }),
+      storedRow({ id: 'bad-b', extra: true }),
+    ]),
+  )
+  expect(readSavedFilters()).toEqual([])
+  expect(window.localStorage.getItem(SAVED_FILTERS_KEY)).toBeNull()
+})
+
+test('clears storage for invalid JSON, a non-array root, and an oversized array', () => {
+  window.localStorage.setItem(SAVED_FILTERS_KEY, '{')
+  expect(readSavedFilters()).toEqual([])
+  expect(window.localStorage.getItem(SAVED_FILTERS_KEY)).toBeNull()
+
+  window.localStorage.setItem(SAVED_FILTERS_KEY, JSON.stringify({ id: 'not-an-array' }))
+  expect(readSavedFilters()).toEqual([])
+  expect(window.localStorage.getItem(SAVED_FILTERS_KEY)).toBeNull()
+
+  const oversized = Array.from({ length: 13 }, (_, index) => storedRow({ id: `over-${index}` }))
+  window.localStorage.setItem(SAVED_FILTERS_KEY, JSON.stringify(oversized))
+  expect(readSavedFilters()).toEqual([])
+  expect(window.localStorage.getItem(SAVED_FILTERS_KEY)).toBeNull()
+})
+
+test('invalid optional coordinates still normalize instead of quarantining the row', () => {
+  const raw = JSON.stringify([
+    storedRow({ id: 'opt-done', doneVisibility: 'nonsense' }),
+    storedRow({ id: 'bad', token: 'no' }),
+    storedRow({ id: 'opt-outcome', outcomeFilter: { kind: 'pair', objectiveId: '' } }),
+  ])
+  window.localStorage.setItem(SAVED_FILTERS_KEY, raw)
+  const rows = readSavedFilters()
+  expect(rows.map((row) => row.id)).toEqual(['opt-done', 'opt-outcome'])
+  expect(rows[0].doneVisibility).toBe('default')
+  expect(rows[1].outcomeFilter).toEqual({ kind: 'all' })
+  expect(window.localStorage.getItem(SAVED_FILTERS_KEY)).toBe(raw)
+})
+
+test('rejects an invalid requested write instead of persisting siblings', () => {
+  writeSavedFilters([storedRow({ id: 'kept' }) as never])
+  expect(() => writeSavedFilters([
+    storedRow({ id: 'ok' }) as never,
+    storedRow({ id: 'bad', token: 'no' }) as never,
+  ])).toThrow()
+  expect(readSavedFilters()).toHaveLength(1)
+  expect(readSavedFilters()[0].id).toBe('kept')
+})

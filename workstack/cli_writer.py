@@ -61,6 +61,7 @@ LEGACY_TASK_NOTE_FIELDS = ("date", "text")
 # The product's own supported revision bound, reused rather than restated, so a
 # revision the owner could never hold is refused before any mutation is sent.
 from .store import MAX_REVISION  # noqa: E402  (constant only; no Store is built)
+from .outcome_write_invariant import serialize_task_patch  # noqa: E402
 
 LEGACY_OBJECTIVE_FIELDS = (
     "id",
@@ -1031,7 +1032,7 @@ def forward_task_status(
             )
         return (
             "{}/{}".format(TASKS_PATH, quote(normalized_id, safe="")),
-            {"status": status, "revision": baseline_revision},
+            serialize_task_patch({"status": status, "revision": baseline_revision}),
             lambda payload: _task_status_from(
                 payload,
                 normalized_id,

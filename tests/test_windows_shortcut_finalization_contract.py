@@ -59,17 +59,76 @@ def _powershell() -> str:
     raise unittest.SkipTest("no PowerShell host is available")
 
 
-def _run_powershell(script: str, *, timeout: int = 120) -> subprocess.CompletedProcess:
-    """Run a bounded PowerShell snippet in a contained temporary directory.
+# Redirected PowerShell stdout follows inherited [Console]::OutputEncoding
+# (cp949 under python -B, UTF-8 under python -X utf8). Pin UTF-8 no BOM and
+# decode bytes strictly so both Python modes agree. $null = swallows the
+# property-set object that would otherwise contaminate JSON/AST stdout.
+_PWSH_UTF8_STDIO = (
+    "$null = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false\n"
+    "$OutputEncoding = [Console]::OutputEncoding\n"
+)
 
-    The snippet is written to a file so quoting cannot corrupt it. The child
-    inherits this process's contained environment.
-    """
+
+def _with_pwsh_utf8_stdio(body: str) -> str:
+    text = body.lstrip("\ufeff")
+    if not text.lstrip().lower().startswith("param"):
+        return _PWSH_UTF8_STDIO + text
+    start = text.lower().find("param")
+    paren = text.find("(", start)
+    if paren < 0:
+        return _PWSH_UTF8_STDIO + text
+    depth = 0
+    in_single = False
+    in_double = False
+    for index, char in enumerate(text[paren:], start=paren):
+        if in_single:
+            in_single = char != "'"
+            continue
+        if in_double:
+            in_double = char != '"'
+            continue
+        if char == "'":
+            in_single = True
+        elif char == '"':
+            in_double = True
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[: index + 1] + "\n" + _PWSH_UTF8_STDIO + text[index + 1 :]
+    return _PWSH_UTF8_STDIO + text
+
+
+def _decode_pwsh_utf8(raw: bytes | None) -> str:
+    data = b"" if raw is None else raw
+    if not data:
+        return ""
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _diagnostic_pwsh_text(raw: bytes | None) -> str:
+    data = b"" if raw is None else raw
+    if not data:
+        return ""
+    try:
+        return _decode_pwsh_utf8(data)
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
+def _invoke_powershell(
+    script: str,
+    *,
+    timeout: int = 120,
+    environment: dict | None = None,
+) -> subprocess.CompletedProcess:
+    """Run a bounded PowerShell snippet with deterministic UTF-8 stdio."""
 
     with tempfile.TemporaryDirectory() as scratch:
         script_path = Path(scratch) / "probe.ps1"
-        script_path.write_text(script, encoding="utf-8-sig")
-        return subprocess.run(
+        script_path.write_text(_with_pwsh_utf8_stdio(script), encoding="utf-8-sig")
+        completed = subprocess.run(
             [
                 _powershell(),
                 "-NoProfile",
@@ -79,11 +138,27 @@ def _run_powershell(script: str, *, timeout: int = 120) -> subprocess.CompletedP
                 "-File",
                 str(script_path),
             ],
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             timeout=timeout,
             cwd=scratch,
+            env=environment,
         )
+    try:
+        stdout = _decode_pwsh_utf8(completed.stdout)
+        stderr = _decode_pwsh_utf8(completed.stderr)
+    except UnicodeDecodeError:
+        raise AssertionError(
+            "PowerShell output was not UTF-8 after stdio pinning: stdout="
+            + _diagnostic_pwsh_text(completed.stdout)
+            + " | stderr="
+            + _diagnostic_pwsh_text(completed.stderr)
+        ) from None
+    return subprocess.CompletedProcess(completed.args, completed.returncode, stdout, stderr)
+
+
+def _run_powershell(script: str, *, timeout: int = 120) -> subprocess.CompletedProcess:
+    return _invoke_powershell(script, timeout=timeout)
 
 
 def _text(value: object) -> str:
@@ -204,17 +279,7 @@ class ParsedSourceFacts(unittest.TestCase):
     def setUpClass(cls) -> None:
         environment = dict(os.environ)
         environment["WORKSTACK_PROBE_SOURCE_ROOT"] = str(_source_root())
-        with tempfile.TemporaryDirectory() as scratch:
-            script_path = Path(scratch) / "ast.ps1"
-            script_path.write_text(_AST_PROBE, encoding="utf-8-sig")
-            completed = subprocess.run(
-                [
-                    _powershell(), "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass", "-File", str(script_path),
-                ],
-                capture_output=True, text=True, timeout=180,
-                cwd=scratch, env=environment,
-            )
+        completed = _invoke_powershell(_AST_PROBE, timeout=180, environment=environment)
         cls.facts = _parse_json_result(completed)
 
     # -- helper shape ------------------------------------------------------
@@ -493,8 +558,7 @@ class SubstitutedFinalizationEffects(unittest.TestCase):
             (install_root / ICON_RELATIVE.replace("\\", "/")).write_bytes(b"icon")
             state_root = Path(scratch) / "state"
             state_root.mkdir()
-            script_path = Path(scratch) / "effect.ps1"
-            script_path.write_text(
+            script = (
                 _EFFECT_PREAMBLE
                 + "\n$installRoot = '{}'\n$stateRoot = '{}'\n".format(
                     str(install_root).replace("'", "''"), str(state_root).replace("'", "''")
@@ -503,17 +567,9 @@ class SubstitutedFinalizationEffects(unittest.TestCase):
                     str(Path(scratch) / "StartMenu").replace("'", "''"),
                     str(Path(scratch) / "Desktop").replace("'", "''"),
                 )
-                + body,
-                encoding="utf-8-sig",
+                + body
             )
-            completed = subprocess.run(
-                [
-                    _powershell(), "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass", "-File", str(script_path),
-                ],
-                capture_output=True, text=True, timeout=180,
-                cwd=scratch, env=environment,
-            )
+            completed = _invoke_powershell(script, timeout=180, environment=environment)
         return _parse_json_result(completed)
 
     SUCCESS_BODY = r"""
@@ -687,16 +743,7 @@ foreach ($case in @(
 
         environment = dict(os.environ)
         environment["WORKSTACK_PROBE_SOURCE_ROOT"] = str(_source_root() / "no-such-root")
-        with tempfile.TemporaryDirectory() as scratch:
-            script_path = Path(scratch) / "refuse.ps1"
-            script_path.write_text(_EFFECT_PREAMBLE, encoding="utf-8-sig")
-            completed = subprocess.run(
-                [
-                    _powershell(), "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass", "-File", str(script_path),
-                ],
-                capture_output=True, text=True, timeout=120, cwd=scratch, env=environment,
-            )
+        completed = _invoke_powershell(_EFFECT_PREAMBLE, timeout=120, environment=environment)
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("REFUSE", completed.stdout + completed.stderr)
 
@@ -983,16 +1030,7 @@ class SubstitutedApplyFlow(unittest.TestCase):
                 environment["WORKSTACK_PROBE_INSTALL_ROOT"] = install_root
             else:
                 environment.pop("WORKSTACK_PROBE_INSTALL_ROOT", None)
-            script_path = Path(scratch) / "flow.ps1"
-            script_path.write_text(_APPLY_FLOW_PROBE, encoding="utf-8-sig")
-            completed = subprocess.run(
-                [
-                    _powershell(), "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass", "-File", str(script_path),
-                ],
-                capture_output=True, text=True, timeout=240,
-                cwd=scratch, env=environment,
-            )
+            completed = _invoke_powershell(_APPLY_FLOW_PROBE, timeout=240, environment=environment)
             return _parse_json_result(completed)
 
     @staticmethod
@@ -1013,15 +1051,7 @@ class SubstitutedApplyFlow(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             environment["WORKSTACK_PROBE_SCRATCH"] = scratch
             environment["WORKSTACK_PROBE_FAULTS"] = "{}"
-            script_path = Path(scratch) / "flow.ps1"
-            script_path.write_text(_APPLY_FLOW_PROBE, encoding="utf-8-sig")
-            completed = subprocess.run(
-                [
-                    _powershell(), "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass", "-File", str(script_path),
-                ],
-                capture_output=True, text=True, timeout=240, cwd=scratch, env=environment,
-            )
+            completed = _invoke_powershell(_APPLY_FLOW_PROBE, timeout=240, environment=environment)
         self.assertNotEqual(completed.returncode, 0, "an absent source must refuse")
         self.assertIn("REFUSE", completed.stdout + completed.stderr)
 
@@ -1042,15 +1072,7 @@ class SubstitutedApplyFlow(unittest.TestCase):
             with tempfile.TemporaryDirectory() as scratch:
                 environment["WORKSTACK_PROBE_SCRATCH"] = scratch
                 environment["WORKSTACK_PROBE_FAULTS"] = "{}"
-                script_path = Path(scratch) / "flow.ps1"
-                script_path.write_text(_APPLY_FLOW_PROBE, encoding="utf-8-sig")
-                completed = subprocess.run(
-                    [
-                        _powershell(), "-NoProfile", "-NonInteractive",
-                        "-ExecutionPolicy", "Bypass", "-File", str(script_path),
-                    ],
-                    capture_output=True, text=True, timeout=240, cwd=scratch, env=environment,
-                )
+                completed = _invoke_powershell(_APPLY_FLOW_PROBE, timeout=240, environment=environment)
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("required function node is missing", completed.stdout + completed.stderr)
 
@@ -1347,15 +1369,7 @@ class StagedIconGuard(unittest.TestCase):
         environment["WORKSTACK_PROBE_SOURCE_ROOT"] = str(_source_root())
         with tempfile.TemporaryDirectory() as scratch:
             environment["WORKSTACK_PROBE_SCRATCH"] = scratch
-            script_path = Path(scratch) / "staged.ps1"
-            script_path.write_text(_STAGED_ICON_PROBE, encoding="utf-8-sig")
-            completed = subprocess.run(
-                [
-                    _powershell(), "-NoProfile", "-NonInteractive",
-                    "-ExecutionPolicy", "Bypass", "-File", str(script_path),
-                ],
-                capture_output=True, text=True, timeout=180, cwd=scratch, env=environment,
-            )
+            completed = _invoke_powershell(_STAGED_ICON_PROBE, timeout=180, environment=environment)
             cls.facts = _parse_json_result(completed)
 
     def _case(self, name: str) -> dict:
@@ -1426,14 +1440,12 @@ class HelperPreflightContract(unittest.TestCase):
                                         "function Get-UnexpectedShortcut {")
                 (windows / name).write_text(text, encoding="utf-8-sig")
             probe_file = root / "probe.ps1"
-            probe_file.write_text(probe, encoding="utf-8-sig")
-            wrapper = root / "wrapper.ps1"
-            wrapper.write_text(
+            probe_file.write_text(_with_pwsh_utf8_stdio(probe), encoding="utf-8-sig")
+            wrapper = (
                 "$global:ProbeSentinel=0\n$failure=''\n"
                 + "try { & '" + str(probe_file).replace("'", "''")
                 + "' | Out-Null } catch {$failure=$_.Exception.Message}\n"
-                + "@{sentinel=$global:ProbeSentinel;failure=$failure} | ConvertTo-Json -Compress\n",
-                encoding="utf-8-sig",
+                + "@{sentinel=$global:ProbeSentinel;failure=$failure} | ConvertTo-Json -Compress\n"
             )
             environment = dict(os.environ)
             environment.update(
@@ -1443,10 +1455,7 @@ class HelperPreflightContract(unittest.TestCase):
             )
             environment.pop("WORKSTACK_PROBE_INSTALL_ROOT", None)
             (root / "effects").mkdir()
-            completed = subprocess.run(
-                [_powershell(), "-NoProfile", "-NonInteractive", "-File", str(wrapper)],
-                cwd=scratch, env=environment, capture_output=True, text=True, timeout=120,
-            )
+            completed = _invoke_powershell(wrapper, timeout=120, environment=environment)
             return _parse_json_result(completed)
 
     def test_each_harness_rejects_a_top_level_statement_before_it_runs(self) -> None:

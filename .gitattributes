@@ -24,8 +24,3 @@ desktop/python-webview-shell/generated/theme_tokens.py text eol=lf
 # self-extracting PowerShell payload as opaque bytes so its SHA-256 sidecar
 # remains valid after cloning on Windows.
 installer/WorkStack-Setup-*.ps1 binary
-
-# Sidecar digest and update manifest are size-pinned by the public release.
-# Preserve repository bytes exactly so Windows autocrlf cannot change them.
-installer/WorkStack-Setup-*.ps1.sha256 -text
-installer/workstack-update.json -text

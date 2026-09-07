@@ -40,13 +40,15 @@ ROOT_SOURCE_SUFFIXES = {".json", ".md", ".py", ".ps1", ".sh", ".toml", ".txt", "
 # each text rule, every --deny term, the invalid-UTF-8 check and the symbolic-link
 # refusal apply to it unchanged. It is NOT an exempt asset, and admitting it grants
 # nothing to any other suffix - binaries such as .ico remain unexpected file types.
+# .js, .mjs and .cjs are ordinary scanned UTF-8 source text under the same rules;
+# admitting .cjs grants no content exemption and does not move it to a binary list.
 # .cs is ordinary source text. .jsonl is UTF-8 text AND a JSON value per nonblank
 # line: the raw text rules and every --deny term scan the complete original text as
 # usual, and each nonblank line is additionally parsed and put through the same
 # recursive structured rules, with line-specific diagnostics. Blank lines are
 # insignificant separators; no line or value is silently discarded.
 TEXT_SUFFIXES = {
-    "", ".cs", ".css", ".html", ".js", ".json", ".jsonl", ".md", ".mjs", ".py", ".ps1",
+    "", ".cjs", ".cs", ".css", ".html", ".js", ".json", ".jsonl", ".md", ".mjs", ".py", ".ps1",
     ".sha256", ".sh", ".svg", ".toml", ".ts", ".tsx", ".txt", ".yaml", ".yml",
 }
 BLOCKED_SUFFIXES = {
@@ -123,30 +125,59 @@ FROZEN_FIXTURE_HASHES = {
     Path("contracts/workstack-conduit-v1/safety/snapshot-v1-safety-cases.json"):
         "480a16ccb18338417c718aca6e7729037431a201a464b6298e0819a0c349f92f",
 }
-# ONE reviewed synthetic fixture occurrence, and SOURCE policy only.
+# Individually reviewed synthetic fixture occurrences, and SOURCE policy only.
+#
+# Each entry buys EXACTLY ONE rule match in ONE named method of ONE named file. The
+# table is a list of separately reviewed exceptions, not a growing permission: adding
+# a row is a review decision, and no row widens any other.
 #
 # Source versus tree is a real boundary, not a convenience. SOURCE mode audits the
 # working repository, whose own negative tests must contain the poisoned values they
 # prove never reach the wire; deleting that literal would delete the evidence. TREE
 # mode audits a prepared export of arbitrary bytes for publication, where no such
-# provenance exists, so it stays strict and refuses this very path - the allowance
+# provenance exists, so it stays strict and refuses these very paths - the table
 # below is never consulted there.
 #
-# The allowance is bound to the exact complete source of one uniquely named method,
-# hashed after LF normalization, and then to the single personal-path match found
+# Each allowance is bound to the exact complete source of one uniquely named method,
+# hashed after LF normalization, and then to the single match of its own rule found
 # inside that verified extent. Only that one span is permitted. A changed literal, a
 # changed function body, a duplicated or shadowed class/method, a parse error, the
 # same literal anywhere else in the same file, a relocated occurrence or any other
 # filename all lose it. Every other rule and every --deny term keeps scanning the
-# ORIGINAL complete text, including this extent. This is a reviewed exception for one
-# audited fixture; it is not a claim that arbitrary Python, or any whole file,
-# function or test directory, is safe.
+# ORIGINAL complete text, including these extents. These are reviewed exceptions for
+# individually audited fixtures; they are not a claim that arbitrary Python, or any
+# whole file, function or test directory, is safe.
 APPROVED_SOURCE_FIXTURES = {
     Path("tests/test_sse_event_delivery.py"): (
         "SnapshotFieldContract",
         "test_poisoned_store_fields_never_reach_the_wire",
         "personal path",
         "83c77b1afad623b59ff87be030a4d06049df5f52b18ab28eada21e453736cbc5",
+    ),
+    # A bare address is what GFM autolinks, so the reporting preview can only
+    # prove it stays literal by holding the real shape once. The literal is bound
+    # to a single `bare_address` name inside this one method and reused there.
+    Path("tests/test_reporting.py"): (
+        "DailyReportPreviewTest",
+        "test_gfm_constructs_stay_literal_in_fact_contexts",
+        "email address",
+        "fb0f3414f844ebeeabc348d188246c2171e3abd243ccdaf1f12170bcb9b30ff1",
+    ),
+}
+# Individually reviewed whole-file SOURCE test fixtures. Distinct from
+# APPROVED_SOURCE_FIXTURES: those bind one hashed Python method to one span.
+# These bind one exact TS test file, after LF-normalized UTF-8 identity, to
+# exactly the recorded matches of one named rule. Only those spans are
+# permitted, only in SOURCE policy, and only while the complete scanned text
+# still hashes to the recorded digest. A changed byte, an appended address, a
+# duplicate copy, a moved path, or tree mode all lose it. Every other rule and
+# every --deny term still scans the original complete text. Adding a row is a
+# review decision; no row widens any other file, suffix, or rule.
+APPROVED_SOURCE_TEST_FILES = {
+    Path("frontend/src/features/review/DailyReportDocument.test.tsx"): (
+        "email address",
+        "87ab44219e9cc112007d01f50586db2d189a2916c838533d0f650d93a4766a13",
+        ((353, 371), (1238, 1256)),
     ),
 }
 # Exactly one known, already released, generated and brand-checked binary, under
@@ -496,7 +527,7 @@ def _method_extent(text: str, class_name: str, method_name: str) -> tuple[int, i
 
 
 def _approved_span(relative: Path, text: str) -> tuple[str, int, int] | None:
-    """The single rule occurrence one reviewed synthetic fixture is allowed to hold."""
+    """The single rule occurrence this file's reviewed synthetic fixture may hold."""
 
     entry = APPROVED_SOURCE_FIXTURES.get(Path(relative.as_posix()))
     if entry is None:
@@ -515,16 +546,50 @@ def _approved_span(relative: Path, text: str) -> tuple[str, int, int] | None:
     return label, start + matches[0].start(), start + matches[0].end()
 
 
+def _approved_test_file_spans(
+    relative: Path, text: str
+) -> tuple[tuple[str, int, int], ...]:
+    """Reviewed whole-file SOURCE spans for one exact TS test fixture, or none."""
+
+    entry = APPROVED_SOURCE_TEST_FILES.get(Path(relative.as_posix()))
+    if entry is None:
+        return ()
+    label, digest, spans = entry
+    if hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest() != digest:
+        return ()
+    found = tuple(
+        (match.start(), match.end()) for match in TEXT_RULES[label].finditer(text)
+    )
+    if found != spans:
+        return ()
+    return tuple((label, start, end) for start, end in spans)
+
+
+def _text_allowances(
+    relative: Path, text: str, source_mode: bool
+) -> set[tuple[str, int, int]]:
+    """Reviewed SOURCE spans for this file, or none under tree policy."""
+
+    if not source_mode:
+        return set()
+    allowed: set[tuple[str, int, int]] = set()
+    span = _approved_span(relative, text)
+    if span is not None:
+        allowed.add(span)
+    allowed.update(_approved_test_file_spans(relative, text))
+    return allowed
+
+
 def _text_rule_findings(
-    relative: Path, text: str, allowed: tuple[str, int, int] | None
+    relative: Path, text: str, allowed: set[tuple[str, int, int]]
 ) -> Iterator[str]:
-    """Every text rule matching the original complete text outside its one allowance."""
+    """Every text rule matching the original complete text outside reviewed spans."""
 
     for label, pattern in TEXT_RULES.items():
         if _rule_allowed(relative, label):
             continue
         for match in pattern.finditer(text):
-            if allowed == (label, match.start(), match.end()):
+            if (label, match.start(), match.end()) in allowed:
                 continue
             yield label
             break
@@ -606,7 +671,7 @@ def audit(root: Path, denied: Iterable[str], mode: str = "auto") -> list[str]:
             continue
         if _exact_frozen_fixture(relative, path):
             continue
-        allowed = _approved_span(relative, text) if source_mode else None
+        allowed = _text_allowances(relative, text, source_mode)
         findings.extend(
             "{}: {}".format(relative, label)
             for label in _text_rule_findings(relative, text, allowed)

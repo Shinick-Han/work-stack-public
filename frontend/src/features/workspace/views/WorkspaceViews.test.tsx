@@ -20,9 +20,10 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { WorkspacePage } from '../WorkspacePage'
-import { Profiler, StrictMode } from 'react'
+import { Profiler, StrictMode, cloneElement, isValidElement, type ReactElement, type ReactNode } from 'react'
 import { useUrlState } from '../../../app/urlState'
 import { projectCompletedTaskVisibility } from './completedTaskVisibility'
+import { localViewStorageKey } from './localViewState'
 import { filterCoordinates, readSavedFilters, sameSavedFilter, writeSavedFilters, SAVED_FILTERS_KEY } from '../savedFilters'
 import { task as baseTask, workspace as populatedWorkspace } from '../../../test/fixtures'
 import type { AppUrlState, Task, WorkspaceProjection } from '../../../domain/types'
@@ -38,6 +39,43 @@ vi.mock('../../../api/client', () => ({
     getTask: vi.fn(async () => ({ task: baseTask, contexts: [], replies: [] })),
   },
 }))
+
+vi.mock('recharts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('recharts')>()
+  const flattenLeaves = (nodes: Array<{ taskId?: string; children?: unknown[] }>): Array<Record<string, unknown>> => {
+    const leaves: Array<Record<string, unknown>> = []
+    for (const node of nodes) {
+      if (node.taskId) leaves.push(node)
+      else if (node.children) leaves.push(...flattenLeaves(node.children as never))
+    }
+    return leaves
+  }
+  return {
+    ...actual,
+    ResponsiveContainer: ({ children }: { children: ReactNode }) => children,
+    Treemap: (props: { data?: Array<{ taskId?: string; children?: unknown[] }>; content?: ReactElement }) => {
+      const leaves = flattenLeaves(props.data ?? [])
+      return (
+        <div data-testid="treemap-page-chart">
+          {leaves.map((leaf) => (
+            <svg key={String(leaf.taskId)}>
+              {isValidElement(props.content)
+                ? cloneElement(props.content, {
+                    ...leaf,
+                    x: 0,
+                    y: 0,
+                    width: 220,
+                    height: 100,
+                    depth: 2,
+                  } as never)
+                : null}
+            </svg>
+          ))}
+        </div>
+      )
+    },
+  }
+})
 
 const state: AppUrlState = {
   surface: 'workspace',
@@ -1394,37 +1432,50 @@ describe('GN4 the Page outcome coordinate reaches the rendered Graph', () => {
     return { updateUrl }
   }
 
+  const krName = (objectiveId: string) => `Highlight key result ${objectiveId} K1`
   const krFrame = (objectiveId: string) =>
-    screen.getByRole('button', { name: `Filter by key result ${objectiveId} K1` }).closest('.wsv-graph-node')
+    screen.getByRole('button', { name: krName(objectiveId) }).closest('.wsv-graph-node')
 
-  it('starts with the URL pair already selected on the rendered key result', () => {
+  async function settleGraph(objectiveId = 'O-1') {
+    await screen.findByRole('button', { name: krName(objectiveId) })
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+  }
+
+  it('starts with the URL pair already selected on the rendered key result', async () => {
     renderGraph({ outcomeFilter: { kind: 'pair', objectiveId: 'O-2', keyResultId: 'K1' } })
+    await settleGraph('O-2')
 
     expect(krFrame('O-2')).toHaveClass('is-selected')
     expect(krFrame('O-1')).not.toHaveClass('is-selected')
   })
 
-  it('activating a key result emits exactly that pair AND renders it selected', () => {
+  it('activating a key result highlights locally without writing the page outcome filter', async () => {
     const { updateUrl } = renderGraph()
+    await settleGraph()
     expect(krFrame('O-2')).not.toHaveClass('is-selected')
 
     // A plain click on the product control: a synthetic pointer sequence would
     // also reach the canvas pan handler, which is not what this test is about.
-    fireEvent.click(screen.getByRole('button', { name: 'Filter by key result O-2 K1' }))
+    fireEvent.click(screen.getByRole('button', { name: krName('O-2') }))
 
-    expect(updateUrl).toHaveBeenCalledWith(
-      expect.objectContaining({ outcomeFilter: { kind: 'pair', objectiveId: 'O-2', keyResultId: 'K1' } }),
-    )
-    expect(updateUrl).toHaveBeenCalledTimes(1)
+    expect(updateUrl).not.toHaveBeenCalled()
+    expect(krFrame('O-2')).toHaveClass('is-selected')
+    expect(krFrame('O-1')).not.toHaveClass('is-selected')
+
+    fireEvent.click(screen.getByRole('button', { name: krName('O-2') }))
+    expect(updateUrl).not.toHaveBeenCalled()
+    expect(krFrame('O-2')).not.toHaveClass('is-selected')
   })
 
   it.each([
     ['all', { kind: 'all' } as const],
     ['unassigned', { kind: 'unassigned' } as const],
-  ])('%s leaves every rendered key result unselected', (_name, outcomeFilter) => {
+  ])('%s leaves every rendered key result unselected', async (_name, outcomeFilter) => {
     renderGraph({ outcomeFilter })
+    await settleGraph()
 
-    for (const button of screen.getAllByRole('button', { name: /^Filter by key result/ })) {
+    for (const button of screen.getAllByRole('button', { name: /^Highlight key result/ })) {
       expect(button.closest('.wsv-graph-node')).not.toHaveClass('is-selected')
     }
   })
@@ -1538,5 +1589,202 @@ describe('TE-F1 the real Page chain generates the Note to Note reference', () =>
       expect(liveIds).toContain(edge.target)
     }
     expect(JSON.stringify(workspace.notes)).toBe(before)
+  })
+})
+
+describe('Board session retention through the shared projection', () => {
+  it('renders one Done card after a successful Board completion under default visibility', async () => {
+    const openTask = makeTask({ id: 'T-A', status: 'started', dependencies: [], objective_ids: [] })
+    const doneTask = makeTask({ id: 'T-A', status: 'done', revision: 2, dependencies: [], objective_ids: [] })
+    const onChange = vi.fn().mockResolvedValue(undefined)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <WorkspacePage
+          isRefreshing={false}
+          onChangeTaskStatus={onChange}
+          onCreateTask={vi.fn()}
+          onOpenObjectives={vi.fn()}
+          onRefresh={vi.fn()}
+          state={{ ...state, view: 'board' }}
+          updateUrl={vi.fn()}
+          workspace={workspaceWith([openTask])}
+        />
+      </QueryClientProvider>,
+    )
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Change T-A status' }),
+      'done',
+    )
+    rerender(
+      <QueryClientProvider client={client}>
+        <WorkspacePage
+          isRefreshing={false}
+          onChangeTaskStatus={onChange}
+          onCreateTask={vi.fn()}
+          onOpenObjectives={vi.fn()}
+          onRefresh={vi.fn()}
+          state={{ ...state, view: 'board' }}
+          updateUrl={vi.fn()}
+          workspace={workspaceWith([doneTask])}
+        />
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getAllByRole('article', { name: 'T-A: Task T-A' })).toHaveLength(1)
+    expect(screen.getByRole('combobox', { name: 'Change T-A status' })).toHaveValue('done')
+    expect(screen.getByText(/1 of 1 tasks shown/)).toBeVisible()
+    expect(document.querySelector('[data-containment="board-track"]')).not.toBeNull()
+    expect(screen.getByRole('article', { name: 'T-A: Task T-A' }).closest('[data-containment="board-column"]'))
+      .not.toBeNull()
+  })
+})
+
+describe('Graph local-view persistence through the Page chain', () => {
+  it('threads workspace identity and resets only the graph envelope', async () => {
+    const workspaceId = populatedWorkspace.workspace.id
+    const graphKey = localViewStorageKey(workspaceId, 'graph')
+    const tableKey = localViewStorageKey(workspaceId, 'table')
+    window.localStorage.setItem(graphKey, JSON.stringify({
+      schemaVersion: 1,
+      workspaceId,
+      view: 'graph',
+      revision: 1,
+      writtenAt: 1,
+      writerId: 'peer',
+      data: {
+        positions: [{ id: 'flow|task|T-A', x: 40, y: 50, touchedAt: 1 }],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+    }))
+    window.localStorage.setItem(tableKey, '{"keep":true}')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const onChangeTaskStatus = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <WorkspacePage
+          isRefreshing={false}
+          onChangeTaskStatus={onChangeTaskStatus}
+          onCreateTask={vi.fn()}
+          onOpenObjectives={vi.fn()}
+          onRefresh={vi.fn()}
+          state={{ ...state, view: 'graph' }}
+          updateUrl={vi.fn()}
+          workspace={workspaceWith(mixedTasks)}
+        />
+      </QueryClientProvider>,
+    )
+
+    const reset = await screen.findByRole('button', { name: 'Reset graph layout' })
+    expect(await screen.findByRole('button', { name: 'Move task T-A' })).toBeInTheDocument()
+    await userEvent.click(reset)
+    expect(window.localStorage.getItem(graphKey)).toBeNull()
+    expect(window.localStorage.getItem(tableKey)).toBe('{"keep":true}')
+    expect(onChangeTaskStatus).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    fetchSpy.mockRestore()
+  })
+})
+
+describe('Table local-view persistence through the Page chain', () => {
+  it('threads workspace identity and restores Manual order after remount', async () => {
+    const workspaceId = populatedWorkspace.workspace.id
+    const tableKey = localViewStorageKey(workspaceId, 'table')
+    const graphKey = localViewStorageKey(workspaceId, 'graph')
+    window.localStorage.setItem(graphKey, '{"keep":true}')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const onChangeTaskStatus = vi.fn()
+    const workspace = workspaceWith([
+      makeTask({ id: 'T-A', status: 'open', title: 'Alpha' }),
+      makeTask({ id: 'T-B', status: 'open', title: 'Beta' }),
+      makeTask({ id: 'T-C', status: 'open', title: 'Gamma' }),
+    ])
+    const pageProps = {
+      isRefreshing: false,
+      onChangeTaskStatus,
+      onCreateTask: vi.fn(),
+      onOpenObjectives: vi.fn(),
+      onRefresh: vi.fn(),
+      state: { ...state, view: 'table' as const },
+      updateUrl: vi.fn(),
+      workspace,
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={client}>
+        <WorkspacePage {...pageProps} />
+      </QueryClientProvider>,
+    )
+
+    await screen.findByRole('button', { name: 'Manual order' })
+    await userEvent.click(screen.getByRole('button', { name: 'Manual order' }))
+    screen.getByRole('button', { name: 'Reorder T-A' }).focus()
+    await userEvent.keyboard('{Enter}{End}{Enter}')
+    expect(JSON.parse(window.localStorage.getItem(tableKey) as string).data.order).toEqual(['T-B', 'T-C', 'T-A'])
+    expect(onChangeTaskStatus).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem(graphKey)).toBe('{"keep":true}')
+
+    view.unmount()
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <WorkspacePage {...pageProps} />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByRole('button', { name: 'Manual order' })).toHaveAttribute('aria-pressed', 'true')
+    const rows = screen.getAllByRole('row').slice(1)
+    expect(rows.map((row) => row.getAttribute('data-task-id'))).toEqual(['T-B', 'T-C', 'T-A'])
+    fetchSpy.mockRestore()
+  })
+})
+
+describe('Treemap local-view persistence through the Page chain', () => {
+  it('threads workspace identity and resets only the treemap envelope', async () => {
+    const workspaceId = populatedWorkspace.workspace.id
+    const treemapKey = localViewStorageKey(workspaceId, 'treemap')
+    const tableKey = localViewStorageKey(workspaceId, 'table')
+    const graphKey = localViewStorageKey(workspaceId, 'graph')
+    window.localStorage.setItem(treemapKey, JSON.stringify({
+      schemaVersion: 1,
+      workspaceId,
+      view: 'treemap',
+      revision: 1,
+      writtenAt: 1,
+      writerId: 'peer',
+      data: {
+        orders: [{ scope: 'legacy/operations', ids: ['T-D', 'T-A'], touchedAt: 1 }],
+      },
+    }))
+    window.localStorage.setItem(tableKey, '{"keep":true}')
+    window.localStorage.setItem(graphKey, '{"keep":true}')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const onChangeTaskStatus = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <WorkspacePage
+          isRefreshing={false}
+          onChangeTaskStatus={onChangeTaskStatus}
+          onCreateTask={vi.fn()}
+          onOpenObjectives={vi.fn()}
+          onRefresh={vi.fn()}
+          state={{ ...state, view: 'treemap' }}
+          updateUrl={vi.fn()}
+          workspace={workspaceWith(mixedTasks)}
+        />
+      </QueryClientProvider>,
+    )
+
+    const reset = await screen.findByRole('button', { name: 'Reset treemap order' })
+    expect(await screen.findByRole('button', { name: 'Move task T-A' })).toBeInTheDocument()
+    await userEvent.click(reset)
+    expect(window.localStorage.getItem(treemapKey)).toBeNull()
+    expect(window.localStorage.getItem(tableKey)).toBe('{"keep":true}')
+    expect(window.localStorage.getItem(graphKey)).toBe('{"keep":true}')
+    expect(onChangeTaskStatus).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    fetchSpy.mockRestore()
   })
 })

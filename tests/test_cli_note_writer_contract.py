@@ -97,6 +97,18 @@ class _IsolatedRuntimeCase(unittest.TestCase):
         self.store = Store(self.root)
         self.stack = WorkStack(self.store)
         self.workspace_uid = self.store.load("workspace.json")["id"]
+        self._advertised_owner_lease = None
+
+    def hold_advertised_owner_lock(self) -> None:
+        """A1: leftover server_info without a held lock is exclusive-local."""
+
+        if self._advertised_owner_lease is not None:
+            return
+        lease = self.store.try_acquire_writer_lease()
+        self.assertIsNotNone(
+            lease, "advertising a running owner requires a real writer lock"
+        )
+        self._advertised_owner_lease = lease
 
     def _restore_environment(self) -> None:
         for name, value in self._saved_environment.items():
@@ -106,6 +118,10 @@ class _IsolatedRuntimeCase(unittest.TestCase):
                 os.environ[name] = value
 
     def tearDown(self) -> None:
+        lease = self._advertised_owner_lease
+        self._advertised_owner_lease = None
+        if lease is not None:
+            self.store.release_writer_lease(lease)
         self.temporary.cleanup()
 
     def run_cli(self, *arguments: str) -> tuple[int, str, str]:
@@ -390,6 +406,7 @@ class _ScriptedOwnerCase(_IsolatedRuntimeCase):
             sync_state=self.sync_state,
         )
         self.addCleanup(self.owner.close)
+        self.hold_advertised_owner_lock()
         self.store.write_server_info("127.0.0.1", self.owner.port)
 
     def assert_owner_was_contacted(self) -> None:
@@ -734,6 +751,7 @@ class NoteWriterUnusableOwnerMetadataContract(_IsolatedRuntimeCase):
 
     def test_metadata_that_is_a_directory_fails_closed(self) -> None:
         info = self._info_path()
+        self.hold_advertised_owner_lock()
         info.mkdir()
 
         code, _out, err = self.run_cli("Owner metadata is a directory")
@@ -747,6 +765,7 @@ class NoteWriterUnusableOwnerMetadataContract(_IsolatedRuntimeCase):
 
     def test_empty_metadata_file_fails_closed(self) -> None:
         info = self._info_path()
+        self.hold_advertised_owner_lock()
         info.write_bytes(b"")
 
         code, _out, _err = self.run_cli("Owner metadata is empty")
@@ -758,6 +777,7 @@ class NoteWriterUnusableOwnerMetadataContract(_IsolatedRuntimeCase):
 
     def test_malformed_metadata_fails_closed_and_is_not_cleaned_up(self) -> None:
         info = self._info_path()
+        self.hold_advertised_owner_lock()
         info.write_text("{not json", encoding="utf-8")
 
         code, _out, err = self.run_cli("Malformed owner metadata")
@@ -770,6 +790,7 @@ class NoteWriterUnusableOwnerMetadataContract(_IsolatedRuntimeCase):
 
     def test_structurally_invalid_metadata_fails_closed(self) -> None:
         info = self._info_path()
+        self.hold_advertised_owner_lock()
         info.write_text(
             json.dumps({"version": 1, "host": "10.0.0.5", "port": 8765}), encoding="utf-8"
         )
@@ -788,6 +809,7 @@ class NoteWriterUnusableOwnerMetadataContract(_IsolatedRuntimeCase):
         probe.bind(("127.0.0.1", 0))
         dead_port = probe.getsockname()[1]
         probe.close()
+        self.hold_advertised_owner_lock()
         self.store.write_server_info("127.0.0.1", dead_port)
 
         code, _out, err = self.run_cli("Stale owner")

@@ -23,6 +23,14 @@ import {
   workSessionSchema,
   workspaceSchema,
 } from '../domain/schemas'
+import {
+  dailyReportPreviewResponseSchema,
+  type DailyReportPreviewResponse,
+} from '../domain/reporting'
+import {
+  weeklyReportPreviewResponseSchema,
+  type WeeklyReportPreviewResponse,
+} from '../domain/weeklyReporting'
 import type {
   ApprovedReplyInput,
   CheckpointAudit,
@@ -105,6 +113,88 @@ async function capturePost<T>(path: string, body: unknown, schema: z.ZodType<T>)
 }
 
 const unknownResultSchema = z.unknown()
+
+/** Omit unset `key_result_refs`; keep `[]` as an explicit clear. Backend is authoritative. */
+export function serializeTaskPatch(patch: TaskPatch): Record<string, unknown> {
+  const body: Record<string, unknown> = { ...patch }
+  if (!Object.prototype.hasOwnProperty.call(patch, 'key_result_refs') || patch.key_result_refs === undefined) {
+    delete body.key_result_refs
+  }
+  return body
+}
+
+const deletionPreviewSchema = z.object({
+  backup: z.object({
+    created: z.boolean(),
+    location: z.string(),
+    retention: z.string(),
+  }).strict(),
+  modified_references: z.object({
+    notes: z.array(z.string()),
+    tasks: z.array(z.string()),
+  }).strict(),
+  preview_token: z.string().min(1),
+  removed_task_owned_records: z.object({
+    activity_events: z.number().int().nonnegative(),
+    idempotency_keys: z.number().int().nonnegative(),
+    notes: z.number().int().nonnegative(),
+    planning_events: z.number().int().nonnegative(),
+    replies: z.number().int().nonnegative(),
+    work_sessions: z.number().int().nonnegative(),
+    worklog_entries: z.number().int().nonnegative(),
+  }).strict(),
+  store_digest: z.string().min(1),
+  task: z.object({
+    id: z.string().min(1),
+    revision: z.number().int(),
+    title: z.string(),
+    uid: z.string().min(1),
+  }).strict(),
+  unlinked_captures: z.object({
+    actions: z.number().int().nonnegative(),
+    captures: z.array(z.string()),
+  }).strict(),
+}).strict()
+
+const deletionReceiptSchema = z.object({
+  backup: z.object({
+    digest: z.string().min(1),
+    location: z.string().min(1),
+  }).strict(),
+  deleted: z.literal(true),
+  display_id_high_water: z.number().int(),
+  generation: z.number().int(),
+  revision: z.number().int(),
+  task_id: z.string().min(1),
+  task_uid: z.string().min(1),
+}).strict()
+
+export type TaskDeletionPreview = z.infer<typeof deletionPreviewSchema>
+export type TaskPermanentDeletionReceipt = z.infer<typeof deletionReceiptSchema>
+
+const PERMANENT_DELETE_UNKNOWN =
+  'Permanent deletion may have committed. Retry the same request unchanged to verify it without duplication.'
+
+function assertPreviewMatchesTask(
+  taskId: string,
+  revision: number,
+  preview: TaskDeletionPreview,
+): TaskDeletionPreview {
+  if (preview.task.id !== taskId || preview.task.revision !== revision) {
+    throw new ApiError(409, 'preview_stale', 'preview_stale')
+  }
+  return preview
+}
+
+function assertDeletionReceipt(
+  taskId: string,
+  receipt: TaskPermanentDeletionReceipt,
+): TaskPermanentDeletionReceipt {
+  if (receipt.task_id !== taskId || receipt.deleted !== true) {
+    throw new CommitUnknownError(PERMANENT_DELETE_UNKNOWN, receipt)
+  }
+  return receipt
+}
 
 export const api = {
   getSyncStatus(): Promise<SyncStatus> {
@@ -208,6 +298,33 @@ export const api = {
   getReview(date: string, days = 7): Promise<ReviewProjection> {
     const query = new URLSearchParams({ date, days: String(days) })
     return getData(`/api/v1/review?${query}`, reviewProjectionSchema)
+  },
+
+  getDailyReportPreview(date: string, workspaceUid: string): Promise<DailyReportPreviewResponse> {
+    const query = new URLSearchParams({
+      date,
+      template: 'daily-v1',
+      workspace_uid: workspaceUid,
+    })
+    return getData(
+      `/api/v1/reports/daily-preview?${query}`,
+      dailyReportPreviewResponseSchema({ date, workspace_uid: workspaceUid }),
+    )
+  },
+
+  getWeeklyReportPreview(endDate: string, workspaceUid: string): Promise<WeeklyReportPreviewResponse> {
+    const query = new URLSearchParams({
+      end_date: endDate,
+      template: 'weekly-v1',
+      workspace_uid: workspaceUid,
+    })
+    return getData(
+      `/api/v1/reports/weekly-preview?${query}`,
+      weeklyReportPreviewResponseSchema({
+        end_date: endDate,
+        workspace_uid: workspaceUid,
+      }),
+    )
   },
 
   checkinReview(
@@ -335,9 +452,47 @@ export const api = {
     return mutateData(
       `/api/v1/tasks/${encodeURIComponent(taskId)}`,
       'PATCH',
-      patch,
+      serializeTaskPatch(patch),
       taskMutationSchema,
     )
+  },
+
+  previewTaskDeletion(
+    taskId: string,
+    input: { revision: number; workspace_uid: string; client_request_id: string },
+    idempotencyKey: string,
+  ): Promise<TaskDeletionPreview> {
+    return mutateData(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/deletion-preview`,
+      'POST',
+      {
+        revision: input.revision,
+        workspace_uid: input.workspace_uid,
+        client_request_id: input.client_request_id,
+      },
+      deletionPreviewSchema,
+      idempotencyKey,
+      false,
+    ).then((preview) => assertPreviewMatchesTask(taskId, input.revision, preview))
+  },
+
+  permanentlyDeleteTask(
+    taskId: string,
+    input: {
+      previewToken: string
+      confirm: string
+      revision: number
+      idempotencyKey: string
+    },
+  ): Promise<TaskPermanentDeletionReceipt> {
+    return mutateIdempotent(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}`,
+      { preview_token: input.previewToken, confirm: input.confirm },
+      deletionReceiptSchema,
+      input.idempotencyKey,
+      PERMANENT_DELETE_UNKNOWN,
+      { ifMatch: String(input.revision), method: 'DELETE' },
+    ).then((receipt) => assertDeletionReceipt(taskId, receipt))
   },
 
   addTaskNote(

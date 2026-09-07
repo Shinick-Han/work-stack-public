@@ -95,7 +95,12 @@ class InstallerLocalAuthorityTest(unittest.TestCase):
                 shutil.copytree(ROOT / name, package / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
             shell = package / "desktop/python-webview-shell"
             shell.mkdir(parents=True)
-            for name in ("connection_registry.py", "local_workspace_rebind.py", "profile_inspection.py"):
+            for name in (
+                "connection_registry.py",
+                "local_workspace_rebind.py",
+                "profile_inspection.py",
+                "remote_command_contract.py",
+            ):
                 shutil.copy2(ROOT / "desktop/python-webview-shell" / name, shell / name)
             windows = package / "scripts/windows"
             windows.mkdir(parents=True)
@@ -146,14 +151,39 @@ class InstallerLocalAuthorityTest(unittest.TestCase):
     def save_registry(self):
         self.registry_path.write_text(json.dumps(self.registry), encoding="utf-8")
 
-    def manifest(self):
+    def write_v5(self, root):
+        from workstack.store_document_validation import REPORTS_DEFAULT
+        meta_path = root / "store-meta.json"
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        metadata["store_schema_version"] = 5
+        metadata["migrations"]["reports"] = {
+            "id": "workstack.reports.v5", "origin": "fresh", "source_sha256": None,
+        }
+        meta_path.write_text(json.dumps(metadata), encoding="utf-8")
+        (root / "reports.json").write_text(json.dumps(REPORTS_DEFAULT), encoding="utf-8")
+
+    def manifest(self, schema=3, root=None, require_files=True):
         from workstack.store import _validate_store_manifest_header, _validate_store_manifest_files, _validate_store_manifest_tasks
-        value = dict(version=1,workspace_id=UID,store_schema_version=3,generation=0,
-                     files={name:"sha256:"+hashlib.sha256((self.b/name).read_bytes()).hexdigest() for name in self.resolver.inspection.STORE_FILES},tasks={})
-        _validate_store_manifest_header(value)
-        _validate_store_manifest_files(value["files"])
+        root = self.b if root is None else root
+        roster = self.resolver.supported_roster(schema)
+        files = {}
+        for name in roster:
+            path = root / name
+            if path.is_file():
+                files[name] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+            elif require_files:
+                raise FileNotFoundError(name)
+            else:
+                files[name] = "sha256:" + "0" * 64
+        tasks = self.resolver._task_semantics(json.loads((root / "backlog.json").read_text(encoding="utf-8")))
+        value = dict(version=1, workspace_id=UID, store_schema_version=schema, generation=0, files=files, tasks=tasks)
+        admitted = _validate_store_manifest_header(value)
+        _validate_store_manifest_files(value["files"], admitted)
         _validate_store_manifest_tasks(value["tasks"])
         return value
+
+    def false_task_baseline(self, schema=3):
+        return {**self.manifest(schema=schema), "tasks": {"T-0001": {"revision": 0, "digest": "sha256:" + "0" * 64}}}
 
     def baseline_path(self):
         return self.resolver.derive_store_runtime_root(self.b) / self.resolver.STORE_MANIFEST_NAME
@@ -425,6 +455,61 @@ class InstallerLocalAuthorityTest(unittest.TestCase):
                 self.assertEqual(count[0], 2)
                 self.assertEqual(hashes(self.case), expected)
                 target.write_bytes(original)
+
+    def test_genuine_v5_absent_and_matching_baseline_are_accepted_without_writes(self):
+        self.write_v5(self.b)
+        self.save_registry()
+        self.assertEqual(self.resolve_pure()["baseline"]["state"], "absent")
+        self.assertFalse(self.baseline_path().exists())
+        self.save_baseline(self.manifest(schema=5))
+        self.assertEqual(self.resolve_pure()["baseline"]["state"], "present")
+        self.assertTrue(self.ast()["ok"])
+
+    def test_schema_mismatch_foreign_newer_and_mixed_baselines_refuse_without_writes(self):
+        self.save_registry()
+        v3 = self.manifest()
+        cases = (
+            self.manifest(schema=5, require_files=False),
+            self.manifest(schema=1, require_files=False),
+            {**v3, "store_schema_version": 4},
+            {**v3, "store_schema_version": 6},
+            {**v3, "files": {**v3["files"], "reports.json": "sha256:" + "0" * 64}},
+        )
+        for value in cases:
+            with self.subTest(schema=value.get("store_schema_version"), roster=sorted(value["files"])):
+                self.save_baseline(value)
+                expected = hashes(self.case)
+                with self.assertRaises(self.resolver.AuthorityError):
+                    self.resolve_pure()
+                self.assertEqual(hashes(self.case), expected)
+        self.write_v5(self.b)
+        self.save_baseline(self.manifest(schema=3))
+        expected = hashes(self.case)
+        with self.assertRaises(self.resolver.AuthorityError):
+            self.resolve_pure()
+        self.assertEqual(hashes(self.case), expected)
+        meta = json.loads((self.b / "store-meta.json").read_text(encoding="utf-8"))
+        meta["store_schema_version"] = 3
+        del meta["migrations"]["reports"]
+        (self.b / "store-meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        expected = hashes(self.case)
+        with self.assertRaises(self.resolver.AuthorityError):
+            self.resolve_pure()
+        self.assertEqual(hashes(self.case), expected)
+
+    def test_false_task_baseline_refuses_before_stop_for_schema3_and_schema5(self):
+        self.save_registry()
+        for schema, prepare in ((3, None), (5, lambda: self.write_v5(self.b))):
+            with self.subTest(schema=schema):
+                if prepare is not None:
+                    prepare()
+                self.save_baseline(self.false_task_baseline(schema=schema))
+                with self.assertRaisesRegex(self.resolver.AuthorityError, "baseline_tasks_mismatch"):
+                    self.resolve_pure()
+                result = self.ast()
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(result["stops"], [])
+                self.assertEqual(result["backup"], [])
 
 
 if __name__ == "__main__":

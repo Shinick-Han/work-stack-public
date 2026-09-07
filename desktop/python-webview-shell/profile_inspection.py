@@ -15,6 +15,7 @@ import hashlib
 import os
 import re
 import stat
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Literal, Mapping, TypeAlias
@@ -25,7 +26,12 @@ from connection_registry import (
     registry_from_document,
 )
 from workstack import REMOTE_PROTOCOL_VERSION, __version__
-from workstack.planning_status import PlanningStatusValidationError, validate_and_project
+from workstack.store import Store, StoreCorruptError
+from workstack.store_rosters import (
+    REPORTS_DOCUMENT_NAME,
+    V3_DOCUMENT_NAMES,
+    V5_DOCUMENT_NAMES,
+)
 
 
 MAX_LOCAL_PATH_LENGTH = 4096
@@ -33,11 +39,12 @@ MAX_STORE_FILE_BYTES = 64 * 1024 * 1024
 MAX_STORE_TOTAL_BYTES = 128 * 1024 * 1024
 MAX_PRODUCT_VERSION_LENGTH = 64
 MAX_PROTOCOL_VERSION = 1_000_000
-MAX_REVISION = 9_007_199_254_740_991
+_STORE_CHANGED_MESSAGE = "The selected Store changed during inspection; try again."
+_INVALID_STORE_FILE_MESSAGE = "The selected Store contains an invalid authoritative file."
+_INVALID_STORE_DIRECTORY_MESSAGE = "The selected directory is not a valid current Work Stack Store."
 _DISCOVERY_WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 _PATH_SEGMENTS = re.compile(r"[\\/]+")
 JOURNAL_NAME = ".workstack-journal.json"
-STORE_SCHEMA_VERSION = 3
 STORE_FILES = {
     "workspace.json": None,
     "backlog.json": None,
@@ -51,7 +58,7 @@ STORE_FILES = {
 }
 
 ProfileTestStatus: TypeAlias = Literal["ready", "candidate", "identity_mismatch"]
-StorageFormat: TypeAlias = Literal["v3", "v4"]
+StorageFormat: TypeAlias = Literal["v3", "v4", "v5"]
 
 
 class ProfileInspectionError(RuntimeError):
@@ -121,6 +128,27 @@ class ProfileTestResult:
 
 SshProfileTester: TypeAlias = Callable[[SshConnectionProfile], SshProfileMetadata]
 FormatNeutralLocalInspector: TypeAlias = Callable[[Path], Mapping[str, object]]
+
+_SSH_PUBLIC_ERRORS: tuple[tuple[str, str, str], ...] = (
+    ("SSH_AUTH_FAILED", "ssh_auth_failed", "SSH authentication failed."),
+    ("REMOTE_PYTHON_REQUIRED", "remote_python_required", "A remote Python executable path is required."),
+    ("REMOTE_PYTHON_NOT_FOUND", "remote_python_not_found", "The remote Python executable was not found."),
+    ("REMOTE_PYTHON_TOO_OLD", "remote_python_too_old", "The remote Python interpreter is too old."),
+    ("REMOTE_APP_MISMATCH", "remote_app_mismatch", "The remote app directory is not a matching Work Stack release."),
+    ("REMOTE_WORKSPACE_MISMATCH", "remote_workspace_mismatch", "The remote workspace identity does not match."),
+    ("REMOTE_LOCK_OWNED", "remote_lock_owned", "The remote workspace is owned by another live session."),
+    ("REMOTE_PROTOCOL_INVALID", "remote_protocol_invalid", "The remote protocol response is invalid."),
+)
+
+
+def _ssh_profile_inspection_error(error: BaseException) -> ProfileInspectionError:
+    """Map stable remote codes; never forward raw stderr, paths, or tokens."""
+
+    text = str(error)
+    for token, code, message in _SSH_PUBLIC_ERRORS:
+        if token in text:
+            return ProfileInspectionError(code, message)
+    return ProfileInspectionError("ssh_test_failed", "The SSH profile could not be verified.")
 
 
 def profile_test_candidate_from_document(raw: object) -> ProfileTestCandidate:
@@ -228,9 +256,7 @@ def inspect_profile(
     except ProfileInspectionError:
         raise
     except (OSError, RuntimeError, ValueError, TypeError) as error:
-        raise ProfileInspectionError(
-            "ssh_test_failed", "The SSH profile could not be verified."
-        ) from error
+        raise _ssh_profile_inspection_error(error) from error
     actual = _canonical_workspace_id(metadata.actual_workspace_id)
     product = _bounded_product_version(metadata.product_version)
     protocol = _bounded_protocol_version(metadata.protocol_version)
@@ -322,48 +348,96 @@ def _inspect_local_profile(
     if first_entry is None:
         return _candidate_result(candidate.profile.profile_id, "local")
 
-    if enable_format_neutral and (root / "store.json").is_file():
-        legacy = set(STORE_FILES) - {"workspace.json"}
-        if any((root / name).exists() for name in legacy):
+    store_state = _occupied_marker_state(root / "store.json")
+    if store_state == "invalid":
+        raise ProfileInspectionError("invalid_store", _INVALID_STORE_FILE_MESSAGE)
+    if store_state == "file":
+        markers = (V3_DOCUMENT_NAMES | {REPORTS_DOCUMENT_NAME}) - {"workspace.json"}
+        if any((root / name).exists() or (root / name).is_symlink() for name in markers):
             raise ProfileInspectionError(
                 "mixed_store", "The selected directory mixes incompatible Work Stack formats."
             )
-        if format_neutral_local_inspector is None:
-            raise ProfileInspectionError(
-                "v4_inspection_unavailable",
-                "Normalized Store inspection is not enabled in this desktop session.",
-            )
-        return _inspect_local_v4(candidate, root, format_neutral_local_inspector)
+        if enable_format_neutral:
+            if format_neutral_local_inspector is None:
+                raise ProfileInspectionError(
+                    "v4_inspection_unavailable",
+                    "Normalized Store inspection is not enabled in this desktop session.",
+                )
+            return _inspect_local_v4(candidate, root, format_neutral_local_inspector)
 
-    required = frozenset(STORE_FILES)
-    present = {name for name in required if (root / name).is_file()}
-    if present != required:
-        code = "partial_store" if present else "local_directory_not_empty"
-        message = (
-            "The selected directory contains only part of a Work Stack Store."
-            if present
-            else "A new local SSOT requires an empty directory."
-        )
-        raise ProfileInspectionError(code, message)
+    return _inspect_local_collection(
+        candidate, root, enable_format_neutral=enable_format_neutral
+    )
+
+
+def _occupied_marker_state(path: Path) -> str:
+    try:
+        if path.is_symlink():
+            return "invalid"
+        if path.is_file():
+            return "file"
+        if path.exists():
+            return "invalid"
+    except OSError:
+        return "invalid"
+    return "absent"
+
+
+def _present_collection_documents(root: Path) -> set[str]:
+    present: set[str] = set()
+    for name in V5_DOCUMENT_NAMES:
+        path = root / name
+        try:
+            occupied = path.exists() or path.is_symlink()
+        except OSError as error:
+            raise ProfileInspectionError("invalid_store", _INVALID_STORE_FILE_MESSAGE) from error
+        if not occupied:
+            continue
+        _reject_reparse_components(path)
+        if not path.is_file():
+            raise ProfileInspectionError("invalid_store", _INVALID_STORE_FILE_MESSAGE)
+        present.add(name)
+    return present
+
+
+def _selected_collection_roster(root: Path) -> frozenset[str]:
+    present = _present_collection_documents(root)
+    if present == V3_DOCUMENT_NAMES:
+        return V3_DOCUMENT_NAMES
+    if present == V5_DOCUMENT_NAMES:
+        return V5_DOCUMENT_NAMES
+    code = "partial_store" if present else "local_directory_not_empty"
+    message = (
+        "The selected directory contains only part of a Work Stack Store."
+        if present
+        else "A new local SSOT requires an empty directory."
+    )
+    raise ProfileInspectionError(code, message)
+
+
+def _inspect_local_collection(
+    candidate: LocalProfileTestCandidate,
+    root: Path,
+    *,
+    enable_format_neutral: bool,
+) -> ProfileTestResult:
     if (root / JOURNAL_NAME).exists():
         raise ProfileInspectionError(
             "store_recovery_required",
             "The selected Store has a pending recovery journal and cannot be activated yet.",
         )
-
-    values, snapshots = _read_store_values(root)
+    roster = _selected_collection_roster(root)
+    expected_schema = 5 if roster == V5_DOCUMENT_NAMES else 3
+    values, snapshots = _read_store_values(root, roster)
+    if values["store-meta.json"].get("store_schema_version") != expected_schema:
+        raise ProfileInspectionError("invalid_store", _INVALID_STORE_DIRECTORY_MESSAGE)
     try:
-        workspace_id = _validate_workspace(values["workspace.json"])
-        _validate_backlog(values["backlog.json"], workspace_id)
-        _validate_store_metadata_document(values["store-meta.json"])
-        _validate_auxiliary_store_documents(values)
-        _validate_activity(values["activity.json"])
-        validate_and_project(values["backlog.json"], values["activity.json"])
-    except (PlanningStatusValidationError, KeyError, TypeError, ValueError) as error:
-        raise ProfileInspectionError(
-            "invalid_store", "The selected directory is not a valid current Work Stack Store."
-        ) from error
-    _assert_store_unchanged(root, snapshots)
+        readiness = Store.validate_document_values(values, schema_version=expected_schema)
+    except StoreCorruptError as error:
+        raise ProfileInspectionError("invalid_store", _INVALID_STORE_DIRECTORY_MESSAGE) from error
+    _assert_final_collection_admission(root, snapshots, roster)
+    workspace_id = readiness.workspace_uid
+    storage_format: StorageFormat = "v5" if expected_schema == 5 else "v3"
     return ProfileTestResult(
         profile_id=candidate.profile.profile_id,
         kind="local",
@@ -372,7 +446,12 @@ def _inspect_local_profile(
         product_version=_bounded_product_version(__version__),
         protocol_version=_bounded_protocol_version(REMOTE_PROTOCOL_VERSION),
         authority=(
-            _v3_authority_inspection(workspace_id, snapshots)
+            _collection_authority_inspection(
+                workspace_id,
+                snapshots,
+                storage_format=storage_format,
+                schema_version=expected_schema,
+            )
             if enable_format_neutral
             else None
         ),
@@ -391,9 +470,7 @@ def _inspect_local_v4(
     except ProfileInspectionError:
         raise
     except (OSError, RuntimeError, ValueError, TypeError) as error:
-        raise ProfileInspectionError(
-            "invalid_store", "The selected directory is not a valid current Work Stack Store."
-        ) from error
+        raise ProfileInspectionError("invalid_store", _INVALID_STORE_DIRECTORY_MESSAGE) from error
     return ProfileTestResult(
         profile_id=candidate.profile.profile_id,
         kind="local",
@@ -405,8 +482,12 @@ def _inspect_local_v4(
     )
 
 
-def _v3_authority_inspection(
-    workspace_id: str, snapshots: Mapping[str, tuple[int, int, str]]
+def _collection_authority_inspection(
+    workspace_id: str,
+    snapshots: Mapping[str, tuple[int, int, str]],
+    *,
+    storage_format: StorageFormat,
+    schema_version: int,
 ) -> AuthorityInspection:
     roster = [
         {"path": name, "sha256": "sha256:" + snapshots[name][2], "size": snapshots[name][0]}
@@ -416,12 +497,12 @@ def _v3_authority_inspection(
         "files": roster,
         "format": "workstack.inspected-authority-manifest",
         "schema_version": 1,
-        "storage_format": "v3",
+        "storage_format": storage_format,
         "workspace_uid": workspace_id,
     })
     return AuthorityInspection(
-        storage_format="v3",
-        schema_version=STORE_SCHEMA_VERSION,
+        storage_format=storage_format,
+        schema_version=schema_version,
         authority_manifest_digest=digest,
         capabilities=AuthorityCapabilities(
             read=True, write=True, migrate=True, projection=True
@@ -469,7 +550,7 @@ def _validated_authority_inspection(
 ) -> AuthorityInspection:
     if not isinstance(value, AuthorityInspection):
         raise RuntimeError("Authority inspection metadata is invalid")
-    expected_schema = {"v3": 3, "v4": 4}.get(value.storage_format)
+    expected_schema = {"v3": 3, "v4": 4, "v5": 5}.get(value.storage_format)
     if expected_schema is None or value.schema_version != expected_schema:
         raise RuntimeError("Authority storage format is invalid")
     if not isinstance(value.authority_manifest_digest, str) or not re.fullmatch(
@@ -513,131 +594,24 @@ def _authority_document(value: AuthorityInspection | None) -> dict[str, object]:
     }
 
 
-def _validate_workspace(value: Mapping[str, object]) -> str:
-    if set(value) != {"version", "id", "name"} or value.get("version") != 2:
-        raise ValueError("workspace identity schema is invalid")
-    workspace_id = _canonical_workspace_id(value.get("id"))
-    name = value.get("name")
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("workspace name is invalid")
-    return workspace_id
-
-
-def _validate_backlog(value: Mapping[str, object], workspace_id: str) -> None:
-    if set(value) != {"version", "tasks"} or value.get("version") != 3:
-        raise ValueError("backlog identity schema is invalid")
-    tasks = value.get("tasks")
-    if not isinstance(tasks, list):
-        raise ValueError("backlog tasks are invalid")
-    seen_ids: set[str] = set()
-    seen_uids = {workspace_id}
-    for task in tasks:
-        if not isinstance(task, dict):
-            raise ValueError("backlog task is invalid")
-        task_id = task.get("id")
-        if (
-            not isinstance(task_id, str)
-            or not re.fullmatch(r"T-[0-9]{4,}", task_id)
-            or task_id in seen_ids
-        ):
-            raise ValueError("backlog task identity is invalid")
-        seen_ids.add(task_id)
-        task_uid = _canonical_workspace_id(task.get("uid"))
-        if task_uid in seen_uids:
-            raise ValueError("backlog task UUID is duplicated")
-        seen_uids.add(task_uid)
-        revision = task.get("revision")
-        if type(revision) is not int or not 0 <= revision <= MAX_REVISION:
-            raise ValueError("backlog task revision is invalid")
-        status_fact_id = task.get("status_fact_id")
-        if not isinstance(status_fact_id, str) or not re.fullmatch(
-            r"PS-[0-9]{6,}", status_fact_id
-        ):
-            raise ValueError("backlog task status fact is invalid")
-
-
-def _validate_store_metadata_document(value: Mapping[str, object]) -> None:
-    if set(value) != {"version", "store_schema_version", "migrations"}:
-        raise ValueError("store metadata schema is invalid")
-    if value.get("version") != 2 or value.get("store_schema_version") != STORE_SCHEMA_VERSION:
-        raise ValueError("store metadata version is invalid")
-    migrations = value.get("migrations")
-    if not isinstance(migrations, dict) or set(migrations) != {
-        "identity",
-        "planning_status",
-    }:
-        raise ValueError("store migration evidence is invalid")
-    identity = migrations.get("identity")
-    planning = migrations.get("planning_status")
-    if not isinstance(identity, dict) or not isinstance(planning, dict):
-        raise ValueError("store migration evidence is invalid")
-    _validate_migration_evidence(identity, identity=True)
-    _validate_migration_evidence(planning, identity=False)
-
-
-def _validate_migration_evidence(value: Mapping[str, object], *, identity: bool) -> None:
-    if set(value) != {"id", "origin", "source_sha256"}:
-        raise ValueError("store migration evidence is invalid")
-    origin = value.get("origin")
-    digest = value.get("source_sha256")
-    expected_id = "workstack.store.v2" if identity else "workstack.planning-status.v1"
-    migrated_id = "workstack.store.v1-to-v2" if identity else expected_id
-    if origin == "fresh":
-        if value.get("id") != expected_id or digest is not None:
-            raise ValueError("fresh store migration evidence is invalid")
-        return
-    allowed_origins = {"migrated_v1"} if identity else {"migrated_v1", "migrated_v2"}
-    if (
-        origin not in allowed_origins
-        or value.get("id") != migrated_id
-        or not isinstance(digest, str)
-        or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
-    ):
-        raise ValueError("migrated store evidence is invalid")
-
-
-def _validate_auxiliary_store_documents(
-    values: Mapping[str, Mapping[str, object]],
-) -> None:
-    for name, shape in STORE_FILES.items():
-        if shape is None:
-            continue
-        version, key, container = shape
-        value = values[name]
-        if (
-            set(value) != {"version", key}
-            or value.get("version") != version
-            or not isinstance(value.get(key), container)
-        ):
-            raise ValueError("auxiliary Store schema is invalid")
-
-
-def _validate_activity(value: Mapping[str, object]) -> None:
-    if (
-        set(value) != {"version", "activity", "idempotency", "planning_status"}
-        or value.get("version") != 2
-        or not isinstance(value.get("activity"), list)
-        or not isinstance(value.get("idempotency"), list)
-        or not isinstance(value.get("planning_status"), list)
-    ):
-        raise ValueError("activity Store schema is invalid")
+def _store_fingerprint(metadata: os.stat_result, payload: bytes) -> tuple[int, int, str]:
+    return metadata.st_size, metadata.st_mtime_ns, hashlib.sha256(payload).hexdigest()
 
 
 def _read_store_values(
     root: Path,
+    roster: frozenset[str],
 ) -> tuple[dict[str, dict[str, object]], dict[str, tuple[int, int, str]]]:
     values: dict[str, dict[str, object]] = {}
     snapshots: dict[str, tuple[int, int, str]] = {}
     total = 0
-    for name in STORE_FILES:
+    for name in sorted(roster):
         path = root / name
         try:
             _reject_reparse_components(path)
             before = path.stat()
             if not path.is_file() or before.st_size > MAX_STORE_FILE_BYTES:
-                raise ProfileInspectionError(
-                    "invalid_store", "The selected Store contains an invalid authoritative file."
-                )
+                raise ProfileInspectionError("invalid_store", _INVALID_STORE_FILE_MESSAGE)
             total += before.st_size
             if total > MAX_STORE_TOTAL_BYTES:
                 raise ProfileInspectionError(
@@ -646,9 +620,7 @@ def _read_store_values(
             with path.open("rb") as stream:
                 payload = stream.read(MAX_STORE_FILE_BYTES + 1)
             if len(payload) > MAX_STORE_FILE_BYTES:
-                raise ProfileInspectionError(
-                    "store_changed", "The selected Store changed during inspection; try again."
-                )
+                raise ProfileInspectionError("store_changed", _STORE_CHANGED_MESSAGE)
             _reject_reparse_components(path)
             after = path.stat()
         except ProfileInspectionError:
@@ -661,9 +633,7 @@ def _read_store_values(
             len(payload) != before.st_size
             or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
         ):
-            raise ProfileInspectionError(
-                "store_changed", "The selected Store changed during inspection; try again."
-            )
+            raise ProfileInspectionError("store_changed", _STORE_CHANGED_MESSAGE)
         try:
             value = json.loads(payload.decode("utf-8-sig"))
         except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
@@ -671,56 +641,53 @@ def _read_store_values(
                 "invalid_store", "The selected Store contains invalid JSON."
             ) from error
         if not isinstance(value, dict):
-            raise ProfileInspectionError(
-                "invalid_store", "The selected Store contains an invalid authoritative file."
-            )
+            raise ProfileInspectionError("invalid_store", _INVALID_STORE_FILE_MESSAGE)
         values[name] = value
-        snapshots[name] = (
-            after.st_size,
-            after.st_mtime_ns,
-            hashlib.sha256(payload).hexdigest(),
-        )
+        snapshots[name] = _store_fingerprint(after, payload)
     return values, snapshots
 
 
+def _assert_final_collection_admission(
+    root: Path,
+    snapshots: Mapping[str, tuple[int, int, str]],
+    roster: frozenset[str],
+) -> None:
+    store_state = _occupied_marker_state(root / "store.json")
+    try:
+        present = _present_collection_documents(root)
+    except ProfileInspectionError as error:
+        raise ProfileInspectionError("store_changed", _STORE_CHANGED_MESSAGE) from error
+    if store_state != "absent" or present != set(roster):
+        raise ProfileInspectionError("store_changed", _STORE_CHANGED_MESSAGE)
+    _assert_store_unchanged(root, snapshots, roster)
+
+
 def _assert_store_unchanged(
-    root: Path, snapshots: Mapping[str, tuple[int, int, str]]
+    root: Path,
+    snapshots: Mapping[str, tuple[int, int, str]],
+    roster: frozenset[str],
 ) -> None:
     try:
         current: dict[str, tuple[int, int, str]] = {}
         total = 0
-        for name in STORE_FILES:
+        for name in sorted(roster):
             path = root / name
             _reject_reparse_components(path)
             metadata = path.stat()
             if metadata.st_size > MAX_STORE_FILE_BYTES:
-                raise ProfileInspectionError(
-                    "store_changed", "The selected Store changed during inspection; try again."
-                )
+                raise ProfileInspectionError("store_changed", _STORE_CHANGED_MESSAGE)
             total += metadata.st_size
             if total > MAX_STORE_TOTAL_BYTES:
-                raise ProfileInspectionError(
-                    "store_changed", "The selected Store changed during inspection; try again."
-                )
+                raise ProfileInspectionError("store_changed", _STORE_CHANGED_MESSAGE)
             with path.open("rb") as stream:
                 payload = stream.read(MAX_STORE_FILE_BYTES + 1)
             if len(payload) > MAX_STORE_FILE_BYTES:
-                raise ProfileInspectionError(
-                    "store_changed", "The selected Store changed during inspection; try again."
-                )
-            current[name] = (
-                metadata.st_size,
-                metadata.st_mtime_ns,
-                hashlib.sha256(payload).hexdigest(),
-            )
+                raise ProfileInspectionError("store_changed", _STORE_CHANGED_MESSAGE)
+            current[name] = _store_fingerprint(metadata, payload)
     except OSError as error:
-        raise ProfileInspectionError(
-            "store_changed", "The selected Store changed during inspection; try again."
-        ) from error
+        raise ProfileInspectionError("store_changed", _STORE_CHANGED_MESSAGE) from error
     if current != dict(snapshots):
-        raise ProfileInspectionError(
-            "store_changed", "The selected Store changed during inspection; try again."
-        )
+        raise ProfileInspectionError("store_changed", _STORE_CHANGED_MESSAGE)
 
 
 def _reject_reparse_components(path: Path) -> None:
@@ -751,8 +718,6 @@ def _identity_status(expected: str | None, actual: str) -> ProfileTestStatus:
 
 
 def _canonical_workspace_id(value: object) -> str:
-    import uuid
-
     if not isinstance(value, str):
         raise RuntimeError("Workspace identity is invalid")
     try:

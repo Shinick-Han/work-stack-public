@@ -88,6 +88,11 @@ export interface KeyResultProjection {
   keyResults: KeyResultNode[]
   byKey: Record<string, KeyResultNode>
   tasks: TaskOutcomeProjection[]
+  /**
+   * Compatibility: tasks with zero KR refs (`unassigned-outcome`), including
+   * Objective-only Tasks. Floating-only vs Objective-only is
+   * `projectOutcomeHierarchy` `unaligned` / `objectiveOnlyTaskIds`.
+   */
   unassignedTaskIds: string[]
 }
 

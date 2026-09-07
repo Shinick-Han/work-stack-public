@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-from ..store import DEFAULTS, StoreReadiness
+from ..store import StoreReadiness
+from ..store_rosters import V3_DOCUMENT_NAMES
 from .reader import V4ReadResult
 from .semantic import (
     WorkspaceSnapshot,
@@ -128,7 +129,7 @@ class RepositoryAdmission:
 
 def _markers(root: Path) -> tuple[bool, bool]:
     has_v4 = (root / "store.json").is_file()
-    legacy_names = set(DEFAULTS) - {"workspace.json"}
+    legacy_names = V3_DOCUMENT_NAMES - {"workspace.json"}
     has_v3 = any((root / name).exists() for name in legacy_names)
     return has_v3, has_v4
 

@@ -1,0 +1,53 @@
+.wsv-graph-move-handle {
+  display: inline-grid;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin: 0 0 0.28rem auto;
+  place-items: center;
+  border: 1px solid var(--wsv-line);
+  border-radius: 0.35rem;
+  color: var(--wsv-muted);
+  background: var(--wsv-glass);
+  cursor: grab;
+  touch-action: none;
+}
+
+.wsv-graph-move-handle:hover,
+.wsv-graph-move-handle:focus-visible {
+  color: var(--wsv-text);
+  outline: 2px solid var(--wsv-focus-ring, currentColor);
+  outline-offset: 1px;
+}
+
+.wsv-graph-move-handle:active {
+  cursor: grabbing;
+}
+
+.wsv-graph-move-handle[aria-pressed="true"] {
+  color: var(--wsv-text);
+  border-color: var(--wsv-graph-node-selected);
+}
+
+.wsv-graph-reset {
+  position: absolute;
+  left: 0.85rem;
+  bottom: 0.78rem;
+  z-index: 5;
+  padding: 0.32rem 0.55rem;
+  border: 1px solid var(--wsv-line);
+  border-radius: 0.45rem;
+  color: var(--wsv-text);
+  background: var(--wsv-glass);
+  backdrop-filter: blur(9px);
+  font-size: 0.72rem;
+}
+
+.wsv-graph-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

@@ -69,8 +69,23 @@ export function readSavedFilters(): NormalizedSavedFilter[] {
   if (typeof window === 'undefined') return []
   try {
     const value = window.localStorage.getItem(SAVED_FILTERS_KEY)
-    // Normalization is read-only: storage is never written back here.
-    return value ? savedFiltersSchema.parse(JSON.parse(value)).map(normalizeSavedRow) : []
+    if (!value) return []
+    const parsed: unknown = JSON.parse(value)
+    if (!Array.isArray(parsed) || parsed.length > MAX_SAVED_FILTERS) {
+      window.localStorage.removeItem(SAVED_FILTERS_KEY)
+      return []
+    }
+    const kept: NormalizedSavedFilter[] = []
+    for (const element of parsed) {
+      const result = savedFilterSchema.safeParse(element)
+      if (result.success) kept.push(normalizeSavedRow(result.data))
+    }
+    if (kept.length === 0) {
+      window.localStorage.removeItem(SAVED_FILTERS_KEY)
+      return []
+    }
+    // Partial survival is read-only: valid siblings are returned without rewriting storage.
+    return kept
   } catch {
     window.localStorage.removeItem(SAVED_FILTERS_KEY)
     return []

@@ -5,10 +5,13 @@ import { Button, Pill } from '../components/Primitives'
 import {
   CONNECTION_REGISTRY_SCHEMA_VERSION,
   connectionProfileDraftSchema,
-  connectionProfileSchema,
+  connectionProfileWriteSchema,
   connectionRegistrySchema,
+  remotePythonExecutableSchema,
+  sshProfileNeedsRemotePython,
   type ConnectionProfile,
   type ConnectionProfileDraft,
+  type ConnectionProfileWrite,
   type ConnectionRegistry,
 } from '../domain/connectionRegistrySchemas'
 import {
@@ -23,12 +26,41 @@ import {
   type ConnectionRegistryDigest,
   type ConnectionRegistryHostMessage,
 } from './connectionRegistryHostBridge'
+import './MultiProfileConnectionCenter.css'
 
 type Operation = Exclude<ConnectionRegistryHostMessage['operation'], null>
 type SuccessMessage = Extract<ConnectionRegistryHostMessage, { ok: true }>
 type TestResult = Extract<SuccessMessage, { operation: 'test-profile' }>['result']
 type BeginRequest = (operation: Operation, send: (requestId: string) => string | null, fingerprint?: string) => void
 interface PendingRequest { requestId: string; fingerprint?: string; timeoutId: number }
+interface EditorError { code: string; message: string; pid?: number }
+interface ActivationPreview {
+  kind: 'same-authority' | 'different-authority'
+  current: ConnectionProfile
+  next: ConnectionProfileWrite
+  candidate: ConnectionRegistry
+  proofId: string
+  expectedRegistryDigest: ConnectionRegistryDigest
+}
+
+const HOST_ERROR_SUMMARIES = {
+  ssh_auth_failed: 'SSH authentication failed.',
+  remote_python_required: 'A remote Python executable path is required.',
+  remote_python_not_found: 'The remote Python executable was not found.',
+  remote_python_too_old: 'The remote Python interpreter is too old.',
+  remote_app_mismatch: 'The remote app directory is not a matching Work Stack release.',
+  remote_workspace_mismatch: 'The remote workspace identity does not match.',
+  remote_lock_owned: 'The remote workspace is owned by another live session.',
+  remote_protocol_invalid: 'The remote protocol response is invalid.',
+  ssh_test_failed: 'The SSH profile could not be verified.',
+  ssh_test_unavailable: 'SSH profile testing is not available in this desktop session.',
+  registry_conflict: 'The connection registry changed. Reload and try again.',
+  test_required: 'Test this exact profile against the current registry before scheduling activation.',
+  operation_failed: 'Connection registry operation failed.',
+  invalid_request: 'Connection registry request is invalid.',
+} as const
+
+type HostErrorCode = keyof typeof HOST_ERROR_SUMMARIES
 
 interface MultiProfileConnectionCenterProps {
   /** Separate dark gate: activation is a persisted restart transition, never a hot switch. */
@@ -59,8 +91,10 @@ interface EditorContext {
   setTestedRegistryDigest: Dispatch<SetStateAction<ConnectionRegistryDigest | undefined>>
   feedback: string
   setFeedback: Dispatch<SetStateAction<string>>
-  error: string
-  setError: Dispatch<SetStateAction<string>>
+  error: EditorError | null
+  setError: Dispatch<SetStateAction<EditorError | null>>
+  activationPreview: ActivationPreview | null
+  setActivationPreview: Dispatch<SetStateAction<ActivationPreview | null>>
   // The one removal this component is waiting for. A save-registry reply is a
   // deletion receipt only when it answers exactly this request.
   removalRef: { current: PendingRemoval | null }
@@ -78,6 +112,8 @@ interface EditorActions {
   changeDraft: (draft: ConnectionProfileDraft) => void
   close: () => void
   persist: (activate: boolean) => void
+  confirmActivation: () => void
+  cancelActivation: () => void
   removeProfile: (profile: ConnectionProfile) => void
   selectProfile: (profile: ConnectionProfile) => void
   testProfile: () => void
@@ -96,14 +132,16 @@ function createDraft(kind: 'local' | 'ssh'): ConnectionProfileDraft {
   }
   return kind === 'local'
     ? { ...base, kind, data_dir: '' }
-    : { ...base, kind, ssh_host_alias: '', remote_app_dir: '', remote_data_dir: '', preferred_forward_port: 18_765, remote_port: 8_765 }
+    : { ...base, kind, ssh_host_alias: '', remote_app_dir: '', remote_data_dir: '', preferred_forward_port: 18_765, remote_port: 8_765, remote_python: '' }
 }
 
 const fingerprint = (profile: ConnectionProfileDraft) => JSON.stringify({
   ...profile,
   label: profile.label.trim(),
 })
-const toDraft = (profile: ConnectionProfile): ConnectionProfileDraft => ({ ...profile })
+const toDraft = (profile: ConnectionProfile): ConnectionProfileDraft => (
+  profile.kind === 'ssh' ? { ...profile, remote_python: profile.remote_python ?? '' } : { ...profile }
+)
 const profilePath = (profile: ConnectionProfile) => profile.kind === 'local' ? profile.data_dir : `${profile.ssh_host_alias}:${profile.remote_data_dir}`
 const pathName = (value: string) => value.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || value
 
@@ -117,6 +155,7 @@ function authorityFingerprint(profile: ConnectionProfile | ConnectionProfileDraf
       remote_data_dir: profile.remote_data_dir,
       preferred_forward_port: profile.preferred_forward_port,
       remote_port: profile.remote_port,
+      remote_python: profile.kind === 'ssh' ? profile.remote_python ?? '' : '',
     }
   return JSON.stringify({ ...authority, enabled: profile.enabled, expected_workspace_id: profile.expected_workspace_id })
 }
@@ -125,6 +164,192 @@ function replaceProfile(registry: ConnectionRegistry, profile: ConnectionProfile
   return registry.profiles.some((candidate) => candidate.profile_id === profile.profile_id)
     ? registry.profiles.map((candidate) => candidate.profile_id === profile.profile_id ? profile : candidate)
     : [...registry.profiles, profile]
+}
+
+function allowlistedPid(details: { readonly pid?: number } | undefined): number | undefined {
+  const pid = details?.pid
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid < 1 || pid > 4_294_967_295) return undefined
+  return pid
+}
+
+function presentHostError(code: string, details: { readonly pid?: number } | undefined): EditorError {
+  const pid = allowlistedPid(details)
+  const presented: EditorError = Object.hasOwn(HOST_ERROR_SUMMARIES, code)
+    ? { code, message: HOST_ERROR_SUMMARIES[code as HostErrorCode] }
+    : { code: 'ssh_test_failed', message: HOST_ERROR_SUMMARIES.ssh_test_failed }
+  return pid === undefined ? presented : { ...presented, pid }
+}
+
+function invalidateProof(editor: EditorContext) {
+  editor.setTestResult(null)
+  editor.setTestedFingerprint(null)
+  editor.setTestedRegistryDigest(undefined)
+}
+
+function testableDraft(draft: ConnectionProfileDraft) {
+  const parsed = connectionProfileDraftSchema.safeParse(draft)
+  if (!parsed.success) return null
+  if (parsed.data.kind === 'ssh' && !remotePythonExecutableSchema.safeParse(parsed.data.remote_python).success) {
+    return null
+  }
+  return parsed.data
+}
+
+function buildActivationRegistry(
+  registry: ConnectionRegistry,
+  next: ConnectionProfileWrite,
+  mode: 'same-authority' | 'different-authority',
+): ConnectionRegistry {
+  const disableSameAuthority = (profile: ConnectionProfile): ConnectionProfile => (
+    mode === 'same-authority'
+      && profile.profile_id !== next.profile_id
+      && profile.enabled
+      && profile.expected_workspace_id === next.expected_workspace_id
+      ? { ...profile, enabled: false }
+      : profile
+  )
+  const profiles = registry.profiles.some((profile) => profile.profile_id === next.profile_id)
+    ? registry.profiles.map((profile) => (
+        profile.profile_id === next.profile_id ? next : disableSameAuthority(profile)
+      ))
+    : [...registry.profiles.map(disableSameAuthority), next]
+  return {
+    schema_version: CONNECTION_REGISTRY_SCHEMA_VERSION,
+    active_profile_id: next.profile_id,
+    profiles,
+  }
+}
+
+export type PersistDecision =
+  | { readonly action: 'unavailable' }
+  | { readonly action: 'error'; readonly error: EditorError; readonly invalidateProof: boolean }
+  | { readonly action: 'save'; readonly candidate: ConnectionRegistry; readonly expectedRegistryDigest: ConnectionRegistryDigest }
+  | { readonly action: 'preview'; readonly preview: ActivationPreview }
+  | { readonly action: 'activate'; readonly candidate: ConnectionRegistry; readonly next: ConnectionProfileWrite; readonly proofId: string; readonly expectedRegistryDigest: ConnectionRegistryDigest }
+
+const CAS_UNAVAILABLE_ERROR: EditorError = {
+  code: 'operation_failed',
+  message: 'Profile writes require a CAS-capable desktop host. Update Work Stack and reopen this center.',
+}
+
+const TEST_REQUIRED_ERROR: EditorError = {
+  code: 'test_required',
+  message: 'Test this exact profile against the current registry before scheduling activation.',
+}
+
+export function activationReplacementKind(
+  active: ConnectionProfile | undefined,
+  next: ConnectionProfileWrite,
+): 'same-authority' | 'different-authority' | 'none' {
+  if (active === undefined || active.profile_id === next.profile_id) return 'none'
+  if (active.expected_workspace_id === next.expected_workspace_id) return 'same-authority'
+  return 'different-authority'
+}
+
+export function registryWriteConflictError(
+  registry: ConnectionRegistry,
+  emptyRegistryUsesOperationFailed: boolean,
+): EditorError {
+  const empty = registry.profiles.length === 0
+  return {
+    code: empty && emptyRegistryUsesOperationFailed ? 'operation_failed' : 'registry_conflict',
+    message: empty
+      ? 'Your first profile must be saved and activated together.'
+      : 'This profile conflicts with the current connection registry.',
+  }
+}
+
+export function decideMetadataSave(
+  registry: ConnectionRegistry,
+  registryDigest: ConnectionRegistryDigest | undefined,
+  next: ConnectionProfileWrite,
+): PersistDecision {
+  if (registryDigest === undefined) return { action: 'unavailable' }
+  const candidate = connectionRegistrySchema.safeParse({
+    schema_version: CONNECTION_REGISTRY_SCHEMA_VERSION,
+    active_profile_id: registry.active_profile_id,
+    profiles: replaceProfile(registry, next),
+  })
+  if (!candidate.success) {
+    return { action: 'error', error: registryWriteConflictError(registry, true), invalidateProof: false }
+  }
+  return { action: 'save', candidate: candidate.data, expectedRegistryDigest: registryDigest }
+}
+
+export function decideActivationPersist(
+  registry: ConnectionRegistry,
+  registryDigest: ConnectionRegistryDigest | undefined,
+  next: ConnectionProfileWrite,
+  proofId: string | undefined,
+  testedRegistryDigest: ConnectionRegistryDigest | undefined,
+): PersistDecision {
+  if (registryDigest === undefined) return { action: 'unavailable' }
+  if (!proofId || testedRegistryDigest !== registryDigest) {
+    return { action: 'error', error: TEST_REQUIRED_ERROR, invalidateProof: true }
+  }
+  const active = registry.profiles.find((profile) => profile.profile_id === registry.active_profile_id)
+  const kind = activationReplacementKind(active, next)
+  const mode = kind === 'same-authority' ? 'same-authority' : 'different-authority'
+  const candidate = connectionRegistrySchema.safeParse(buildActivationRegistry(registry, next, mode))
+  if (!candidate.success) {
+    return { action: 'error', error: registryWriteConflictError(registry, false), invalidateProof: false }
+  }
+  if (kind === 'none' || active === undefined) {
+    return {
+      action: 'activate',
+      candidate: candidate.data,
+      next,
+      proofId,
+      expectedRegistryDigest: registryDigest,
+    }
+  }
+  return {
+    action: 'preview',
+    preview: {
+      kind,
+      current: active,
+      next,
+      candidate: candidate.data,
+      proofId,
+      expectedRegistryDigest: registryDigest,
+    },
+  }
+}
+
+function applyPersistDecision(
+  editor: EditorContext,
+  begin: BeginRequest,
+  decision: PersistDecision,
+  draftFingerprint: string,
+) {
+  if (decision.action === 'unavailable') {
+    editor.setError(CAS_UNAVAILABLE_ERROR)
+    return
+  }
+  if (decision.action === 'error') {
+    editor.setError(decision.error)
+    if (decision.invalidateProof) invalidateProof(editor)
+    return
+  }
+  if (decision.action === 'save') {
+    begin('save-registry', (id) => saveConnectionRegistry(decision.candidate, decision.expectedRegistryDigest, id), draftFingerprint)
+    return
+  }
+  if (decision.action === 'preview') {
+    editor.setActivationPreview(decision.preview)
+    return
+  }
+  begin(
+    'activate-profile',
+    (id) => activateConnectionProfile(
+      decision.candidate,
+      decision.next.profile_id,
+      decision.proofId,
+      decision.expectedRegistryDigest,
+      id,
+    ),
+    draftFingerprint,
+  )
 }
 
 function testResultMessage(result: TestResult): string {
@@ -144,14 +369,15 @@ function useEditorContext(): EditorContext {
   const [testedFingerprint, setTestedFingerprint] = useState<string | null>(null)
   const [testedRegistryDigest, setTestedRegistryDigest] = useState<ConnectionRegistryDigest | undefined>(undefined)
   const [feedback, setFeedback] = useState('')
-  const [error, setError] = useState('')
+  const [error, setError] = useState<EditorError | null>(null)
+  const [activationPreview, setActivationPreview] = useState<ActivationPreview | null>(null)
   const removalRef = useRef<PendingRemoval | null>(null)
   draftRef.current = draft
   return {
     registry, setRegistry, registryDigest, setRegistryDigest, draft, draftRef, setDraft, originalFingerprint, setOriginalFingerprint,
     aliases, setAliases, testResult, setTestResult, testedFingerprint, setTestedFingerprint,
     testedRegistryDigest, setTestedRegistryDigest,
-    feedback, setFeedback, error, setError, removalRef,
+    feedback, setFeedback, error, setError, activationPreview, setActivationPreview, removalRef,
   }
 }
 
@@ -166,6 +392,8 @@ function applyLoadedRegistry(message: Extract<SuccessMessage, { operation: 'get-
   editor.setTestResult(null)
   editor.setTestedFingerprint(null)
   editor.setTestedRegistryDigest(undefined)
+  editor.setActivationPreview(null)
+  editor.setError(null)
   editor.setFeedback(registry.profiles.length ? 'Connection profiles loaded.' : 'Add your first SSOT connection profile.')
 }
 
@@ -192,7 +420,7 @@ function applyRemovedProfile(
   if (registry.profiles.some((profile) => profile.profile_id === removal.profileId)) {
     // The host answered this exact request but the entry survived. Report that
     // rather than claiming a removal that did not happen.
-    editor.setError('The saved connection profile was not removed. Reload the connection registry and try again.')
+    editor.setError({ code: 'operation_failed', message: 'The saved connection profile was not removed. Reload the connection registry and try again.' })
     return
   }
   const surviving = registry.profiles.find((profile) => profile.profile_id === registry.active_profile_id)
@@ -208,6 +436,7 @@ function applySavedRegistry(message: Extract<SuccessMessage, { operation: 'save-
   }
   editor.setRegistry(message.result.registry)
   editor.setRegistryDigest(message.result.registry_digest)
+  editor.setActivationPreview(null)
   const saved = message.result.registry.profiles.find((profile) => profile.profile_id === editor.draftRef.current.profile_id)
   if (saved) {
     const draft = toDraft(saved)
@@ -261,21 +490,24 @@ function useRegistryHost(enabled: boolean, open: boolean, editor: EditorContext)
       finish(operation)
       if (editorRef.current.removalRef.current?.requestId === requestId) {
         editorRef.current.removalRef.current = null
-        editorRef.current.setError('The removal result is unknown: the desktop service did not answer. Reload the connection registry before trying again.')
+        editorRef.current.setError({ code: 'operation_failed', message: 'The removal result is unknown: the desktop service did not answer. Reload the connection registry before trying again.' })
         return
       }
-      editorRef.current.setError('The connection operation timed out. Try again.')
+      editorRef.current.setError({ code: 'operation_failed', message: 'The connection operation timed out. Try again.' })
     }, 20_000)
     pendingRef.current.set(operation, { requestId, fingerprint: candidateFingerprint, timeoutId })
     setPendingOperations(new Set(pendingRef.current.keys()))
     try {
       if (send(requestId) === null) {
         finish(operation)
-        editorRef.current.setError('The native Work Stack connection service is unavailable.')
+        editorRef.current.setError({ code: 'operation_failed', message: 'The native Work Stack connection service is unavailable.' })
       }
     } catch (caught) {
       finish(operation)
-      editorRef.current.setError(caught instanceof Error ? caught.message : 'The connection request was rejected.')
+      editorRef.current.setError({
+        code: 'operation_failed',
+        message: caught instanceof Error ? caught.message.slice(0, 256) : 'The connection request was rejected.',
+      })
     }
   }
   useEffect(() => {
@@ -291,13 +523,17 @@ function useRegistryHost(enabled: boolean, open: boolean, editor: EditorContext)
       finish(message.operation)
       if (!message.ok) {
         if (editorRef.current.removalRef.current?.requestId === message.request_id) editorRef.current.removalRef.current = null
-        return editorRef.current.setError(message.error.message)
+        const mapped = presentHostError(message.error.code, message.error.details)
+        if (mapped.code === 'registry_conflict' || mapped.code === 'test_required' || message.operation === 'test-profile') {
+          invalidateProof(editorRef.current)
+        }
+        return editorRef.current.setError(mapped)
       }
-      editorRef.current.setError('')
+      editorRef.current.setError(null)
       applySuccessMessage(message, editorRef.current)
     })
     if (hasConnectionRegistryHost()) begin('get-registry', requestConnectionRegistry)
-    else editorRef.current.setError('Multi-profile connections require the Work Stack desktop app.')
+    else editorRef.current.setError({ code: 'operation_failed', message: 'Multi-profile connections require the Work Stack desktop app.' })
     return () => {
       unsubscribe()
       pendingRef.current.forEach((pending) => window.clearTimeout(pending.timeoutId))
@@ -315,14 +551,15 @@ function resetEditor(editor: EditorContext, draft: ConnectionProfileDraft) {
   editor.setTestedFingerprint(null)
   editor.setTestedRegistryDigest(undefined)
   editor.setFeedback('')
-  editor.setError('')
+  editor.setError(null)
+  editor.setActivationPreview(null)
 }
 
 function useEditorActions(editor: EditorContext, begin: BeginRequest, onClose: () => void): EditorActions {
   const dirty = fingerprint(editor.draft) !== editor.originalFingerprint
   const tested = editor.testedFingerprint === fingerprint(editor.draft) && editor.testResult?.status === 'ready'
-  const validDraft = connectionProfileDraftSchema.safeParse(editor.draft)
-  const profile = connectionProfileSchema.safeParse(editor.draft)
+  const readyDraft = testableDraft(editor.draft)
+  const written = connectionProfileWriteSchema.safeParse(editor.draft)
   const confirmDiscard = () => !dirty || window.confirm('Discard unsaved connection profile changes?')
   function addProfile(kind: 'local' | 'ssh') {
     if (!confirmDiscard()) return
@@ -334,25 +571,24 @@ function useEditorActions(editor: EditorContext, begin: BeginRequest, onClose: (
     editor.setTestResult(null)
     editor.setTestedFingerprint(null)
     editor.setTestedRegistryDigest(undefined)
+    editor.setActivationPreview(null)
     editor.setFeedback('')
   }
   function selectProfile(selected: ConnectionProfile) {
     if (confirmDiscard()) resetEditor(editor, toDraft(selected))
   }
   function removeProfile(target: ConnectionProfile) {
-    // Only an entry that is actually persisted can be removed, and never the
-    // active one: a draft in the editor is not a saved profile.
     const persisted = editor.registry.profiles.find((profile) => profile.profile_id === target.profile_id)
     if (!persisted) {
-      editor.setError('Only a saved connection profile can be removed.')
+      editor.setError({ code: 'operation_failed', message: 'Only a saved connection profile can be removed.' })
       return
     }
     if (persisted.profile_id === editor.registry.active_profile_id) {
-      editor.setError('The active connection profile cannot be removed. Activate another profile first.')
+      editor.setError({ code: 'operation_failed', message: 'The active connection profile cannot be removed. Activate another profile first.' })
       return
     }
     if (editor.registryDigest === undefined) {
-      editor.setError('Profile writes require a CAS-capable desktop host. Update Work Stack and reopen this center.')
+      editor.setError({ code: 'operation_failed', message: 'Profile writes require a CAS-capable desktop host. Update Work Stack and reopen this center.' })
       return
     }
     const path = profilePath(persisted)
@@ -363,18 +599,16 @@ function useEditorActions(editor: EditorContext, begin: BeginRequest, onClose: (
     if (!confirmed) return
     if (dirty && !window.confirm('Your unsaved connection profile changes will be discarded. Remove the saved profile anyway?')) return
     const expectedRegistryDigest = editor.registryDigest
-    // Built from the persisted registry snapshot, never from the draft, so an
-    // unsaved edit cannot be written as a side effect of a removal.
     const candidate = connectionRegistrySchema.safeParse({
       schema_version: CONNECTION_REGISTRY_SCHEMA_VERSION,
       active_profile_id: editor.registry.active_profile_id,
       profiles: editor.registry.profiles.filter((profile) => profile.profile_id !== persisted.profile_id),
     })
     if (!candidate.success) {
-      editor.setError('This removal conflicts with the current connection registry.')
+      editor.setError({ code: 'registry_conflict', message: 'This removal conflicts with the current connection registry.' })
       return
     }
-    editor.setError('')
+    editor.setError(null)
     editor.setFeedback('')
     begin('save-registry', (id) => {
       editor.removalRef.current = { label: persisted.label, path, profileId: persisted.profile_id, requestId: id }
@@ -383,36 +617,52 @@ function useEditorActions(editor: EditorContext, begin: BeginRequest, onClose: (
   }
   function testProfile() {
     const baseRegistryDigest = editor.registryDigest
-    if (validDraft.success && baseRegistryDigest !== undefined) {
+    if (readyDraft !== null && baseRegistryDigest !== undefined) {
       editor.setTestedRegistryDigest(baseRegistryDigest)
-      begin('test-profile', (id) => requestConnectionProfileTest(validDraft.data, baseRegistryDigest, id), fingerprint(validDraft.data))
+      begin('test-profile', (id) => requestConnectionProfileTest(readyDraft, baseRegistryDigest, id), fingerprint(readyDraft))
     }
+  }
+  function sendActivation(preview: ActivationPreview) {
+    const candidateFingerprint = fingerprint(editor.draft)
+    begin(
+      'activate-profile',
+      (id) => activateConnectionProfile(
+        preview.candidate,
+        preview.next.profile_id,
+        preview.proofId,
+        preview.expectedRegistryDigest,
+        id,
+      ),
+      candidateFingerprint,
+    )
   }
   function persist(activate: boolean) {
-    if (!profile.success || !tested) return
-    if (editor.registryDigest === undefined) {
-      editor.setError('Profile writes require a CAS-capable desktop host. Update Work Stack and reopen this center.')
-      return
-    }
-    const expectedRegistryDigest = editor.registryDigest
-    const candidate = connectionRegistrySchema.safeParse({
-      schema_version: CONNECTION_REGISTRY_SCHEMA_VERSION,
-      active_profile_id: activate ? profile.data.profile_id : editor.registry.active_profile_id,
-      profiles: replaceProfile(editor.registry, profile.data),
-    })
-    if (!candidate.success) return editor.setError(editor.registry.profiles.length === 0 && !activate
-      ? 'Your first profile must be saved and activated together.' : 'This profile conflicts with the current connection registry.')
-    const candidateFingerprint = fingerprint(editor.draft)
-    if (activate) {
-      const proofId = editor.testResult?.proof_id
-      if (!proofId || editor.testedRegistryDigest !== editor.registryDigest) {
-        editor.setError('Test this exact profile against the current registry before scheduling activation.')
-        return
-      }
-      begin('activate-profile', (id) => activateConnectionProfile(candidate.data, profile.data.profile_id, proofId, expectedRegistryDigest, id), candidateFingerprint)
-    } else begin('save-registry', (id) => saveConnectionRegistry(candidate.data, expectedRegistryDigest, id), candidateFingerprint)
+    if (!written.success || !tested) return
+    const next: ConnectionProfileWrite = activate ? { ...written.data, enabled: true } : written.data
+    const decision = activate
+      ? decideActivationPersist(
+          editor.registry,
+          editor.registryDigest,
+          next,
+          editor.testResult?.proof_id ?? undefined,
+          editor.testedRegistryDigest,
+        )
+      : decideMetadataSave(editor.registry, editor.registryDigest, next)
+    applyPersistDecision(editor, begin, decision, fingerprint(editor.draft))
   }
-  return { addProfile, changeDraft, close: () => { if (confirmDiscard()) onClose() }, persist, removeProfile, selectProfile, testProfile }
+  function confirmActivation() {
+    const preview = editor.activationPreview
+    if (preview === null) return
+    editor.setActivationPreview(null)
+    sendActivation(preview)
+  }
+  function cancelActivation() {
+    editor.setActivationPreview(null)
+  }
+  return {
+    addProfile, changeDraft, close: () => { if (confirmDiscard()) onClose() }, persist,
+    confirmActivation, cancelActivation, removeProfile, selectProfile, testProfile,
+  }
 }
 
 function ProfileList({ activeId, draftId, pending, profiles, onAdd, onRemove, onSelect }: {
@@ -428,7 +678,7 @@ function ProfileList({ activeId, draftId, pending, profiles, onAdd, onRemove, on
       <button aria-current={profile.profile_id === draftId ? 'true' : undefined} className="connection-profile-list__item" onClick={() => onSelect(profile)} type="button">
         <span><strong>{profile.label}</strong> <Pill>{profile.kind === 'local' ? 'Local' : 'SSH'}</Pill></span>
         <span>{profilePath(profile)}</span>
-        <span>{activeId === profile.profile_id ? 'Active' : 'Inactive'} · {profile.enabled ? 'Enabled' : 'Disabled'} · {pathName(profilePath(profile))}</span>
+        <span>{activeId === profile.profile_id ? 'Active' : 'Inactive'} · {profile.enabled ? 'Enabled' : 'Disabled'} · {pathName(profilePath(profile))}{sshProfileNeedsRemotePython(profile) ? ' · Needs Remote Python' : ''}</span>
       </button>
       {activeId === profile.profile_id
         ? null
@@ -458,6 +708,7 @@ function SshFields({ aliases, begin, draft, onChange, pending }: { aliases: read
     <Button disabled={pending} onClick={() => begin('discover-ssh-aliases', requestSshAliasDiscovery)}>Refresh SSH aliases</Button>
     <label className="field"><span>Remote app directory</span><input onChange={(event) => onChange({ ...draft, remote_app_dir: event.target.value })} value={draft.remote_app_dir} /></label>
     <label className="field"><span>Remote SSOT directory</span><input onChange={(event) => onChange({ ...draft, remote_data_dir: event.target.value })} value={draft.remote_data_dir} /></label>
+    <label className="field"><span>Remote Python executable</span><input aria-required="true" autoComplete="off" onChange={(event) => onChange({ ...draft, remote_python: event.target.value })} spellCheck={false} value={draft.remote_python} /></label>
     <details><summary>Advanced ports</summary><div className="form-grid">
       <label className="field"><span>Preferred local port</span><input max="65535" min="1" onChange={(event) => onChange({ ...draft, preferred_forward_port: Number(event.target.value) })} type="number" value={draft.preferred_forward_port} /></label>
       <label className="field"><span>Remote port</span><input max="65535" min="1" onChange={(event) => onChange({ ...draft, remote_port: Number(event.target.value) })} type="number" value={draft.remote_port} /></label>
@@ -489,16 +740,55 @@ function DetectedIdentity({ draft, onReviewSynchronization, result }: {
   </div>
 }
 
-function ProfileEditor({ actions, begin, editor, onReviewSynchronization, pending }: {
+function ProfileEditorStatus({ title, message }: { title: string; message: string }) {
+  return <section aria-labelledby="connection-profile-editor-title"><h3 id="connection-profile-editor-title">{title}</h3><p role="status">{message}</p></section>
+}
+
+function ActivationPreviewPanel({ preview, onCancel, onConfirm }: {
+  preview: ActivationPreview
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return <section aria-labelledby="activation-preview-title" className="multi-profile-connections__preview">
+    <h3 id="activation-preview-title">{preview.kind === 'same-authority'
+      ? 'Replace the active workspace after restart'
+      : 'Activate a different workspace after restart'}</h3>
+    <dl>
+      <div>
+        <dt>Current profile</dt>
+        <dd><strong>{preview.current.label}</strong> <Pill>{preview.current.kind === 'local' ? 'Local' : 'SSH'}</Pill> <code>{preview.current.expected_workspace_id}</code></dd>
+      </div>
+      <div>
+        <dt>Next profile</dt>
+        <dd><strong>{preview.next.label}</strong> <Pill>{preview.next.kind === 'local' ? 'Local' : 'SSH'}</Pill> <code>{preview.next.expected_workspace_id}</code></dd>
+      </div>
+    </dl>
+    <p>Work Stack will not switch now. Restart is required after this save.</p>
+    <div className="multi-profile-connections__preview-actions">
+      <Button onClick={onCancel}>Cancel</Button>
+      <Button onClick={onConfirm} variant="primary">Confirm save and activate after restart</Button>
+    </div>
+  </section>
+}
+
+function HostErrorAlert({ error }: { error: EditorError }) {
+  return <>
+    <p role="alert"><code>{error.code}</code> {error.message}</p>
+    {error.pid === undefined ? null : <details>
+      <summary>Details</summary>
+      <p><code>{error.code}</code> PID {error.pid}</p>
+    </details>}
+  </>
+}
+
+function ProfileEditorForm({ actions, begin, editor, onReviewSynchronization, pending }: {
   actions: EditorActions
   begin: BeginRequest
   editor: EditorContext
   onReviewSynchronization?: () => void
   pending: ReadonlySet<Operation>
 }) {
-  if (pending.has('get-registry')) return <section aria-labelledby="connection-profile-editor-title"><h3 id="connection-profile-editor-title">Loading profiles</h3><p role="status">Reading the connection registry…</p></section>
-  if (pending.has('save-registry') || pending.has('activate-profile')) return <section aria-labelledby="connection-profile-editor-title"><h3 id="connection-profile-editor-title">Saving profile</h3><p role="status">The editor is locked until the correlated native response arrives.</p></section>
-  const draftValid = connectionProfileDraftSchema.safeParse(editor.draft).success
+  const draftValid = testableDraft(editor.draft) !== null
   const dirty = fingerprint(editor.draft) !== editor.originalFingerprint
   return <section aria-labelledby="connection-profile-editor-title">
     <h3 id="connection-profile-editor-title">{editor.registry.profiles.some((profile) => profile.profile_id === editor.draft.profile_id) ? 'Edit profile' : 'Add profile'}</h3>
@@ -510,25 +800,44 @@ function ProfileEditor({ actions, begin, editor, onReviewSynchronization, pendin
       ? <LocalFields begin={begin} draft={editor.draft} onChange={actions.changeDraft} pending={pending.has('choose-local-directory')} />
       : <SshFields aliases={editor.aliases} begin={begin} draft={editor.draft} onChange={actions.changeDraft} pending={pending.has('discover-ssh-aliases')} />}
     <DetectedIdentity draft={editor.draft} onReviewSynchronization={onReviewSynchronization} result={editor.testResult} />
+    {editor.draft.kind === 'ssh' && sshProfileNeedsRemotePython(editor.draft)
+      ? <p className="multi-profile-connections__python-required" role="status">Remote Python executable is required. Enter an explicit absolute path, then Test before Save or Activate. Work Stack never guesses an interpreter from PATH.</p>
+      : null}
     <Button disabled={pending.size > 0 || !draftValid} onClick={actions.testProfile}>Test connection</Button>
     {editor.feedback ? <p aria-live="polite" role="status">{editor.feedback}</p> : null}
-    {editor.error ? <p role="alert">{editor.error}</p> : null}
+    {editor.error ? <HostErrorAlert error={editor.error} /> : null}
     {dirty ? <p aria-live="polite">Unsaved changes</p> : null}
   </section>
 }
 
+function ProfileEditor({ actions, begin, editor, onReviewSynchronization, pending }: {
+  actions: EditorActions
+  begin: BeginRequest
+  editor: EditorContext
+  onReviewSynchronization?: () => void
+  pending: ReadonlySet<Operation>
+}) {
+  if (pending.has('get-registry')) return <ProfileEditorStatus title="Loading profiles" message="Reading the connection registry…" />
+  if (pending.has('save-registry') || pending.has('activate-profile')) return <ProfileEditorStatus title="Saving profile" message="The editor is locked until the correlated native response arrives." />
+  if (editor.activationPreview) {
+    return <ActivationPreviewPanel preview={editor.activationPreview} onCancel={actions.cancelActivation} onConfirm={actions.confirmActivation} />
+  }
+  return <ProfileEditorForm actions={actions} begin={begin} editor={editor} onReviewSynchronization={onReviewSynchronization} pending={pending} />
+}
+
 function connectionCenterActions(editor: EditorContext, activationEnabled: boolean, pending: boolean) {
   const tested = editor.testedFingerprint === fingerprint(editor.draft) && editor.testResult?.status === 'ready'
-  const profileValid = connectionProfileSchema.safeParse(editor.draft).success
+  const profileValid = connectionProfileWriteSchema.safeParse(editor.draft).success
   const original = editor.registry.profiles.find((profile) => profile.profile_id === editor.draft.profile_id)
   const activeProfile = editor.registry.active_profile_id === editor.draft.profile_id
   const authorityChanged = original === undefined ? false : authorityFingerprint(original) !== authorityFingerprint(editor.draft)
+  const previewOpen = editor.activationPreview !== null
   const saveAllowed = [
-    editor.registryDigest !== undefined, !pending, tested, profileValid,
+    editor.registryDigest !== undefined, !pending, tested, profileValid, !previewOpen,
     editor.registry.profiles.length > 0, !(activeProfile && authorityChanged),
   ].every(Boolean)
   const activationAllowed = [
-    activationEnabled, editor.registryDigest !== undefined, !pending, tested, profileValid,
+    activationEnabled, editor.registryDigest !== undefined, !pending, tested, profileValid, !previewOpen,
     editor.testResult?.proof_id, editor.testedRegistryDigest === editor.registryDigest,
   ].every(Boolean)
   return { activationAllowed, saveAllowed }

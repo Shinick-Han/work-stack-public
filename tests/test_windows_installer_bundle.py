@@ -323,6 +323,29 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn("browser-profile", launcher)
         self.assertGreaterEqual(launcher.count("Open-WorkStackBrowser -Url $url -ProfileRoot $browserProfilePath"), 2)
 
+    def test_builder_retains_the_compiler_handle_and_fails_closed_on_unknown_exit(self) -> None:
+        script = self.read("Build-WindowsInstaller.ps1")
+        helper = self.read("Wait-WorkStackOwnedProcess.ps1")
+
+        self.assertIn("$compile = Start-Process -FilePath $compiler", script)
+        self.assertIn("$compile.Handle", script)
+        self.assertLess(script.index("$compile = Start-Process"), script.index("$compile.Handle"))
+        self.assertLess(script.index("$compile.Handle"), script.index("WaitForExit(30000)"))
+        self.assertLess(script.index("$null -eq $compile.ExitCode"), script.index("$compile.ExitCode -ne 0"))
+        self.assertLess(script.index("exit code is unknown"), script.index("was not produced"))
+        self.assertIn("WaitForExit(30000)", script)
+        self.assertIn("WaitForExit(5000)", script)
+        self.assertNotRegex(script, r"WaitForExit\(\s*\)")
+        self.assertIn("ConvertTo-WorkStackCommandLineArgument", script)
+        self.assertEqual(1, script.count("Start-Process -FilePath $compiler"))
+        self.assertIn("function Wait-WorkStackOwnedProcess", helper)
+        self.assertIn("FUNCTIONS ONLY", helper)
+        self.assertIn("TimeoutMilliseconds = 30000", helper)
+        self.assertIn("KillConfirmMilliseconds = 5000", helper)
+        self.assertNotRegex(helper, r"WaitForExit\(\s*\)")
+        self.assertNotIn("csc.exe", helper)
+        self.assertNotRegex(helper, r"(?m)^\s*Start-Process\b")
+
     def test_primary_shortcuts_use_the_packaged_product_icon(self) -> None:
         """The icon source changed; the behavioural check does not.
 

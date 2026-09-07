@@ -36,12 +36,22 @@
       "roots": [
         "scripts/check_coverage.py",
         "scripts/quality_gate.py",
+        "scripts/quality_metrics.py",
+        "scripts/quality_report.py",
+        "scripts/quality_typescript.py",
+        "scripts/quality_typescript_ast.cjs",
         "scripts/release_gate.py",
         "scripts/run_ssh_regression.py",
-        "scripts/run_mutation_sentinels.py"
+        "scripts/run_mutation_sentinels.py",
+        "scripts/run_backend_tests.py",
+        "scripts/create_dogfood_fixture.py",
+        "scripts/build_linux_remote_artifact.py",
+        "scripts/linux_remote_artifact_git.py",
+        "scripts/linux_remote_artifact_zip.py"
       ],
       "extensions": [
-        ".py"
+        ".py",
+        ".cjs"
       ],
       "exclude_globs": []
     },
@@ -78,10 +88,16 @@
     "requirements.txt",
     "scripts/check_coverage.py",
     "scripts/quality_gate.py",
+    "scripts/quality_metrics.py",
+    "scripts/quality_report.py",
+    "scripts/quality_typescript.py",
+    "scripts/quality_typescript_ast.cjs",
     "scripts/release_gate.py",
     "scripts/run_ssh_regression.py",
     "scripts/run_mutation_sentinels.py",
-    "scripts/windows/Test-WorkStackReleaseBundle.ps1"
+    "scripts/windows/Test-WorkStackReleaseBundle.ps1",
+    "scripts/run_backend_tests.py",
+    "scripts/create_dogfood_fixture.py"
   ],
   "frontend_complexity": {
     "command": [
@@ -115,7 +131,12 @@
     "workstack/context_projection.py",
     "workstack/sse_events.py",
     "workstack/cli_writer.py",
-    "workstack/checkpoint_state_cli.py"
+    "workstack/checkpoint_state_cli.py",
+    "workstack/outcome_write_invariant.py",
+    "workstack/cli_routing.py",
+    "workstack/cli_reads.py",
+    "workstack/mutation_receipts.py",
+    "workstack/mutation_service.py"
   ],
   "python_layers": [
     {
@@ -124,7 +145,14 @@
         "workstack/__init__.py",
         "workstack/capture.py",
         "workstack/planning_status.py",
+        "workstack/report_documents.py",
+        "workstack/report_json.py",
+        "workstack/reporting.py",
+        "workstack/weekly_reporting.py",
         "workstack/snapshot_safety.py",
+        "workstack/store_errors.py",
+        "workstack/store_rosters.py",
+        "workstack/task_display_id.py",
         "workstack/unicode17.py"
       ],
       "may_import": []
@@ -158,12 +186,25 @@
       ]
     },
     {
+      "name": "py_store_validation",
+      "globs": ["workstack/store_document_validation.py"],
+      "may_import": ["py_foundation"]
+    },
+    {
+      "name": "py_store_migration",
+      "globs": ["workstack/store_report_migration.py"],
+      "may_import": ["py_foundation", "py_store_validation"]
+    },
+    {
       "name": "py_legacy_store",
       "globs": [
         "workstack/store.py"
       ],
       "may_import": [
-        "py_foundation"
+        "py_foundation",
+        "py_store_validation",
+        "py_store_migration",
+        "py_file_lease"
       ]
     },
     {
@@ -174,6 +215,7 @@
       ],
       "may_import": [
         "py_foundation",
+        "py_store_migration",
         "py_legacy_store"
       ]
     },
@@ -191,25 +233,31 @@
         "py_checkpoint_facts",
         "py_checkpoint_projection",
         "py_checkpoint_contract",
-        "py_context_projection"
+        "py_context_projection",
+        "py_outcome_write_invariant",
+        "py_mutation_service"
       ]
     },
     {
       "name": "py_transport",
       "globs": [
-        "workstack/server.py"
+        "workstack/server.py",
+        "workstack/reporting_http.py",
+        "workstack/weekly_reporting_http.py"
       ],
       "may_import": [
         "py_application",
         "py_foundation",
         "py_legacy_store",
-        "py_sse_encoder"
+        "py_sse_encoder",
+        "py_mutation_service"
       ]
     },
     {
       "name": "py_agent_contract",
       "globs": [
-        "workstack/agent_cli_contract.py"
+        "workstack/agent_cli_contract.py",
+        "workstack/agent_context_pack.py"
       ],
       "may_import": []
     },
@@ -296,12 +344,24 @@
       ]
     },
     {
+      "name": "py_agent_apply_admission",
+      "globs": [
+        "workstack/agent_apply_admission.py"
+      ],
+      "may_import": [
+        "py_agent_authority",
+        "py_cli_routing",
+        "py_owner_authority"
+      ]
+    },
+    {
       "name": "py_composition",
       "globs": [
         "run_work_stack.py",
         "workstack/cli.py"
       ],
       "may_import": [
+        "py_agent_apply_admission",
         "py_agent_runtime",
         "py_application",
         "py_foundation",
@@ -310,7 +370,9 @@
         "py_storage",
         "py_transport",
         "py_cli_writer",
-        "py_checkpoint_cli"
+        "py_checkpoint_cli",
+        "py_cli_capabilities",
+        "py_cli_routing"
       ]
     },
     {
@@ -327,8 +389,15 @@
         "desktop/python-webview-shell/generated/__init__.py",
         "desktop/python-webview-shell/generated/theme_tokens.py",
         "desktop/python-webview-shell/native_theme.py",
-        "desktop/python-webview-shell/profile_inspection.py",
+        "desktop/python-webview-shell/remote_command_contract.py",
         "desktop/python-webview-shell/remote_connection_monitor.py",
+        "desktop/python-webview-shell/remote_entry.py",
+        "desktop/python-webview-shell/remote_provision_plan.py",
+        "desktop/python-webview-shell/remote_provision_probe.py",
+        "desktop/python-webview-shell/remote_provision_collector.py",
+        "desktop/python-webview-shell/remote_provision_installer.py",
+        "desktop/python-webview-shell/remote_provision_installer_linux.py",
+        "desktop/python-webview-shell/remote_startup_state.py",
         "desktop/python-webview-shell/ssh_config_discovery.py",
         "desktop/python-webview-shell/ssh_profile_metadata.py",
         "desktop/python-webview-shell/ssot_connection.py",
@@ -339,17 +408,31 @@
       ],
       "may_import": [
         "py_foundation",
-        "py_desktop_rebind"
+        "py_desktop_rebind",
+        "py_profile_inspection"
       ]
+    },
+    {
+      "name": "py_profile_inspection",
+      "globs": ["desktop/python-webview-shell/profile_inspection.py"],
+      "may_import": ["py_foundation", "py_desktop", "py_legacy_store"]
     },
     {
       "name": "py_quality_tooling",
       "globs": [
         "scripts/check_coverage.py",
         "scripts/quality_gate.py",
+        "scripts/quality_metrics.py",
+        "scripts/quality_report.py",
+        "scripts/quality_typescript.py",
+        "scripts/quality_typescript_ast.cjs",
         "scripts/release_gate.py",
         "scripts/run_ssh_regression.py",
-        "scripts/run_mutation_sentinels.py"
+        "scripts/run_mutation_sentinels.py",
+        "scripts/run_backend_tests.py",
+        "scripts/build_linux_remote_artifact.py",
+        "scripts/linux_remote_artifact_git.py",
+        "scripts/linux_remote_artifact_zip.py"
       ],
       "may_import": []
     },
@@ -396,12 +479,20 @@
       "may_import": []
     },
     {
+      "name": "py_outcome_write_invariant",
+      "globs": [
+        "workstack/outcome_write_invariant.py"
+      ],
+      "may_import": []
+    },
+    {
       "name": "py_cli_writer",
       "globs": [
         "workstack/cli_writer.py"
       ],
       "may_import": [
-        "py_legacy_store"
+        "py_legacy_store",
+        "py_outcome_write_invariant"
       ]
     },
     {
@@ -420,6 +511,93 @@
         "desktop/python-webview-shell/local_workspace_rebind.py"
       ],
       "may_import": [
+        "py_legacy_store"
+      ]
+    },
+    {
+      "name": "py_cli_capabilities",
+      "globs": [
+        "workstack/cli_capabilities.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_file_lease",
+      "globs": [
+        "workstack/file_lease.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_owner_authority",
+      "globs": [
+        "workstack/owner_authority.py"
+      ],
+      "may_import": [
+        "py_agent_authority",
+        "py_legacy_store"
+      ]
+    },
+    {
+      "name": "py_mutation_notice",
+      "globs": [
+        "workstack/mutation_notice.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_cli_routing",
+      "globs": [
+        "workstack/cli_routing.py"
+      ],
+      "may_import": [
+        "py_cli_capabilities",
+        "py_cli_reads",
+        "py_cli_writer",
+        "py_owner_authority",
+        "py_legacy_store"
+      ]
+    },
+    {
+      "name": "py_cli_reads",
+      "globs": [
+        "workstack/cli_reads.py"
+      ],
+      "may_import": [
+        "py_cli_capabilities"
+      ]
+    },
+    {
+      "name": "py_mutation_receipts",
+      "globs": [
+        "workstack/mutation_receipts.py"
+      ],
+      "may_import": [
+        "py_mutation_notice"
+      ]
+    },
+    {
+      "name": "py_mutation_service",
+      "globs": [
+        "workstack/mutation_service.py"
+      ],
+      "may_import": [
+        "py_mutation_notice",
+        "py_mutation_receipts",
+        "py_foundation",
+        "py_storage",
+        "py_legacy_store"
+      ]
+    },
+    {
+      "name": "py_fixture_tooling",
+      "globs": [
+        "scripts/create_dogfood_fixture.py"
+      ],
+      "may_import": [
+        "py_context_projection",
+        "py_application",
+        "py_storage",
         "py_legacy_store"
       ]
     }

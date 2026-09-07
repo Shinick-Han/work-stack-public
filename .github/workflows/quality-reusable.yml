@@ -67,7 +67,17 @@ jobs:
         run: python scripts/run_ssh_regression.py
 
       - name: Run backend tests with branch coverage
-        run: python -m coverage run -m unittest discover -s tests -v
+        id: backend_tests
+        run: python -B scripts/run_backend_tests.py --coverage
+
+      - name: Retain backend launcher evidence
+        if: always() && steps.backend_tests.conclusion != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: backend-test-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/backend-tests
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Write backend coverage report
         run: python -m coverage json

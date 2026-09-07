@@ -21,7 +21,11 @@ _V3_MARKERS: Final[tuple[str, ...]] = (
     "replies.json",
     "activity.json",
 )
+_REPORTS_MARKER: Final[str] = "reports.json"
 _MAX_AUTHORITY_DOCUMENT_BYTES: Final[int] = 64 * 1024
+_MARKER_ABSENT: Final[str] = "absent"
+_MARKER_FILE: Final[str] = "file"
+_MARKER_INVALID: Final[str] = "invalid"
 
 
 def _canonical_uuid(value: object) -> str | None:
@@ -50,10 +54,19 @@ def _read_document(path: pathlib.Path) -> dict[str, object]:
     return doc
 
 
+_WORKSPACE_IDENTITY_KEYS: Final[frozenset[str]] = frozenset({"version", "id", "name"})
+_WORKSPACE_OPTIONAL_KEYS: Final[frozenset[str]] = frozenset(
+    {"task_display_id_high_water"}
+)
+
+
 def _read_workspace_uid(root: pathlib.Path) -> str:
     doc = _read_document(root / "workspace.json")
+    keys = set(doc)
+    extra = keys - _WORKSPACE_IDENTITY_KEYS
     if (
-        set(doc) != {"version", "id", "name"}
+        not _WORKSPACE_IDENTITY_KEYS <= keys
+        or extra - _WORKSPACE_OPTIONAL_KEYS
         or doc.get("version") != 2
         or not isinstance(doc.get("name"), str)
         or not str(doc["name"]).strip()
@@ -65,45 +78,92 @@ def _read_workspace_uid(root: pathlib.Path) -> str:
     return workspace_uid
 
 
+def _marker_state(path: pathlib.Path) -> str:
+    try:
+        if path.is_symlink():
+            return _MARKER_INVALID
+        if path.is_file():
+            return _MARKER_FILE
+        if path.exists():
+            return _MARKER_INVALID
+    except OSError:
+        return _MARKER_INVALID
+    return _MARKER_ABSENT
+
+
+def _optional_collection_marker_states(root: pathlib.Path) -> tuple[str, ...]:
+    states: list[str] = []
+    for name in _V3_MARKERS:
+        if name == "store-meta.json":
+            continue
+        states.append(_marker_state(root / name))
+    return tuple(states)
+
+
+def _read_metadata_schema(path: pathlib.Path) -> int | None:
+    metadata = _read_document(path)
+    if (
+        set(metadata) != {"version", "store_schema_version", "migrations"}
+        or metadata.get("version") != 2
+        or not isinstance(metadata.get("migrations"), dict)
+        or type(metadata.get("store_schema_version")) is not int
+    ):
+        return None
+    return int(metadata["store_schema_version"])
+
+
+def _admitted_collection_schema(
+    metadata_schema: int | None,
+    reports_state: str,
+    has_other_v3_marker: bool,
+) -> int | None:
+    if metadata_schema == 5:
+        return 5 if reports_state == _MARKER_FILE else None
+    if metadata_schema == 3 or (metadata_schema is None and has_other_v3_marker):
+        return 3 if reports_state == _MARKER_ABSENT else None
+    return None
+
+
 def _detect_format(root: pathlib.Path) -> int | None:
     store_path = root / "store.json"
     metadata_path = root / "store-meta.json"
-    has_v4_marker = store_path.exists()
-    has_metadata = metadata_path.exists()
-    has_other_v3_marker = any(
-        (root / name).exists() for name in _V3_MARKERS if name != "store-meta.json"
-    )
+    reports_path = root / _REPORTS_MARKER
+    store_state = _marker_state(store_path)
+    metadata_state = _marker_state(metadata_path)
+    reports_state = _marker_state(reports_path)
+    legacy_states = _optional_collection_marker_states(root)
+    if _MARKER_INVALID in (
+        store_state,
+        metadata_state,
+        reports_state,
+        *legacy_states,
+    ):
+        return None
 
-    if has_v4_marker:
-        if not store_path.is_file():
-            return None
+    if store_state == _MARKER_FILE:
         store = _read_document(store_path)
         if store.get("format") != "workstack.ssot" or store.get("schema_version") != 4:
             return None
 
     metadata_schema: int | None = None
-    if has_metadata:
-        if not metadata_path.is_file():
+    if metadata_state == _MARKER_FILE:
+        metadata_schema = _read_metadata_schema(metadata_path)
+        if metadata_schema is None:
             return None
-        metadata = _read_document(metadata_path)
-        if (
-            set(metadata) != {"version", "store_schema_version", "migrations"}
-            or metadata.get("version") != 2
-            or not isinstance(metadata.get("migrations"), dict)
-            or type(metadata.get("store_schema_version")) is not int
-        ):
-            return None
-        metadata_schema = int(metadata["store_schema_version"])
 
-    if has_v4_marker and (has_metadata or has_other_v3_marker):
+    has_other_v3_marker = _MARKER_FILE in legacy_states
+    has_collection_marker = (
+        metadata_state == _MARKER_FILE
+        or has_other_v3_marker
+        or reports_state == _MARKER_FILE
+    )
+    if store_state == _MARKER_FILE and has_collection_marker:
         return None
-    if has_v4_marker or metadata_schema == 4:
+    if store_state == _MARKER_FILE or metadata_schema == 4:
         return 4
-    if metadata_schema not in (None, 3):
-        return None
-    if metadata_schema == 3 or has_other_v3_marker:
-        return 3
-    return None
+    return _admitted_collection_schema(
+        metadata_schema, reports_state, has_other_v3_marker
+    )
 
 
 def admit_authority(
@@ -135,5 +195,7 @@ def admit_authority(
         raise ValueError("workspace_mismatch")
 
     return workstack.agent_cli_contract.AuthorityAdmission(
-        data_dir=resolved, workspace_uid=actual_uid
+        data_dir=resolved,
+        workspace_uid=actual_uid,
+        storage_format="v5" if fmt == 5 else "v3",
     )

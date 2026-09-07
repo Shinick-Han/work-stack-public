@@ -6,8 +6,22 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from workstack.mutation_notice import (
+    derive_mutation_uid,
+    derive_notice_id,
+    serialize_notice,
+    validate_notice,
+)
+from workstack.mutation_receipts import unkeyed_status_key
 from workstack.service import WorkSessionConflictError, WorkStack
-from workstack.store import DEFAULTS, Store
+from workstack.store import Store
+from workstack.store_document_validation import REPORTS_DEFAULT
+from workstack.store_rosters import (
+    REPORTS_DOCUMENT_NAME,
+    V3_DOCUMENT_NAMES,
+    V3_DOCUMENT_ORDER,
+    V5_DOCUMENT_NAMES,
+)
 from workstack.storage.canonical import canonical_json_bytes
 from workstack.storage.intent_contract import IntentContractError
 from workstack.storage.intent_v4_repository import (
@@ -24,6 +38,7 @@ from workstack.storage.reader import read_v4
 from workstack.storage.runtime import resolve_runtime_authority
 from workstack.storage.task_repository import TaskRepositoryError
 from workstack.storage.work_session_v4_repository import V4WorkSessionRepository
+from workstack.task_display_id import FIELD as TASK_DISPLAY_ID_HIGH_WATER
 from workstack.checkpoint_change import CheckpointChangeError, build_checkpoint_facts
 
 
@@ -81,7 +96,10 @@ class StorageIntentDualBackendTest(unittest.TestCase):
             "workstack.service.utc_now", return_value="2026-09-01T00:00:00Z"
         ), mock.patch("workstack.service.today", return_value=TODAY):
             self.task = self.v3.add_task("Intent boundary")
-        documents = {name: self.v3.store.load(name) for name in DEFAULTS}
+        # The conversion source is the historical v3 document set, named by the
+        # frozen roster. Handing it this build's wider DEFAULTS would feed a
+        # v3-to-v4 conversion a document v3 never had.
+        documents = {name: self.v3.store.load(name) for name in V3_DOCUMENT_ORDER}
         self.conversion = convert_v3_documents(
             documents, candidate_created_at="2026-09-01T00:00:00Z"
         )
@@ -137,27 +155,68 @@ class StorageIntentDualBackendTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def _legacy(self, method: str, *args, **kwargs):
+        # The notice wrapper reads its own wall clock, so freezing only the
+        # service clock would leave an exact event oracle nondeterministic.
         with mock.patch(
             "workstack.service.today", return_value=self.clock[0][:10]
         ), mock.patch(
             "workstack.service.utc_now", return_value=self.clock[0]
+        ), mock.patch(
+            "workstack.mutation_service._utc_now", return_value=self.clock[0]
         ):
             return getattr(self.v3, method)(*args, **kwargs)
 
-    def _assert_semantic_parity(self) -> None:
+    def _v4_documents(self) -> dict:
         ledger = json.loads(self.runtime.idempotency_path.read_text(encoding="utf-8"))
-        snapshot = V4WorkspaceRepository(
+        return V4WorkspaceRepository(
             self.v4_root,
             idempotency_ledger=ledger,
             task_note_source_indexes=self.conversion.task_note_source_indexes,
             generation=read_runtime_manifest(self.runtime.manifest_path).generation,
         ).read().snapshot.to_v3_documents()
-        self.assertEqual(self.v3.store.load("notes.json"), snapshot["notes.json"])
-        self.assertEqual(self.v3.store.load("worklog.json"), snapshot["worklog.json"])
-        self.assertEqual(self.v3.store.load("okr.json"), snapshot["okr.json"])
-        self.assertEqual(self.v3.store.load("backlog.json"), snapshot["backlog.json"])
+
+    def _assert_current_reports_document_is_unobserved_and_empty(self) -> None:
+        """Name the one current document the shared projection cannot carry.
+
+        The v4 reverse projection reconstructs the v3 document set, so the
+        roster it can be compared against is the frozen v3 one. Narrowing the
+        comparison that way is only honest while the difference is accounted
+        for by name and by content: schema 5 added exactly reports.json, and in
+        this dual-backend scenario neither backend writes a report, so the
+        legacy store still holds the empty current default. A report appearing
+        here would fail this assertion instead of slipping past a roster that
+        no longer mentions it.
+        """
+        self.assertEqual(V5_DOCUMENT_NAMES - V3_DOCUMENT_NAMES, {REPORTS_DOCUMENT_NAME})
+        self.assertEqual(
+            REPORTS_DEFAULT, self.v3.store.load(REPORTS_DOCUMENT_NAME)
+        )
+
+    def _assert_shared_projection_parity(self, snapshot: dict) -> None:
+        """Compare every shared projection except the activity event list.
+
+        The roster is the frozen v3 document set, written out by name, rather
+        than this build's mutable DEFAULTS: the v4 reverse projection produces
+        v3 documents, so measuring it against whatever the current schema
+        happens to contain would report a schema change as a parity failure.
+        The one document the current schema adds is checked separately, so a
+        newly shared document still cannot go unobserved. Task records live in
+        backlog.json, so status, revision, updated_at and status_fact_id are
+        still compared exactly here.
+        """
+        self.assertEqual(set(V3_DOCUMENT_NAMES), set(snapshot))
+        self._assert_current_reports_document_is_unobserved_and_empty()
+        for name in sorted(V3_DOCUMENT_NAMES):
+            if name == "activity.json":
+                continue
+            if name == "workspace.json":
+                self._assert_workspace_parity(snapshot[name])
+                continue
+            if name == "store-meta.json":
+                self._assert_metadata_parity(snapshot[name])
+                continue
+            self.assertEqual(self.v3.store.load(name), snapshot[name], name)
         legacy_activity = self.v3.store.load("activity.json")
-        self.assertEqual(legacy_activity["activity"], snapshot["activity.json"]["activity"])
         self.assertEqual(
             legacy_activity["planning_status"],
             snapshot["activity.json"]["planning_status"],
@@ -170,6 +229,139 @@ class StorageIntentDualBackendTest(unittest.TestCase):
                 item["key"]: item
                 for item in snapshot["activity.json"]["idempotency"]
             },
+        )
+
+    def _assert_metadata_parity(self, projected: dict) -> None:
+        """Compare store-meta.json across the one difference the versions make.
+
+        The reverse projection reconstructs the v3 document set, so its
+        metadata record is a v3 one by construction
+        (workstack/storage/semantic.py), while the legacy backend is a store
+        this build wrote and carries the current collection version. Requiring
+        each side to declare exactly its own version, and the two evidence
+        records both versions have to be identical, is stricter than leaving
+        the document unobserved: a drifted identity or planning-status record
+        still fails here, and a released default that silently stopped being
+        schema 5 fails too.
+        """
+        legacy = self.v3.store.load("store-meta.json")
+        self.assertEqual(legacy["version"], projected["version"])
+        self.assertEqual(3, projected["store_schema_version"])
+        self.assertEqual({"identity", "planning_status"}, set(projected["migrations"]))
+        self.assertEqual(5, legacy["store_schema_version"])
+        self.assertEqual(
+            {"identity", "planning_status", "reports"}, set(legacy["migrations"])
+        )
+        for name in sorted(projected["migrations"]):
+            self.assertEqual(
+                legacy["migrations"][name], projected["migrations"][name], name
+            )
+
+    def _assert_workspace_parity(self, projected: dict) -> None:
+        """Compare workspace.json across its one designed v4 relocation.
+
+        The Task display-ID high water is v3 workspace metadata but v4
+        store.json metadata, so the reverse projection legitimately cannot
+        carry it (workstack/storage/migration_conversion.py). Comparing every
+        remaining field exactly and the water at its real v4 authority is
+        stricter than leaving the document unobserved.
+        """
+        legacy = self.v3.store.load("workspace.json")
+        water = legacy.pop(TASK_DISPLAY_ID_HIGH_WATER, None)
+        self.assertEqual(legacy, projected, "workspace.json")
+        self.assertEqual(
+            water,
+            read_v4(self.v4_root).store.get(TASK_DISPLAY_ID_HIGH_WATER),
+            TASK_DISPLAY_ID_HIGH_WATER,
+        )
+
+    def _assert_semantic_parity(self) -> None:
+        snapshot = self._v4_documents()
+        self._assert_shared_projection_parity(snapshot)
+        legacy_activity = self.v3.store.load("activity.json")
+        self.assertEqual(legacy_activity["activity"], snapshot["activity.json"]["activity"])
+
+    def _v4_activity_state(self) -> tuple:
+        """The v4 activity stream as persisted and as reverse-projected."""
+        return (
+            tuple(read_v4(self.v4_root).streams["activity"]),
+            self._v4_documents()["activity.json"]["activity"],
+        )
+
+    def _persistent_bytes(self) -> dict:
+        """Every byte either backend has persisted, plus v4 runtime state."""
+        state: dict[str, bytes] = {}
+        for label, root in (
+            ("v3", self.v3_root),
+            ("v4", self.v4_root),
+            ("runtime", self.runtime.runtime_root),
+        ):
+            for path in sorted(root.rglob("*")):
+                if path.is_file():
+                    relative = path.relative_to(root).as_posix()
+                    state["{}/{}".format(label, relative)] = path.read_bytes()
+        return state
+
+    def _expected_status_notice(self) -> dict:
+        """The single committed notice this open -> started transition may add."""
+        workspace_uid = str(self.conversion.store["workspace_uid"])
+        self.assertEqual(workspace_uid, self.v3.store.readiness.workspace_uid)
+        task_uid = str(self.task["uid"])
+        key = "ts:{}:0".format(task_uid)
+        self.assertEqual(key, unkeyed_status_key(task_uid, 0))
+        return {
+            "actor": "local.user",
+            "after_revision": 1,
+            "before_revision": 0,
+            "commit_state": "committed",
+            "entity_kind": "task",
+            "entity_uid": task_uid,
+            "format": "workstack.mutation-notice",
+            "idempotency_key": key,
+            "mutation_uid": derive_mutation_uid(
+                workspace_uid=workspace_uid, idempotency_key=key
+            ),
+            "notice_id": derive_notice_id(
+                workspace_uid=workspace_uid, idempotency_key=key
+            ),
+            "operation": "task.status",
+            "schema_version": 1,
+            "source": "cli",
+            "status_after": "started",
+            "status_before": "open",
+            "summary": "Task status open to started",
+            "undoable": True,
+            "workspace_uid": workspace_uid,
+        }
+
+    def _assert_parity_with_one_v3_status_notice(
+        self, v3_activity_before: list, v4_activity_before: tuple
+    ) -> None:
+        """Prove the only activity delta is one authorized v3 status notice.
+
+        This is narrower than filtering mutation.notice away: notices are a
+        v3-only capability here, so v4 activity must still equal its exact
+        captured baseline and every other projection must match exactly.
+        """
+        snapshot = self._v4_documents()
+        self._assert_shared_projection_parity(snapshot)
+        self.assertEqual(v4_activity_before, self._v4_activity_state())
+        events = self.v3.store.load("activity.json")["activity"]
+        self.assertEqual(v3_activity_before, events[: len(v3_activity_before)])
+        self.assertEqual(len(v3_activity_before) + 1, len(events))
+        notice = self._expected_status_notice()
+        self.assertEqual(
+            {
+                "created_at": NOW,
+                "details": {"notice": serialize_notice(notice).decode("utf-8")},
+                "id": "E-000001",
+                "task_id": self.task["id"],
+                "type": "mutation.notice",
+            },
+            events[-1],
+        )
+        self.assertEqual(
+            notice, validate_notice(json.loads(events[-1]["details"]["notice"]))
         )
 
     def _assert_replay_without_generation_change(
@@ -330,6 +522,10 @@ class StorageIntentDualBackendTest(unittest.TestCase):
         self._assert_semantic_parity()
 
     def test_planning_status_matches_v3_revision_fact_and_noop(self) -> None:
+        v3_activity_before = self.v3.store.load("activity.json")["activity"]
+        v4_activity_before = self._v4_activity_state()
+        self.assertEqual([], v3_activity_before)
+
         legacy = self._legacy(
             "set_task_status", self.task["id"], "started", 0
         )
@@ -337,18 +533,26 @@ class StorageIntentDualBackendTest(unittest.TestCase):
             self.task["id"], "started", 0
         )
         self.assertEqual(legacy, normalized)
+        self.assertEqual(1, legacy["revision"])
         generation = read_runtime_manifest(self.runtime.manifest_path).generation
         ledger = self.runtime.idempotency_path.read_bytes()
+        committed = self._persistent_bytes()
 
         self.assertEqual(
             self._legacy("set_task_status", self.task["id"], "started", 1),
             self.v4_planning.set_task_status(self.task["id"], "started", 1),
         )
+        # The same-status request is a true no-op on both sides, so the one
+        # authorized notice asserted below cannot have been appended twice.
+        self.assertEqual(committed, self._persistent_bytes())
         self.assertEqual(
             generation, read_runtime_manifest(self.runtime.manifest_path).generation
         )
         self.assertEqual(ledger, self.runtime.idempotency_path.read_bytes())
-        self._assert_semantic_parity()
+        self.assertEqual(1, self.v3.get_task(self.task["id"])["revision"])
+        self._assert_parity_with_one_v3_status_notice(
+            v3_activity_before, v4_activity_before
+        )
 
     def test_planning_invalid_or_stale_transition_fails_without_write(self) -> None:
         generation = read_runtime_manifest(self.runtime.manifest_path).generation

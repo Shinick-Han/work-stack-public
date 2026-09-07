@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
 from argparse import Namespace
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from workstack import cli
+from workstack.owner_authority import EXCLUSIVE_LOCAL_HELD, acquire_owner_authority
 from workstack.service import DomainError
 from workstack.storage.migration import StorageMigrationError
 
@@ -39,13 +41,50 @@ class CliMainCharacterizationTests(unittest.TestCase):
     ) -> tuple[int, Mock, Mock]:
         store = Mock()
         work_stack = stack or Mock()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name)
+        data_dir = home / "data"
+        runtime = home / "runtime"
+        scratch = home / "tmp"
+        runtime.mkdir()
+        scratch.mkdir()
+        arguments.data_dir = str(data_dir)
+        acquires: list[tuple[str, bool, object]] = []
+
+        def counting_acquire(**kwargs: object):
+            authority = acquire_owner_authority(**kwargs)
+            acquires.append((authority.state, authority.lease is not None, authority))
+            return authority
+
         with (
+            patch.dict(
+                os.environ,
+                {
+                    "WORK_STACK_RUNTIME": str(runtime),
+                    "TEMP": str(scratch),
+                    "TMP": str(scratch),
+                    "TMPDIR": str(scratch),
+                },
+                clear=False,
+            ),
             patch.object(cli, "parser", return_value=_Parsed(arguments)),
             patch.object(cli, "Store", return_value=store) as store_type,
             patch.object(cli, "WorkStack", return_value=work_stack) as stack_type,
             patch.object(cli.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(stdin))),
+            patch("workstack.cli_routing.acquire_owner_authority", counting_acquire),
         ):
+            from workstack.store import Store
+
+            isolated = Store(data_dir)
+            isolated.initialize()
             result = cli.main(["ignored"])
+        self.assertLessEqual(len(acquires), 1)
+        if acquires:
+            state, held, authority = acquires[0]
+            self.assertEqual(state, EXCLUSIVE_LOCAL_HELD)
+            self.assertTrue(held, "ordinary dispatch must hold one writer lease")
+            self.assertTrue(authority._released)
         return result, store_type, stack_type
 
     def test_capture_and_agent_bypass_work_stack_initialization(self) -> None:
@@ -57,10 +96,57 @@ class CliMainCharacterizationTests(unittest.TestCase):
         stack_type.assert_not_called()
 
         agent = _arguments("agent", "apply", intent_id="intent-123")
-        with patch.object(cli, "apply_agent_update", return_value=8) as apply:
+        with patch.object(
+            cli.agent_apply_admission,
+            "dispatch_admitted_apply",
+            return_value=8,
+        ) as admitted:
             result, store_type, stack_type = self._invoke(agent, stdin=b"agent")
         self.assertEqual(result, 8)
-        apply.assert_called_once_with(store_type.return_value, b"agent", "intent-123")
+        admitted.assert_called_once_with(
+            agent,
+            b"agent",
+            "intent-123",
+            apply=cli.apply_agent_update,
+        )
+        store_type.assert_not_called()
+        stack_type.assert_not_called()
+
+    def test_invalid_agent_apply_does_not_initialize_store(self) -> None:
+        with self.subTest("missing_locator"):
+            agent = _arguments("agent", "apply", intent_id="intent-123")
+            with patch.object(
+                cli,
+                "apply_agent_update",
+                side_effect=AssertionError("apply must not run"),
+            ):
+                result, store_type, stack_type = self._invoke(agent, stdin=b"agent")
+            self.assertEqual(result, 2)
+            store_type.assert_not_called()
+            stack_type.assert_not_called()
+
+        agent = _arguments(
+            "agent",
+            "apply",
+            intent_id="intent-123",
+            workspace_uid="11111111-1111-4111-8111-111111111111",
+        )
+        with (
+            patch.object(
+                cli.agent_apply_admission,
+                "admit_authority",
+                side_effect=AssertionError("admit_authority must not run"),
+            ) as admit,
+            patch.object(
+                cli,
+                "apply_agent_update",
+                side_effect=AssertionError("apply must not run"),
+            ),
+        ):
+            result, store_type, stack_type = self._invoke(agent, stdin=b"agent")
+        self.assertEqual(result, 2)
+        admit.assert_not_called()
+        store_type.assert_not_called()
         stack_type.assert_not_called()
 
     def test_maintenance_actions_bypass_work_stack_and_emit_stable_receipts(self) -> None:

@@ -26,7 +26,7 @@ OTHER_UID = "22222222-2222-4222-8222-222222222222"
 
 
 class ObservedStore(Store):
-    """The real v3 Store with observable public transaction/load boundaries."""
+    """The current Store with observable public transaction/load boundaries."""
 
     def __init__(self, root: Path) -> None:
         self.events: list[tuple[object, ...]] = []
@@ -67,6 +67,7 @@ class AgentLocalBackendContractTest(unittest.TestCase):
         self.admission = AuthorityAdmission(
             data_dir=self.root,
             workspace_uid=WORKSPACE_UID,
+            storage_format="v5",
         )
         self.factory_calls: list[Path] = []
 
@@ -131,12 +132,13 @@ class AgentLocalBackendContractTest(unittest.TestCase):
                 admission=AuthorityAdmission(
                     data_dir=missing,
                     workspace_uid=WORKSPACE_UID,
+                    storage_format="v5",
                 ),
                 store_factory=forbidden_factory,
             )
         self.assertEqual(calls, [])
 
-    def test_status_is_the_exact_exclusive_local_v3_raw_mapping(self) -> None:
+    def test_status_is_the_exact_exclusive_local_v5_raw_mapping(self) -> None:
         result = self.backend().status(
             request=StatusRequest(
                 data_dir=self.root,
@@ -155,9 +157,65 @@ class AgentLocalBackendContractTest(unittest.TestCase):
                 "expected_workspace_uid": WORKSPACE_UID,
                 "ready": True,
                 "running_server_available": False,
-                "storage_format": "v3",
+                "storage_format": "v5",
             },
         )
+
+    def test_historical_v3_store_meta_emits_v3_from_readable_metadata(self) -> None:
+        historical = json.loads(
+            (
+                Path(__file__).resolve().parent
+                / "fixtures"
+                / "store-v3"
+                / "empty"
+                / "store-meta.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(historical["store_schema_version"], 3)
+        self.assertNotIn("reports", historical["migrations"])
+        original = self.store.load
+
+        def load(name: str):
+            if name == "store-meta.json":
+                return historical
+            return original(name)
+
+        with mock.patch.object(self.store, "load", side_effect=load):
+            result = self.backend().status(
+                request=StatusRequest(
+                    data_dir=self.root,
+                    expected_workspace_uid=WORKSPACE_UID,
+                )
+            )
+        self.assertEqual(result["storage_format"], "v3")
+        self.assertTrue(result["ready"])
+        self.assertTrue(result["capability_supported"])
+
+    def test_unsync_status_emits_the_admitted_storage_format(self) -> None:
+        workspace = self.store.load("workspace.json")
+        workspace["id"] = OTHER_UID
+        self.store.path("workspace.json").write_text(
+            json.dumps(workspace, ensure_ascii=False, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        admission = AuthorityAdmission(
+            data_dir=self.root,
+            workspace_uid=OTHER_UID,
+            storage_format="v5",
+        )
+        backend = create_local_backend(
+            admission=admission,
+            store_factory=lambda *, root: self.store,
+        )
+        status = backend.status(
+            request=StatusRequest(
+                data_dir=self.root,
+                expected_workspace_uid=OTHER_UID,
+            )
+        )
+        self.assertEqual(status["storage_format"], "v5")
+        self.assertFalse(status["ready"])
+        self.assertEqual(status["capability_reason"], "store_sync_required")
 
     def test_manifest_workspace_mismatch_is_not_ready_and_blocks_content_and_write(self) -> None:
         workspace = self.store.load("workspace.json")
@@ -166,7 +224,11 @@ class AgentLocalBackendContractTest(unittest.TestCase):
             json.dumps(workspace, ensure_ascii=False, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
-        admission = AuthorityAdmission(data_dir=self.root, workspace_uid=OTHER_UID)
+        admission = AuthorityAdmission(
+            data_dir=self.root,
+            workspace_uid=OTHER_UID,
+            storage_format="v3",
+        )
         backend = create_local_backend(
             admission=admission,
             store_factory=lambda *, root: self.store,

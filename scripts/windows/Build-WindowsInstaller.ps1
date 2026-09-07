@@ -223,6 +223,12 @@ try {
     # Bounded: one invocation, no retry and no alternate compiler. The process
     # object is retained so a timeout can be reported rather than silently ignored.
     $compile = Start-Process -FilePath $compiler -ArgumentList $compilerArguments -NoNewWindow -PassThru -Wait:$false
+    # Windows PowerShell 5.1 Start-Process -PassThru does not keep an associated
+    # OS handle unless Handle is read while the compiler is still running.
+    # Without it, WaitForExit can return true and ExitCode stays $null, which
+    # -ne 0 treats as failure after a successful compile. This read does not
+    # wait, kill, or decide success.
+    try { [void]($compile.Handle) } catch { }
     $initialExited = $false
     try {
         $initialExited = [bool]$compile.WaitForExit(30000)
@@ -250,18 +256,13 @@ try {
         }
         throw 'Compiling the Work Stack desktop host timed out after 30 seconds.'
     }
-    $compile.Refresh()
-    $compilerExitCode = $compile.ExitCode
-    if ($null -eq $compilerExitCode) {
-        # Some hosts populate HasExited without ExitCode. The produced host is the
-        # authority: a missing file still fails, a present file is treated as success.
-        if (-not (Test-Path -LiteralPath $hostOutput -PathType Leaf)) {
-            throw 'Compiling the Work Stack desktop host finished without an exit code and produced no host.'
-        }
-        $compilerExitCode = 0
+    if ($null -eq $compile.ExitCode) {
+        $script:WorkStackPreserveTemporary = $true
+        throw ("Compiling the Work Stack desktop host finished, but its exit code is unknown so the " +
+            "temporary tree at " + $temporary + " was preserved.")
     }
-    if ($compilerExitCode -ne 0) {
-        throw "Compiling the Work Stack desktop host failed with exit code $compilerExitCode."
+    if ($compile.ExitCode -ne 0) {
+        throw "Compiling the Work Stack desktop host failed with exit code $($compile.ExitCode)."
     }
     if (-not (Test-Path -LiteralPath $hostOutput -PathType Leaf)) {
         throw 'The Work Stack desktop host was not produced.'

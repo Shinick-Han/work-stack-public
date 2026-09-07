@@ -32,6 +32,11 @@ from ssot_connection import validate_connection_draft
 LEGACY_MIRROR_FILE = "remote-connection.json"
 LEGACY_MIRROR_RECEIPT_FILE = "remote-connection.generated-receipt.json"
 LEGACY_MIRROR_RECEIPT_VERSION = 1
+# Absolute form of the historical `python3` token. Used only when generating a
+# legacy SSOT mirror from a pre-remote_python registry profile. Newly supplied
+# SSH drafts still require an explicit interpreter; command construction still
+# fails closed if the runtime profile lacks one.
+LEGACY_MIRROR_REMOTE_PYTHON = "/usr/bin/python3"
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -132,6 +137,10 @@ def _legacy_draft(profile: ConnectionProfile) -> dict[str, object]:
             "workspace_id": profile.expected_workspace_id,
             "remote_port": profile.remote_port,
         }
+        if profile.remote_python is not None:
+            raw["remote_python"] = profile.remote_python
+        else:
+            raw["remote_python"] = LEGACY_MIRROR_REMOTE_PYTHON
     return validate_connection_draft(raw)
 
 

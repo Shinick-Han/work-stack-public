@@ -1,0 +1,45 @@
+{
+  "objectives": [
+    {
+      "objective": "Dogfood compact outcomes",
+      "key_results": [
+        "Linked KR with explicit Tasks",
+        "Zero-linked KR with no Task refs"
+      ]
+    },
+    {
+      "objective": "Dogfood review and context",
+      "key_results": ["Observable review checkpoint"]
+    }
+  ],
+  "tasks": [
+    {
+      "title": "Done prerequisite",
+      "status": "done",
+      "role": "done_prerequisite",
+      "depends_on": []
+    },
+    {
+      "title": "Blocked successor",
+      "status": "open",
+      "role": "blocked_reveal",
+      "depends_on": ["Done prerequisite"]
+    },
+    {
+      "title": "Independent selected task",
+      "status": "open",
+      "role": "selected_without_prerequisites",
+      "depends_on": []
+    }
+  ],
+  "zero_linked_key_result": "Zero-linked KR with no Task refs",
+  "linked_key_result": "Linked KR with explicit Tasks",
+  "note_text": "Shared dogfood context",
+  "checkpoint_task": "Independent selected task",
+  "checkpoint_done": ["Recorded the disposable fixture checkpoint"],
+  "checkpoint_next": ["Human smoke on source launch"],
+  "formats": {
+    "v3": "Released v3 document composition admits optional scoped Task key_result_refs.",
+    "v4": "Experimental v4 conversion has no key_result_refs field and refuses that patch; do not migrate a v3-with-refs store."
+  }
+}

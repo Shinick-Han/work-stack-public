@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import { buildWorkspaceEdges } from "./viewModels";
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -6,13 +6,27 @@ import { describe, expect, test, vi } from 'vitest'
 
 import type { Objective, Task } from '../../../domain/types'
 import { GraphView, makeGraphModel } from './GraphView'
+import { planningGraphTopologyKey } from './graphLayout'
 import { projectKeyResults } from './keyResultModel'
 import {
   DERIVED_KEY_RESULT_OBJECTIVE,
+  DERIVED_OBJECTIVE_TASK,
   DERIVED_TASK_KEY_RESULT,
   keyResultEndpointKey,
 } from './keyResultViewModel'
 import type { WorkspaceTask } from './types'
+
+const { layoutPlanningGraphMock } = vi.hoisted(() => ({
+  layoutPlanningGraphMock: vi.fn(async (nodes: unknown[]) => ({ nodes, edgeRoutes: {} })),
+}))
+
+vi.mock('./graphLayout', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./graphLayout')>()
+  return {
+    ...actual,
+    layoutPlanningGraph: layoutPlanningGraphMock,
+  }
+})
 
 // Only the canvas engine is substituted. The subject state, callback and pure
 // helper are all real, so these tests cannot merely mirror their own output.
@@ -99,11 +113,12 @@ describe('key-result graph model', () => {
     // Canonical relationship kinds never gain a derived kind.
     const derived = built.edges.filter((edge) =>
       edge.data?.kind === DERIVED_TASK_KEY_RESULT
-      || edge.data?.kind === DERIVED_KEY_RESULT_OBJECTIVE)
+      || edge.data?.kind === DERIVED_KEY_RESULT_OBJECTIVE
+      || edge.data?.kind === DERIVED_OBJECTIVE_TASK)
     expect(derived.length).toBeGreaterThan(0)
     for (const edge of built.edges) {
       if (derived.includes(edge)) continue
-      expect([DERIVED_TASK_KEY_RESULT, DERIVED_KEY_RESULT_OBJECTIVE])
+      expect([DERIVED_TASK_KEY_RESULT, DERIVED_KEY_RESULT_OBJECTIVE, DERIVED_OBJECTIVE_TASK])
         .not.toContain(edge.data?.kind)
     }
   })
@@ -115,14 +130,11 @@ describe('key-result graph model', () => {
     )
     expect(zero).toBeTruthy()
     expect(zero?.data.outcome?.linkedTotal).toBe(0)
-    // Its KR to Objective presentation edge still exists.
     const parentEdge = built.edges.find(
       (edge) => edge.data?.kind === DERIVED_KEY_RESULT_OBJECTIVE
-        && edge.source === keyResultEndpointKey(zero!.id.replace(/^endpoint\|key-result\|/, '')),
+        && edge.target === zero!.id,
     )
-    expect(parentEdge ?? built.edges.some(
-      (edge) => edge.data?.kind === DERIVED_KEY_RESULT_OBJECTIVE,
-    )).toBeTruthy()
+    expect(parentEdge?.source).toBe('flow|objective|O-A')
   })
 
   test('a zero-Task workspace still yields the key-result catalog', () => {
@@ -168,10 +180,92 @@ describe('key-result graph model', () => {
     )
     expect(built.nodes.some((node) => node.data.kind === 'key-result')).toBe(false)
   })
+
+  test('Task or KR selection does not change layout topology identity', () => {
+    const idle = model([LINKED], [OBJECTIVE_A])
+    const taskSelected = makeGraphModel(
+      [LINKED] as unknown as readonly WorkspaceTask[],
+      [OBJECTIVE_A] as never,
+      [],
+      [],
+      'T-1',
+      null,
+      projectionFor([LINKED], [OBJECTIVE_A]),
+    )
+    const krSelected = makeGraphModel(
+      [LINKED] as unknown as readonly WorkspaceTask[],
+      [OBJECTIVE_A] as never,
+      [],
+      [],
+      null,
+      null,
+      projectionFor([LINKED], [OBJECTIVE_A]),
+      null,
+      null,
+      { objectiveId: 'O-A', keyResultId: 'KR-2' },
+    )
+    expect(planningGraphTopologyKey(taskSelected.nodes, taskSelected.edges))
+      .toBe(planningGraphTopologyKey(idle.nodes, idle.edges))
+    expect(planningGraphTopologyKey(krSelected.nodes, krSelected.edges))
+      .toBe(planningGraphTopologyKey(idle.nodes, idle.edges))
+    expect(krSelected.nodes.filter((node) => node.data.kind === 'task')).toHaveLength(1)
+  })
+
+  test('Objective-only alignment is Objective→Task; KR-linked Tasks omit that shortcut', () => {
+    const only = task('T-9', { objective_ids: ['O-A'] })
+    const built = model([LINKED, only], [OBJECTIVE_A])
+    const shortcut = built.edges.filter((edge) => edge.data?.kind === DERIVED_OBJECTIVE_TASK)
+    expect(shortcut.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
+      'flow|objective|O-A->flow|task|T-9',
+    ])
+    const krToLinked = built.edges.filter(
+      (edge) => edge.data?.kind === DERIVED_TASK_KEY_RESULT && edge.target === 'flow|task|T-1',
+    )
+    expect(krToLinked).toHaveLength(1)
+    expect(krToLinked[0].source.startsWith('flow|key-result|')).toBe(true)
+    expect(built.nodes.filter((node) => node.data.kind === 'task')).toHaveLength(2)
+  })
+
+  test('floating and unresolved fabricate no KR node or derived Task edge', () => {
+    const floating = task('T-8')
+    const built = model([UNRESOLVED, floating], [OBJECTIVE_A])
+    expect(built.nodes.some((node) => node.data.id === 'KR-MISSING')).toBe(false)
+    const derivedTowardFloating = built.edges.filter(
+      (edge) =>
+        typeof edge.data?.kind === 'string'
+        && edge.data.kind.startsWith('derived.')
+        && (edge.source.includes('T-8') || edge.target.includes('T-8')),
+    )
+    expect(derivedTowardFloating).toHaveLength(0)
+    expect(built.edges.some((edge) => `${edge.source}${edge.target}`.includes('KR-MISSING'))).toBe(false)
+  })
+
+  test('multi-KR Task stays one node with two KR→Task edges', () => {
+    const multi = task('T-3', {
+      objective_ids: ['O-A'],
+      key_result_refs: [
+        { objective_id: 'O-A', key_result_id: 'KR-1' },
+        { objective_id: 'O-A', key_result_id: 'KR-2' },
+      ],
+    })
+    const built = model([multi], [OBJECTIVE_A])
+    expect(built.nodes.filter((node) => node.data.kind === 'task' && node.data.id === 'T-3')).toHaveLength(1)
+    expect(
+      built.edges.filter(
+        (edge) => edge.data?.kind === DERIVED_TASK_KEY_RESULT && edge.target === 'flow|task|T-3',
+      ),
+    ).toHaveLength(2)
+  })
 })
 
 describe('key-result node presentation and activation', () => {
-  function renderGraph(
+  async function settleMockedLayout() {
+    await act(async () => {
+      await Promise.all(layoutPlanningGraphMock.mock.results.map((result) => result.value))
+    })
+  }
+
+  async function renderGraph(
     onSelectOutcome = vi.fn(),
     tasks: readonly Task[] = [LINKED],
     objectives: readonly Objective[] = [OBJECTIVE_A],
@@ -192,13 +286,14 @@ describe('key-result node presentation and activation', () => {
         />
       </QueryClientProvider>,
     )
+    await settleMockedLayout()
     return { onSelectOutcome }
   }
 
   test('shows both identities, the text and a visible-of-linked label', async () => {
-    renderGraph()
+    await renderGraph()
     const control = await screen.findByRole('button', {
-      name: 'Filter by key result O-A KR-1',
+      name: 'Highlight key result O-A KR-1',
     })
     const node = control.closest('.wsv-graph-node') as HTMLElement
     expect(within(node).getByText(/O-A/)).toBeTruthy()
@@ -208,36 +303,36 @@ describe('key-result node presentation and activation', () => {
   })
 
   test('recorded zero is distinct from Unrecorded', async () => {
-    renderGraph()
+    await renderGraph()
     const recorded = (await screen.findByRole('button', {
-      name: 'Filter by key result O-A KR-1',
+      name: 'Highlight key result O-A KR-1',
     })).closest('.wsv-graph-node') as HTMLElement
     // KR-1 recorded progress 0 must render as 0, not as Unrecorded.
     expect(within(recorded).getByText('0')).toBeTruthy()
     expect(within(recorded).queryByText('Unrecorded')).toBeNull()
 
     const unrecorded = screen.getByRole('button', {
-      name: 'Filter by key result O-A KR-2',
+      name: 'Highlight key result O-A KR-2',
     }).closest('.wsv-graph-node') as HTMLElement
     expect(within(unrecorded).getByText('Unrecorded')).toBeTruthy()
   })
 
   test('optional target and status appear only when recorded', async () => {
-    renderGraph()
+    await renderGraph()
     const withTarget = (await screen.findByRole('button', {
-      name: 'Filter by key result O-A KR-1',
+      name: 'Highlight key result O-A KR-1',
     })).closest('.wsv-graph-node') as HTMLElement
     expect(within(withTarget).getByText('Target')).toBeTruthy()
     expect(within(withTarget).getByText('Status')).toBeTruthy()
 
     const without = screen.getByRole('button', {
-      name: 'Filter by key result O-A KR-2',
+      name: 'Highlight key result O-A KR-2',
     }).closest('.wsv-graph-node') as HTMLElement
     expect(within(without).queryByText('Target')).toBeNull()
     expect(within(without).queryByText('Status')).toBeNull()
   })
 
-  test('click, Enter and Space invoke only the scoped outcome callback', async () => {
+  test('click, Enter and Space select locally without mutating the outcome filter', async () => {
     const user = userEvent.setup()
     const onSelectOutcome = vi.fn()
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -258,26 +353,43 @@ describe('key-result node presentation and activation', () => {
         />
       </QueryClientProvider>,
     )
+    await settleMockedLayout()
 
     const control = await screen.findByRole('button', {
-      name: 'Filter by key result O-A KR-1',
+      name: 'Highlight key result O-A KR-1',
     })
     await user.click(control)
+    expect(control.closest('.wsv-graph-node')).toHaveClass('is-selected')
     control.focus()
     await user.keyboard('{Enter}')
+    expect(control.closest('.wsv-graph-node')).not.toHaveClass('is-selected')
     await user.keyboard(' ')
+    expect(control.closest('.wsv-graph-node')).toHaveClass('is-selected')
 
-    expect(onSelectOutcome).toHaveBeenCalledTimes(3)
-    expect(onSelectOutcome).toHaveBeenCalledWith({ objectiveId: 'O-A', keyResultId: 'KR-1' })
-    // Never Task or Objective selection, and no context dialog.
+    expect(onSelectOutcome).not.toHaveBeenCalled()
     expect(onSelectTask).not.toHaveBeenCalled()
     expect(onSelectObjective).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Open task T-1' })).toBeInTheDocument()
+  })
+
+  test('re-clicking a zero-linked key result clears selection and keeps supplied Tasks', async () => {
+    const user = userEvent.setup()
+    const onSelectOutcome = vi.fn()
+    await renderGraph(onSelectOutcome)
+    const zero = await screen.findByRole('button', { name: 'Highlight key result O-A KR-2' })
+    await user.click(zero)
+    expect(onSelectOutcome).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Open task T-1' })).toBeInTheDocument()
+    expect(zero.closest('.wsv-graph-node')).toHaveClass('is-selected')
+    await user.click(zero)
+    expect(zero.closest('.wsv-graph-node')).not.toHaveClass('is-selected')
+    expect(screen.getByRole('button', { name: 'Open task T-1' })).toBeInTheDocument()
   })
 
   test('key-result nodes expose no context trigger', async () => {
-    renderGraph()
-    await screen.findByRole('button', { name: 'Filter by key result O-A KR-1' })
+    await renderGraph()
+    await screen.findByRole('button', { name: 'Highlight key result O-A KR-1' })
     expect(screen.queryByRole('button', { name: /Open context for task KR-1/ })).toBeNull()
   })
 
@@ -300,8 +412,17 @@ describe('key-result node presentation and activation', () => {
         />
       </QueryClientProvider>,
     )
+    await settleMockedLayout()
     await user.click(await screen.findByRole('button', { name: 'Open task T-1' }))
     expect(onSelectTask).toHaveBeenCalledWith('T-1')
+  })
+
+  test('legend names outcome hierarchy distinctly from canonical relations', async () => {
+    await renderGraph()
+    const legend = await screen.findByLabelText('Relationship legend')
+    expect(within(legend).getByLabelText('Outcome hierarchy: Objective to key result')).toBeTruthy()
+    expect(within(legend).getByLabelText('Outcome hierarchy: key result to Task')).toBeTruthy()
+    expect(within(legend).getByLabelText('alignment')).toBeTruthy()
   })
 })
 
@@ -387,6 +508,23 @@ describe("GR01/GR02 presentation identity and zero-Task content", () => {
     expect(selectedKrs.filter((node) => node.data.selected)).toHaveLength(1);
     expect(selectedKrs.find((node) => node.data.selected)!.data.eyebrow).toContain("O-B");
     expect(cleared.nodes.filter((node) => node.data.kind === "key-result" && node.data.selected)).toHaveLength(0);
+  });
+
+  it("local Graph KR selection keeps every supplied Task node", () => {
+    const projection = projectKeyResults({
+      workspaceId: "W1",
+      tasks: [linked("T-1", "O-A", "KR-1")],
+      objectives: [objective("O-A", [{ id: "KR-1", text: "A outcome" }, { id: "KR-2", text: "Zero linked" }])],
+    });
+    const selected = makeGraphModel(
+      [linked("T-1", "O-A", "KR-1")],
+      [objective("O-A", [{ id: "KR-1", text: "A outcome" }, { id: "KR-2", text: "Zero linked" }])],
+      [], [], null, null, projection, null, null,
+      { objectiveId: "O-A", keyResultId: "KR-2" },
+    );
+    expect(selected.nodes.filter((node) => node.data.kind === "task")).toHaveLength(1);
+    expect(selected.nodes.find((node) => node.data.kind === "key-result" && node.data.id === "KR-2")?.data.selected).toBe(true);
+    expect(selected.nodes.find((node) => node.data.kind === "task")?.data.related).toBe(false);
   });
 });
 

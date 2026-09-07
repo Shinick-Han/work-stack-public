@@ -28,6 +28,38 @@ test('activates an actionable Graph node with Enter and Space', () => {
   expect(onActivate).toHaveBeenCalledTimes(2)
 })
 
+test('clicking anywhere on the visual card activates exactly once', () => {
+  const onActivate = vi.fn()
+  const { container } = render(
+    <GraphNodeFrame
+      data={{
+        id: 'KR-1',
+        kind: 'key-result',
+        title: 'Ship the gate',
+        eyebrow: 'O-A · KR-1',
+        contextCount: 0,
+        selected: false,
+        related: true,
+        outcome: {
+          objectiveId: 'O-A',
+          keyResultId: 'KR-1',
+          recordedProgress: null,
+          target: null,
+          status: null,
+          linkedTotal: 0,
+          visibleTotal: 0,
+        },
+        onActivate,
+      }}
+    />,
+  )
+
+  fireEvent.click(container.querySelector('.wsv-graph-node') as HTMLElement)
+  fireEvent.click(container.querySelector('.wsv-graph-node__outcome') as HTMLElement)
+  fireEvent.click(screen.getByRole('button', { name: 'Highlight key result O-A KR-1' }))
+  expect(onActivate).toHaveBeenCalledTimes(3)
+})
+
 test('keeps the context control a sibling of the node action', () => {
   const onActivate = vi.fn()
   const onOpenContext = vi.fn()
@@ -40,4 +72,33 @@ test('keeps the context control a sibling of the node action', () => {
   fireEvent.click(badge)
   expect(onOpenContext).toHaveBeenCalledExactlyOnceWith(badge)
   expect(onActivate).not.toHaveBeenCalled()
+})
+
+test('move handle Enter is distinct from card activation', () => {
+  const onActivate = vi.fn()
+  const onMoveKeyDown = vi.fn()
+  render(
+    <GraphNodeFrame
+      data={{
+        id: 'T-0001',
+        kind: 'task',
+        title: 'Release gate',
+        eyebrow: 'T-0001',
+        contextCount: 0,
+        selected: false,
+        related: true,
+        onActivate,
+        moveHandleLabel: 'Move task T-0001',
+        onMoveKeyDown,
+      }}
+    />,
+  )
+  const handle = screen.getByRole('button', { name: 'Move task T-0001' })
+  const card = screen.getByRole('button', { name: 'Open task T-0001' })
+  fireEvent.keyDown(handle, { key: 'Enter' })
+  fireEvent.keyDown(handle, { key: ' ' })
+  expect(onMoveKeyDown).toHaveBeenCalledTimes(2)
+  expect(onActivate).not.toHaveBeenCalled()
+  fireEvent.keyDown(card, { key: 'Enter' })
+  expect(onActivate).toHaveBeenCalledTimes(1)
 })

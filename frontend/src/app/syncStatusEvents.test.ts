@@ -1,3 +1,4 @@
+import { waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 import { subscribeSyncStatusEvents } from './syncStatusEvents'
 
@@ -96,4 +97,80 @@ test('queued old-source listeners are inert after cleanup and focus/online liste
   expect(change).toHaveBeenCalledTimes(1)
   expect(received).not.toHaveBeenCalled()
   expect(old.close).toHaveBeenCalledTimes(1)
+})
+
+function deferredRefresh() {
+  let settle!: () => void
+  let fail!: (error: Error) => void
+  const promise = new Promise<void>((resolve, reject) => {
+    settle = resolve
+    fail = reject
+  })
+  return { fail, promise, settle }
+}
+
+test('an 18-frame burst while a refresh is pending starts one flight and one trailing latest hint', async () => {
+  vi.stubGlobal('EventSource', FakeEventSource)
+  const first = deferredRefresh()
+  const onChange = vi.fn((signal?: { generation?: number }) => (
+    signal?.generation === 1 ? first.promise : undefined
+  ))
+  const onCheckpoint = vi.fn()
+  const unsubscribe = subscribeSyncStatusEvents(onChange, onCheckpoint)
+  const source = FakeEventSource.instance!
+  source.emit('sync', JSON.stringify({ generation: 1, state: 'in-sync' }))
+  source.emit('workstack.change.v1', JSON.stringify(checkpoint), '3')
+  for (let generation = 2; generation <= 18; generation += 1) {
+    source.emit('sync', JSON.stringify({ generation, state: 'in-sync' }))
+  }
+  expect(onChange).toHaveBeenCalledTimes(1)
+  expect(onChange).toHaveBeenCalledWith({ generation: 1, state: 'in-sync' })
+  expect(onCheckpoint).toHaveBeenCalledExactlyOnceWith(checkpoint)
+  first.settle()
+  await waitFor(() => expect(onChange).toHaveBeenCalledTimes(2))
+  expect(onChange).toHaveBeenLastCalledWith({ generation: 18, state: 'in-sync' })
+  unsubscribe()
+})
+
+test('dispose prevents a trailing refresh after an in-flight settlement', async () => {
+  vi.stubGlobal('EventSource', FakeEventSource)
+  const first = deferredRefresh()
+  const onChange = vi.fn(() => first.promise)
+  const unsubscribe = subscribeSyncStatusEvents(onChange)
+  const source = FakeEventSource.instance!
+  source.emit('sync', JSON.stringify({ generation: 1, state: 'in-sync' }))
+  source.emit('sync', JSON.stringify({ generation: 2, state: 'in-sync' }))
+  expect(onChange).toHaveBeenCalledTimes(1)
+  unsubscribe()
+  first.settle()
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(onChange).toHaveBeenCalledTimes(1)
+})
+
+test('a rejected refresh is not left stuck and does not emit an unhandled rejection', async () => {
+  vi.stubGlobal('EventSource', FakeEventSource)
+  const first = deferredRefresh()
+  const unhandled: unknown[] = []
+  const capture = (reason: unknown) => { unhandled.push(reason) }
+  process.on('unhandledRejection', capture)
+  try {
+    const onChange = vi.fn((signal?: { generation?: number }) => (
+      signal?.generation === 4 ? first.promise : undefined
+    ))
+    const unsubscribe = subscribeSyncStatusEvents(onChange)
+    const source = FakeEventSource.instance!
+    source.emit('sync', JSON.stringify({ generation: 4, state: 'in-sync' }))
+    source.emit('sync', JSON.stringify({ generation: 5, state: 'in-sync' }))
+    expect(onChange).toHaveBeenCalledTimes(1)
+    first.fail(new Error('authoritative refresh failed'))
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(2))
+    expect(onChange).toHaveBeenLastCalledWith({ generation: 5, state: 'in-sync' })
+    await Promise.resolve()
+    expect(unhandled).toEqual([])
+    unsubscribe()
+  } finally {
+    process.off('unhandledRejection', capture)
+  }
 })

@@ -8,78 +8,25 @@ to the exact authority generation and manifest observed by the adapter.
 from __future__ import annotations
 
 import copy
-import re
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import Any, Mapping
 
-from ..store import DEFAULTS, Store
+from ..store import Store
 from .contracts import StorageContractError, require_valid_by_format
 from .manifest import build_v4_manifest
 from .reader import read_v4
+from .read_contract import (
+    RepositoryReadError, WorkspaceReadResult, WorkspaceReadStamp, WorkspaceRepository,
+)
 from .semantic import (
     WorkspaceSnapshot,
     semantic_source_from_v4_read,
-    snapshot_from_v3_documents,
     snapshot_from_v4,
 )
 
 
-_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
-
-
-class RepositoryReadError(ValueError):
-    """A content-free refusal to construct a trustworthy repository read."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
-
-
-@dataclass(frozen=True)
-class WorkspaceReadStamp:
-    """Authority coordinates to which one semantic snapshot is bound."""
-
-    format_version: int
-    workspace_uid: str
-    generation: int
-    authority_manifest_digest: str
-    snapshot_digest: str
-
-    def __post_init__(self) -> None:
-        valid = (
-            self.format_version in {3, 4}
-            and isinstance(self.workspace_uid, str)
-            and bool(self.workspace_uid)
-            and type(self.generation) is int
-            and self.generation >= 0
-            and _SHA256.fullmatch(self.authority_manifest_digest) is not None
-            and _SHA256.fullmatch(self.snapshot_digest) is not None
-        )
-        if not valid:
-            raise RepositoryReadError("READ_STAMP_INVALID")
-
-
-@dataclass(frozen=True)
-class WorkspaceReadResult:
-    """One detached semantic snapshot and its exact authority stamp."""
-
-    snapshot: WorkspaceSnapshot
-    stamp: WorkspaceReadStamp
-
-
-@runtime_checkable
-class WorkspaceRepository(Protocol):
-    """Small read contract shared by v3 and v4 storage adapters."""
-
-    format_version: int
-
-    def read(self) -> WorkspaceReadResult:
-        """Return one consistent semantic snapshot; expose no mutation surface."""
-
-
 class V3WorkspaceRepository:
-    """Read the legacy nine-document authority through the existing Store lease."""
+    """Read a genuine nine-document v3 authority under the historical writer lease."""
 
     format_version = 3
 
@@ -87,22 +34,9 @@ class V3WorkspaceRepository:
         self._store = store
 
     def read(self) -> WorkspaceReadResult:
-        with self._store.consistent_read() as readiness:
-            documents = {name: self._store.load(name) for name in DEFAULTS}
-            status = self._store.sync_status()
-            snapshot = snapshot_from_v3_documents(documents)
-        if status.get("workspace_id") != readiness.workspace_uid:
-            raise RepositoryReadError("V3_WORKSPACE_IDENTITY_MISMATCH")
-        return WorkspaceReadResult(
-            snapshot,
-            WorkspaceReadStamp(
-                format_version=self.format_version,
-                workspace_uid=readiness.workspace_uid,
-                generation=status["generation"],
-                authority_manifest_digest=status["manifest_digest"],
-                snapshot_digest=snapshot.digest,
-            ),
-        )
+        from .read_v3_snapshot import read_historical_v3
+
+        return read_historical_v3(self._store)
 
 
 def _semantic_idempotency_records(

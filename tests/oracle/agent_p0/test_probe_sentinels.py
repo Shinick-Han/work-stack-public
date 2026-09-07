@@ -1,3 +1,4 @@
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -116,6 +117,45 @@ class ProbeSentinelTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 3)
             report = fixture_support.runner_module().load_json_bytes(report_path.read_bytes(), "report")
             self.assertEqual(report["verdict"], "invalid_subject")
+
+
+def probe_module():
+    path = fixture_support.ORACLE_DIR / "probes" / PROBE_FILES["authority-preflight"]
+    spec = importlib.util.spec_from_file_location("agent_p0_probe_authority_preflight", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FormatOracleTest(unittest.TestCase):
+    def test_format_oracle_is_exactly_v3_v4_v5_or_none(self):
+        module = probe_module()
+        self.assertEqual(module.FORMAT_ORACLE, ("v3", "v4", "v5", None))
+        self.assertEqual(module.ADMITTED_LABELS, ("v3", "v5"))
+
+    def test_good_fixture_admits_v3_and_v5_without_tree_writes(self):
+        module = probe_module()
+        admit = module._load_subject(fixture_support.fixture_dir() / "fixture_good_authority.py")
+        self.assertIsNotNone(admit)
+        verdict, violations = module.run_admitted_labels(admit)
+        self.assertEqual(verdict, "pass", violations)
+        self.assertEqual(violations, [])
+
+    def test_v3_only_subject_fails_the_v5_admitted_oracle(self):
+        module = probe_module()
+
+        def admit(*, data_dir, expected_workspace_uid, format_probe, uid_probe, store_factory):
+            if format_probe(data_dir) != "v3":
+                return "refused_format"
+            if uid_probe(data_dir) != expected_workspace_uid:
+                return "refused_uid"
+            store_factory()
+            return "admitted"
+
+        verdict, violations = module.run_admitted_labels(admit)
+        self.assertEqual(verdict, "violation")
+        self.assertIn("P0-STORE-BEFORE-PREFLIGHT", {item["id"] for item in violations})
 
 
 if __name__ == "__main__":

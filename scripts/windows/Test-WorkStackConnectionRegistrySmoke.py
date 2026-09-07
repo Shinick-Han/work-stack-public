@@ -86,6 +86,11 @@ WORKSPACE_LOCAL_A: Final = "11111111-1111-4111-8111-111111111111"
 WORKSPACE_LOCAL_B: Final = "22222222-2222-4222-8222-222222222222"
 WORKSPACE_SSH: Final = "33333333-3333-4333-8333-333333333333"
 INSTALLATION_IDENTITY: Final = "work-stack-packaged-registry-smoke-v1"
+# Caller-supplied runtime token for command-shape assertion. This is not a
+# profile default: production still requires the desktop start attempt to pass
+# a token. A random hex token can join with `--exit-with-parent` into the
+# forbidden substring `cd --`; smoke must be deterministic.
+SMOKE_SESSION_TOKEN: Final = "0123456789abcdef0123456789abcdef"
 
 
 @dataclass(frozen=True)
@@ -242,6 +247,7 @@ def _simulate_ssh_failure_and_restore(
         expected_workspace_id=WORKSPACE_SSH,
         preferred_forward_port=18765,
         remote_port=8765,
+        remote_python="/srv/workstack/venv/bin/python",
     )
     candidate = ConnectionRegistry(
         1,
@@ -276,14 +282,16 @@ def _simulate_ssh_failure_and_restore(
     if inspected != [PROFILE_SSH]:
         raise AssertionError("SSH identity was not checked exactly once")
     runtime = RemoteConnectionProfile(
-        selection.ssh_host_alias,
-        selection.remote_app_dir,
-        selection.remote_data_dir,
-        selection.preferred_forward_port,
-        selection.expected_workspace_id,
-        selection.remote_port,
+        remote.ssh_host_alias,
+        remote.remote_app_dir,
+        remote.remote_data_dir,
+        remote.preferred_forward_port,
+        remote.expected_workspace_id,
+        remote.remote_port,
+        remote.remote_python,
     )
-    command = build_ssh_tunnel_command(runtime, "ssh.exe")
+    session_token = SMOKE_SESSION_TOKEN
+    command = build_ssh_tunnel_command(runtime, "ssh.exe", session_token=session_token)
     expected_prefix = [
         "ssh.exe",
         "-T",
@@ -304,7 +312,7 @@ def _simulate_ssh_failure_and_restore(
     ]
     if command[:-1] != expected_prefix:
         raise AssertionError("SSH tunnel argument shape changed")
-    if command[-1] != build_remote_server_command(runtime):
+    if command[-1] != build_remote_server_command(runtime, session_token=session_token):
         raise AssertionError("SSH tunnel remote command changed")
 
     # The real desktop deliberately confirms only after runtime readiness.  A

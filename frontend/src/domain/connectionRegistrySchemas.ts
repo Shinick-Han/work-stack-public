@@ -41,6 +41,28 @@ export const remoteLinuxPathSchema = boundedRequiredString(4096)
     message: 'The Linux filesystem root is not an allowed workspace path',
   })
 
+const posixExecutableSegment = /(?:^|[\\/])\.\.?(?:[\\/]|$)/
+
+/** Explicit remote interpreter path. Never inferred from PATH. */
+export const remotePythonExecutableSchema = z.string()
+  .min(1)
+  .max(4096)
+  .refine((value) => !invalidControlCharacters.test(value) && !/\s/.test(value), {
+    message: 'Remote Python paths may not contain whitespace or control characters',
+  })
+  .refine((value) => value.startsWith('/') && /^\/[A-Za-z0-9._/-]+$/.test(value), {
+    message: 'Remote Python must be an absolute POSIX executable path',
+  })
+  .refine((value) => value !== '/', {
+    message: 'The Linux filesystem root is not an allowed Remote Python path',
+  })
+  .refine((value) => !value.endsWith('/'), {
+    message: 'Remote Python paths may not have a trailing slash',
+  })
+  .refine((value) => !posixExecutableSegment.test(value) && !value.split('/').slice(1).some((segment) => segment === ''), {
+    message: "Remote Python paths may not contain empty, '.' or '..' segments",
+  })
+
 export const localDataPathSchema = boundedRequiredString(4096)
   .refine((value) => !/^(?:\\\\|\/\/|\\\\[?.]\\)/.test(value), {
     message: 'UNC and Windows device paths are not accepted',
@@ -77,6 +99,7 @@ export const sshConnectionProfileSchema = z.object({
   remote_data_dir: remoteLinuxPathSchema,
   preferred_forward_port: z.number().int().min(1).max(65_535),
   remote_port: z.number().int().min(1).max(65_535),
+  remote_python: remotePythonExecutableSchema.optional(),
 }).strict().readonly()
 
 export const connectionProfileSchema = z.discriminatedUnion('kind', [
@@ -106,7 +129,24 @@ export const sshConnectionProfileDraftSchema = z.object({
   remote_data_dir: remoteLinuxPathSchema,
   preferred_forward_port: z.number().int().min(1).max(65_535),
   remote_port: z.number().int().min(1).max(65_535),
+  remote_python: z.union([z.literal(''), remotePythonExecutableSchema]),
 }).strict().readonly()
+
+export const sshConnectionProfileWriteSchema = z.object({
+  ...connectionProfileBase,
+  kind: z.literal('ssh'),
+  ssh_host_alias: sshHostAliasSchema,
+  remote_app_dir: remoteLinuxPathSchema,
+  remote_data_dir: remoteLinuxPathSchema,
+  preferred_forward_port: z.number().int().min(1).max(65_535),
+  remote_port: z.number().int().min(1).max(65_535),
+  remote_python: remotePythonExecutableSchema,
+}).strict().readonly()
+
+export const connectionProfileWriteSchema = z.discriminatedUnion('kind', [
+  localConnectionProfileSchema,
+  sshConnectionProfileWriteSchema,
+])
 
 /** A candidate may omit its authority only until the read-only Test operation detects it. */
 export const connectionProfileDraftSchema = z.discriminatedUnion('kind', [
@@ -172,4 +212,9 @@ export type LocalConnectionProfile = z.infer<typeof localConnectionProfileSchema
 export type SshConnectionProfile = z.infer<typeof sshConnectionProfileSchema>
 export type ConnectionProfile = z.infer<typeof connectionProfileSchema>
 export type ConnectionProfileDraft = z.infer<typeof connectionProfileDraftSchema>
+export type ConnectionProfileWrite = z.infer<typeof connectionProfileWriteSchema>
 export type ConnectionRegistry = z.infer<typeof connectionRegistrySchema>
+
+export function sshProfileNeedsRemotePython(profile: ConnectionProfile | ConnectionProfileDraft): boolean {
+  return profile.kind === 'ssh' && !remotePythonExecutableSchema.safeParse(profile.remote_python).success
+}

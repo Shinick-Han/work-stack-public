@@ -62,6 +62,49 @@ function routeLabel(points: readonly GraphRoutePoint[]): GraphRoutePoint {
   return points[points.length - 1]
 }
 
+const LAYOUT_REVERSED_KINDS = new Set(['alignment', 'dependency', 'parent', 'reference'])
+
+function edgeKind(edge: Edge): string | undefined {
+  const data = edge.data as { kind?: string } | undefined
+  return data?.kind
+}
+
+/**
+ * Canonical dependent→anchor edges are reversed for ELK ranking only.
+ * Outcome hierarchy edges already read Objective → KR → Task and must not be
+ * flipped; rendered source/target/marker stay on the presentation edge.
+ */
+export function reversesEdgeForLayout(edge: Edge): boolean {
+  const kind = edgeKind(edge)
+  return kind === undefined || LAYOUT_REVERSED_KINDS.has(kind)
+}
+
+/**
+ * Membership, geometry and ranking identity for a planning graph.
+ * Selection, mute/highlight and edge paint are excluded, so a click that
+ * does not change topology cannot be mistaken for a new layout problem.
+ */
+export function planningGraphTopologyKey(
+  nodes: readonly Node[],
+  edges: readonly Edge[],
+): string {
+  const nodeKeys = nodes
+    .map((node) => {
+      const size = nodeSize(node)
+      const kind = node.data && typeof node.data === 'object' && 'kind' in node.data
+        ? String(node.data.kind ?? '')
+        : ''
+      return `${node.id}\0${kind}\0${size.width}x${size.height}`
+    })
+    .sort()
+  const edgeKeys = edges
+    .map((edge) => (
+      `${edge.id}\0${edge.source}\0${edge.target}\0${edgeKind(edge) ?? ''}\0${reversesEdgeForLayout(edge) ? '1' : '0'}`
+    ))
+    .sort()
+  return `${nodeKeys.join('\n')}\n>\n${edgeKeys.join('\n')}`
+}
+
 export async function layoutPlanningGraph<TNode extends Node>(
   nodes: readonly TNode[],
   edges: readonly Edge[],
@@ -70,6 +113,7 @@ export async function layoutPlanningGraph<TNode extends Node>(
   const elk = await getElk()
   const sortedNodes = [...nodes].sort((left, right) => left.id.localeCompare(right.id))
   const sortedEdges = [...edges].sort((left, right) => left.id.localeCompare(right.id))
+  const reverseById = new Map(sortedEdges.map((edge) => [edge.id, reversesEdgeForLayout(edge)]))
   const graph: ElkNode = {
     id: 'workstack-planning-graph',
     layoutOptions: {
@@ -85,15 +129,14 @@ export async function layoutPlanningGraph<TNode extends Node>(
       'elk.spacing.nodeNode': '34',
     },
     children: sortedNodes.map((node) => ({ id: node.id, ...nodeSize(node) })),
-    // Persisted Work Stack relationships point from the dependent item to its
-    // planning anchor. Reverse only the layout input so the visual reading order
-    // is Objective -> Task -> dependent Task -> Note. Rendered edge identity and
-    // direction remain untouched.
-    edges: sortedEdges.map((edge) => ({
-      id: edge.id,
-      sources: [edge.target],
-      targets: [edge.source],
-    })),
+    edges: sortedEdges.map((edge) => {
+      const reverse = reverseById.get(edge.id)
+      return {
+        id: edge.id,
+        sources: [reverse ? edge.target : edge.source],
+        targets: [reverse ? edge.source : edge.target],
+      }
+    }),
   }
   const result = await elk.layout(graph)
   const positions = new Map(
@@ -106,14 +149,12 @@ export async function layoutPlanningGraph<TNode extends Node>(
   const edgeRoutes = Object.fromEntries((result.edges ?? []).flatMap((edge) => {
     const section = edge.sections?.[0]
     if (!section) return []
-    // ELK receives the relationship in visual reading order. Reverse the routed
-    // points back to persisted Work Stack direction so markerEnd semantics stay
-    // unchanged while retaining the exact node-avoiding geometry.
-    const points = [
+    const laid = [
       section.startPoint,
       ...(section.bendPoints ?? []),
       section.endPoint,
-    ].map(({ x, y }) => ({ x, y })).reverse()
+    ].map(({ x, y }) => ({ x, y }))
+    const points = reverseById.get(edge.id) ? [...laid].reverse() : laid
     return [[edge.id, { points, label: routeLabel(points) }]]
   }))
   return { nodes: laidOutNodes, edgeRoutes }

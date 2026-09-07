@@ -35,6 +35,7 @@ NEW_MODULES = (
     "workstack/sse_events.py",
     "workstack/cli_writer.py",
     "workstack/checkpoint_state_cli.py",
+    "workstack/outcome_write_invariant.py",
 )
 
 EXPECTED_LAYER = {
@@ -45,6 +46,7 @@ EXPECTED_LAYER = {
     "workstack/sse_events.py": "py_sse_encoder",
     "workstack/cli_writer.py": "py_cli_writer",
     "workstack/checkpoint_state_cli.py": "py_checkpoint_cli",
+    "workstack/outcome_write_invariant.py": "py_outcome_write_invariant",
     "desktop/python-webview-shell/local_workspace_rebind.py": "py_desktop_rebind",
 }
 
@@ -120,7 +122,7 @@ class Classification(unittest.TestCase):
             for item in DESKTOP_DIRECTORY.rglob("*.py")
             if item.is_file()
         )
-        self.assertEqual(len(desktop), 21, desktop)
+        self.assertEqual(len(desktop), 29, desktop)
         for path in desktop:
             with self.subTest(path=path):
                 layer, errors = quality_gate._layer_for(path, PYTHON_LAYERS)
@@ -129,8 +131,17 @@ class Classification(unittest.TestCase):
             layer_of("desktop/python-webview-shell/local_workspace_rebind.py"),
             "py_desktop_rebind",
         )
+        self.assertEqual(
+            layer_of("desktop/python-webview-shell/remote_provision_plan.py"),
+            "py_desktop",
+        )
+        self.assertEqual(
+            layer_of("desktop/python-webview-shell/profile_inspection.py"),
+            "py_profile_inspection",
+        )
         others = {path for path in desktop} - {
-            "desktop/python-webview-shell/local_workspace_rebind.py"
+            "desktop/python-webview-shell/local_workspace_rebind.py",
+            "desktop/python-webview-shell/profile_inspection.py",
         }
         for path in sorted(others):
             with self.subTest(path=path):
@@ -180,6 +191,12 @@ class PermittedEdges(unittest.TestCase):
             with self.subTest(target=target):
                 self.assertTrue(edge_allowed("workstack/service.py", target))
 
+    def test_service_may_reach_the_outcome_write_invariant(self) -> None:
+        self.assertTrue(
+            edge_allowed("workstack/service.py", "workstack/outcome_write_invariant.py")
+        )
+        self.assertIn("py_outcome_write_invariant", permissions("py_application"))
+
     def test_the_server_may_reach_the_sse_encoder(self) -> None:
         self.assertTrue(edge_allowed("workstack/server.py", "workstack/sse_events.py"))
 
@@ -197,7 +214,9 @@ class PermittedEdges(unittest.TestCase):
         )
 
     def test_the_writer_may_reach_the_store_and_the_host_the_rebind(self) -> None:
-        self.assertEqual(permissions("py_cli_writer"), {"py_legacy_store"})
+        self.assertEqual(permissions("py_cli_writer"), {
+            "py_legacy_store", "py_outcome_write_invariant",
+        })
         self.assertTrue(edge_allowed(
             "desktop/python-webview-shell/workstack_desktop.py",
             "desktop/python-webview-shell/local_workspace_rebind.py",
@@ -207,6 +226,12 @@ class PermittedEdges(unittest.TestCase):
     def test_the_pure_contract_and_encoder_may_import_nothing(self) -> None:
         self.assertEqual(permissions("py_checkpoint_contract"), set())
         self.assertEqual(permissions("py_sse_encoder"), set())
+        self.assertEqual(permissions("py_outcome_write_invariant"), set())
+
+    def test_the_writer_may_reach_the_outcome_write_invariant(self) -> None:
+        self.assertTrue(
+            edge_allowed("workstack/cli_writer.py", "workstack/outcome_write_invariant.py")
+        )
 
 
 class ForbiddenEdges(unittest.TestCase):
@@ -226,11 +251,17 @@ class ForbiddenEdges(unittest.TestCase):
                     self.assertFalse(edge_allowed(source, target))
 
     def test_pure_transition_and_sse_cannot_reach_the_store_service_or_cli(self) -> None:
-        for source in ("workstack/checkpoint_transition.py", "workstack/sse_events.py"):
+        for source in (
+            "workstack/checkpoint_transition.py",
+            "workstack/sse_events.py",
+            "workstack/outcome_write_invariant.py",
+        ):
             for target in (
                 "workstack/store.py",
                 "workstack/service.py",
                 "workstack/cli.py",
+                "workstack/cli_writer.py",
+                "workstack/server.py",
             ):
                 with self.subTest(source=source, target=target):
                     self.assertFalse(edge_allowed(source, target))
@@ -404,6 +435,13 @@ class CriticalComplexity(unittest.TestCase):
                 with self.subTest(path=path, name=name):
                     self.assertLessEqual(quality_gate._complexity(node), 15)
 
+    def test_the_outcome_write_invariant_stays_at_or_below_ccn_13(self) -> None:
+        path = "workstack/outcome_write_invariant.py"
+        tree = ast.parse((ROOT / path).read_text(encoding="utf-8"), filename=path)
+        for name, node in quality_gate._function_symbols(tree):
+            with self.subTest(name=name):
+                self.assertLessEqual(quality_gate._complexity(node), 13)
+
 
 class FrontendProhibitions(unittest.TestCase):
     """The frontend layer permissions must be preserved exactly."""
@@ -457,10 +495,12 @@ class ConfigurationShape(unittest.TestCase):
                     self.assertNotEqual(str(glob), "**")
                     self.assertNotEqual(str(glob), "*")
 
-    def test_the_desktop_layer_enumerates_its_twenty_paths(self) -> None:
+    def test_the_desktop_layer_enumerates_exact_paths(self) -> None:
         desktop = next(rule for rule in PYTHON_LAYERS if rule["name"] == "py_desktop")
         globs = [str(item) for item in desktop["globs"]]
-        self.assertEqual(len(globs), 20)
+        self.assertEqual(len(globs), 27)
+        self.assertIn("desktop/python-webview-shell/remote_provision_plan.py", globs)
+        self.assertIn("desktop/python-webview-shell/remote_provision_probe.py", globs)
         self.assertNotIn("desktop/python-webview-shell/**", globs)
         self.assertNotIn("desktop/python-webview-shell/local_workspace_rebind.py", globs)
 
@@ -850,11 +890,11 @@ def _fixture_config(path: str) -> "dict[str, Any]":
     }
 
 
-# Only config_digest may be reconciled by the root after source admission.
-# Raw file identities for this packet belong in its terminal evidence; this
-# semantic fingerprint preserves every other measured field, including unknown
-# additions, without preventing that explicitly authorized metadata change.
-PRESERVED_BASELINE_DIGEST = "34e7e46f08d6f887a7d6580ab4f907e232f6362d549920b7c6797ca4758b1ab0"
+# config_digest is excluded so a truthful configuration admission can land.
+# All other fields are pinned at the accepted local Wave 2 baseline. Explicit
+# helper/tooling admission changes populations and measurement metadata; measured
+# debt only decreases. The digest still excludes only config_digest.
+PRESERVED_BASELINE_DIGEST = "d6d897844459b436804fb6f404d62d0cd323bf12b633391b3fec3ef4a9b4107f"
 
 
 def baseline_preservation_problems(baseline: dict[str, Any]) -> list[str]:
@@ -925,6 +965,11 @@ class CriticalEvaluator(unittest.TestCase):
         mutations = {
             "critical_complexity_debt": {"workstack/service.py::probe": 16},
             "critical_typescript_complexity_debt": {"frontend/src/app/probe.ts::probe": 16},
+            "python_complexity_debt": {"workstack/service.py::probe": 16},
+            "typescript_complexity_debt": {"frontend/src/app/probe.ts::probe": 16},
+            "python_function_length_debt": {"workstack/service.py::probe": 101},
+            "typescript_function_length_debt": {"frontend/src/app/probe.ts::probe": 101},
+            "production_file_length_debt": {"workstack/service.py": 801},
             "source_populations": dict(original["source_populations"], python_core=0),
             "coverage_floors": {"python_core": 0},
             "temporary_exceptions": [{"from": "a", "to": "b", "expires": "2099-01-01"}],
@@ -1001,12 +1046,13 @@ REQUIRED_CONSUMERS = {
     "workstack/service.py": {
         "workstack/checkpoint_change.py", "workstack/checkpoint_projection.py",
         "workstack/checkpoint_transition.py", "workstack/context_projection.py",
+        "workstack/outcome_write_invariant.py",
     },
     "workstack/server.py": {"workstack/sse_events.py"},
     "workstack/checkpoint_projection.py": {"workstack/checkpoint_transition.py", "workstack/storage/canonical.py"},
     "workstack/checkpoint_change.py": {"workstack/storage/canonical.py"},
     "workstack/context_projection.py": {"workstack/capture.py"},
-    WRITER_PATH: {"workstack/store.py"},
+    WRITER_PATH: {"workstack/store.py", "workstack/outcome_write_invariant.py"},
     "desktop/python-webview-shell/workstack_desktop.py": {REBIND_PATH},
     REBIND_PATH: {"workstack/store.py"},
 }
@@ -1049,6 +1095,7 @@ class ActualConsumerImports(unittest.TestCase):
             "workstack/checkpoint_projection.py",
             "workstack/checkpoint_transition.py",
             "workstack/context_projection.py",
+            "workstack/outcome_write_invariant.py",
         }.issubset(targets), targets)
 
     def test_the_server_projection_context_and_writer_stay_clean(self) -> None:
@@ -1060,12 +1107,17 @@ class ActualConsumerImports(unittest.TestCase):
             "workstack/checkpoint_change.py",
             "workstack/sse_events.py",
             "workstack/checkpoint_transition.py",
+            "workstack/outcome_write_invariant.py",
         ):
             with self.subTest(path=path):
                 self.assert_clean(path)
 
     def test_the_pure_contract_and_encoder_import_no_production_module(self) -> None:
-        for path in ("workstack/checkpoint_transition.py", "workstack/sse_events.py"):
+        for path in (
+            "workstack/checkpoint_transition.py",
+            "workstack/sse_events.py",
+            "workstack/outcome_write_invariant.py",
+        ):
             with self.subTest(path=path):
                 self.assertEqual(actual_imports(path), set())
 
@@ -1094,6 +1146,11 @@ class ForbiddenInverseGraphs(unittest.TestCase):
         ("workstack/sse_events.py", "workstack/store.py"),
         ("workstack/sse_events.py", "workstack/service.py"),
         ("workstack/sse_events.py", "workstack/cli.py"),
+        ("workstack/outcome_write_invariant.py", "workstack/store.py"),
+        ("workstack/outcome_write_invariant.py", "workstack/service.py"),
+        ("workstack/outcome_write_invariant.py", "workstack/cli.py"),
+        ("workstack/outcome_write_invariant.py", "workstack/cli_writer.py"),
+        ("workstack/outcome_write_invariant.py", "workstack/server.py"),
         ("workstack/checkpoint_change.py", "workstack/server.py"),
         ("workstack/checkpoint_change.py", "workstack/cli.py"),
         ("workstack/checkpoint_projection.py", "workstack/server.py"),

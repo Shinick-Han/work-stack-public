@@ -5,7 +5,6 @@ import {
   normalizeDoneVisibility,
   projectCompletedTaskVisibility,
   REVEAL_DISPLAY_LIMIT,
-  type CompletedVisibilityInput,
 } from "./completedTaskVisibility";
 import { filterWorkspaceTasks } from "./viewModels";
 import type { WorkspaceTask } from "./types";
@@ -28,7 +27,9 @@ function deepFreezeTasks(tasks: WorkspaceTask[]): readonly WorkspaceTask[] {
   return Object.freeze(tasks);
 }
 
-function project(input: Partial<CompletedVisibilityInput> & { tasks: readonly WorkspaceTask[] }) {
+function project(input: Partial<Parameters<typeof projectCompletedTaskVisibility>[0]> & {
+  tasks: readonly WorkspaceTask[];
+}) {
   return projectCompletedTaskVisibility({
     filters: {},
     view: "graph",
@@ -710,5 +711,83 @@ describe("outcome scope", () => {
     expect(key({ kind: "nope" })).toBe(all);
     expect(key({ kind: "pair", objectiveId: " ", keyResultId: "KR-1" })).toBe(all);
     expect(JSON.parse(pair).slice(7, 10)).toEqual(["pair", "O-1", "KR-1"]);
+  });
+});
+
+describe("V15 board session retention of a successful move to Done", () => {
+  const tasks = deepFreezeTasks([
+    task("T-1"),
+    task("T-2", { status: "done" }),
+    task("T-3", { status: "dropped" }),
+  ]);
+
+  it("keeps a just-completed Board card visible under default without duplicating", () => {
+    const projection = project({
+      tasks,
+      view: "board",
+      sessionRetainedTaskIds: ["T-2", "T-2", "missing"],
+    });
+
+    expect(ids(projection.visibleTasks)).toEqual(["T-1", "T-2", "T-3"]);
+    expect(projection.visibleTasks.filter((item) => item.id === "T-2")).toHaveLength(1);
+    expect(projection.visibleTasks[1]).toBe(tasks[1]);
+    expect(projection.hiddenCompletedTaskIds).toEqual([]);
+    expect(projection.retainedTaskIds).toEqual([]);
+    expect(projection.pinReasonsByTaskId).toEqual({});
+    expectExactPartition(projection);
+  });
+
+  it("lets explicit hide win over session retention", () => {
+    const projection = project({
+      tasks,
+      view: "board",
+      doneVisibility: "hide",
+      sessionRetainedTaskIds: ["T-2"],
+    });
+
+    expect(ids(projection.visibleTasks)).toEqual(["T-1", "T-3"]);
+    expect(projection.hiddenCompletedTaskIds).toEqual(["T-2"]);
+    expectExactPartition(projection);
+  });
+
+  it("does not duplicate when show already surfaces completed work", () => {
+    const projection = project({
+      tasks,
+      view: "board",
+      doneVisibility: "show",
+      sessionRetainedTaskIds: ["T-2"],
+    });
+
+    expect(ids(projection.visibleTasks)).toEqual(["T-1", "T-2", "T-3"]);
+    expect(projection.visibleTasks.filter((item) => item.id === "T-2")).toHaveLength(1);
+    expectExactPartition(projection);
+  });
+
+  it("ignores reopened, unmatched, and Graph-scoped retention", () => {
+    const reopened = deepFreezeTasks([
+      task("T-1"),
+      task("T-2", { status: "open" }),
+    ]);
+    expect(ids(project({
+      tasks: reopened,
+      view: "board",
+      sessionRetainedTaskIds: ["T-2"],
+    }).visibleTasks)).toEqual(["T-1", "T-2"]);
+
+    const filtered = project({
+      tasks,
+      view: "board",
+      filters: { status: "open" },
+      sessionRetainedTaskIds: ["T-2"],
+    });
+    expect(ids(filtered.visibleTasks)).toEqual(["T-1"]);
+    expect(filtered.hiddenOtherTaskIds).toEqual(["T-2", "T-3"]);
+
+    const graph = project({
+      tasks,
+      view: "graph",
+      sessionRetainedTaskIds: ["T-2"],
+    });
+    expect(ids(graph.visibleTasks)).toEqual(["T-1", "T-3"]);
   });
 });

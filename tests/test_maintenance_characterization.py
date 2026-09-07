@@ -98,7 +98,9 @@ class VerifiedArchiveCharacterizationTest(unittest.TestCase):
             (without_member, "backup archive member set is invalid"),
             (with_extra, "backup archive member set is invalid"),
             (duplicate, "backup archive member set is invalid"),
-            (directory, "backup archive member set is invalid"),
+            # A directory entry is judged before the roster is known, because
+            # the roster comes from a manifest that is itself a member.
+            (directory, "backup archive contains an invalid member"),
         ):
             with self.subTest(path=path.name):
                 self.assert_invalid(path, message)
@@ -159,7 +161,10 @@ class VerifiedArchiveCharacterizationTest(unittest.TestCase):
         for path, message in (
             (invalid_store, "backup store failed semantic validation"),
             (wrong_identity, "backup workspace identity mismatch"),
-            (wrong_schema, "backup store schema mismatch"),
+            # A manifest claiming a version whose roster it does not carry is
+            # now refused as the member set it really is, before anything is
+            # judged semantically.
+            (wrong_schema, "backup archive member set is invalid"),
         ):
             with self.subTest(path=path.name):
                 self.assert_invalid(path, message)
@@ -169,7 +174,7 @@ class VerifiedArchiveCharacterizationTest(unittest.TestCase):
         self.assertEqual(verified.path, self.artifact.path.resolve())
         self.assertEqual(verified.workspace_id, self.artifact.workspace_id)
         self.assertEqual(verified.digest, self.digest(self.artifact.path.read_bytes()))
-        self.assertEqual(verified.file_count, 9)
+        self.assertEqual(verified.file_count, 10)
 
 
 if __name__ == "__main__":

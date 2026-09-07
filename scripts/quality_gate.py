@@ -6,7 +6,6 @@ import ast
 import fnmatch
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -14,21 +13,35 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from quality_metrics import (  # noqa: E402
+    CCN_LIMIT,
+    FILE_LINE_LIMIT,
+    FUNCTION_LINE_LIMIT,
+    admissible_file_length_debt,
+    debt_map,
+    evaluate_structure,
+    file_length_errors,
+    file_line_count,
+    function_length_errors,
+    python_ccn_errors,
+    typescript_ccn_errors,
+)
+from quality_report import write_json, write_markdown  # noqa: E402
+from quality_typescript import measure_typescript  # noqa: E402
+
 
 SCHEMA_VERSION = 1
 IMPORT_RE = re.compile(
     r"(?:import|export)\s+(?:type\s+)?(?:[^'\"]*?\s+from\s+)?['\"]([^'\"]+)['\"]"
     r"|import\(\s*['\"]([^'\"]+)['\"]\s*\)"
 )
-FRONTEND_DECLARATION_RE = re.compile(
-    r"(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)"
-    r"|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*="
-)
-FRONTEND_COMPLEXITY_RE = re.compile(r"complexity of (\d+)", re.IGNORECASE)
 # Supported non-code graph assets: they must exist inside the repository and
 # never become a code dependency edge.
 ASSET_SUFFIXES = (".css", ".svg")
-FRONTEND_MESSAGE_NAME_RE = re.compile(r"^(?:Async\s+)?(?:Function|Method)\s+'([^']+)'", re.IGNORECASE)
 
 
 def _path(path: Path, root: Path) -> str:
@@ -313,6 +326,11 @@ def _complexity(function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
     return score
 
 
+def _function_length(function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+    end = function.end_lineno or function.lineno
+    return end - function.lineno + 1
+
+
 def _function_symbols(tree: ast.AST) -> Iterable[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
     class Collector(ast.NodeVisitor):
         def __init__(self) -> None:
@@ -340,91 +358,6 @@ def _function_symbols(tree: ast.AST) -> Iterable[tuple[str, ast.FunctionDef | as
     collector = Collector()
     collector.visit(tree)
     return collector.items
-
-
-def _frontend_function_name(message: str, source_line: str, line: int, column: int) -> tuple[str, bool]:
-    named = FRONTEND_MESSAGE_NAME_RE.search(message)
-    if named:
-        return named.group(1), True
-    declaration = FRONTEND_DECLARATION_RE.search(source_line)
-    if declaration:
-        return declaration.group(1) or declaration.group(2), True
-    return f"<anonymous@{line}:{column}>", False
-
-
-def _measure_frontend_complexity(
-    root: Path,
-    config: dict[str, Any],
-) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], list[str]]:
-    settings = config.get("frontend_complexity")
-    if not settings:
-        return {}, [], []
-    command = [str(part) for part in settings.get("command", [])]
-    if not command:
-        return {}, [], ["frontend complexity command is missing"]
-    if os.name == "nt" and command[0] == "npm":
-        command[0] = "npm.cmd"
-    completed = subprocess.run(
-        command,
-        cwd=root,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip().splitlines()
-        return {}, [], [f"frontend complexity command failed: {detail[-1] if detail else completed.returncode}"]
-    try:
-        payload = json.loads(completed.stdout or "")
-    except json.JSONDecodeError as error:
-        return {}, [], [f"frontend complexity output is not JSON: {error}"]
-
-    complexities: dict[str, dict[str, Any]] = {}
-    diagnostics: list[dict[str, Any]] = []
-    critical_patterns = [str(pattern) for pattern in settings.get("critical_globs", [])]
-    for result in payload:
-        try:
-            path = Path(str(result["filePath"])).resolve().relative_to(root).as_posix()
-        except (KeyError, ValueError):
-            continue
-        source_lines = (root / path).read_text(encoding="utf-8").splitlines()
-        for message in result.get("messages", []):
-            rule_id = str(message.get("ruleId") or "")
-            line = int(message.get("line") or 1)
-            column = int(message.get("column") or 1)
-            text = str(message.get("message") or "")
-            diagnostic = {
-                "path": path,
-                "rule_id": rule_id,
-                "line": line,
-                "column": column,
-                "message": text,
-            }
-            diagnostics.append(diagnostic)
-            if rule_id != "complexity":
-                continue
-            match = FRONTEND_COMPLEXITY_RE.search(text)
-            if not match:
-                continue
-            source_line = source_lines[line - 1] if 0 < line <= len(source_lines) else ""
-            name, stable = _frontend_function_name(text, source_line, line, column)
-            symbol = f"{path}::{name}"
-            if symbol in complexities:
-                symbol = f"{symbol}@{line}:{column}"
-                stable = False
-            complexities[symbol] = {
-                "path": path,
-                "name": name,
-                "line": line,
-                "column": column,
-                "ccn": int(match.group(1)),
-                "critical": _matches(path, critical_patterns),
-                "stable": stable,
-            }
-    return dict(sorted(complexities.items())), diagnostics, []
-
 
 def _exception_pairs(config: dict[str, Any]) -> tuple[set[tuple[str, str]], list[str]]:
     pairs: set[tuple[str, str]] = set()
@@ -546,7 +479,9 @@ def _python_graph(
                 "name": qualified_name,
                 "line": node.lineno,
                 "ccn": _complexity(node),
+                "length": _function_length(node),
                 "critical": _matches(path, critical_patterns),
+                "stable": True,
             }
     return graph, complexities, errors
 
@@ -584,6 +519,48 @@ def _layer_violations(
     return violations
 
 
+def _git_line_count(root: Path, relative: str) -> int | None:
+    result = subprocess.run(
+        ["git", "show", f"HEAD:{relative}"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return None
+    return len(result.stdout.decode("utf-8", errors="replace").splitlines())
+
+
+def _sealed_file_lengths(
+    root: Path, paths: list[str], current: dict[str, int]
+) -> dict[str, int]:
+    probe = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        return dict(current)
+    sealed: dict[str, int] = {}
+    for relative in paths:
+        count = _git_line_count(root, relative)
+        if count is not None:
+            sealed[relative] = count
+    return sealed
+
+
+def _measure_graphs(
+    root: Path, config: dict[str, Any], python_files: list[str], frontend_files: list[str]
+) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, dict[str, Any]], list[str]]:
+    python_graph, complexities, python_errors = _python_graph(
+        root, python_files, list(config.get("critical_python_globs", []))
+    )
+    frontend_graph, frontend_errors = _frontend_graph(root, frontend_files)
+    return python_graph, frontend_graph, complexities, python_errors + frontend_errors
+
+
 def measure(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     populations, config_errors = _discover(root, config)
     all_files = sorted(path for paths in populations.values() for path in paths)
@@ -591,38 +568,36 @@ def measure(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     for path in config_inputs:
         if not (root / path).is_file():
             config_errors.append(f"missing config input: {path}")
-
     python_files = sorted(path for path in all_files if path.endswith(".py"))
     frontend_files = sorted(path for path in all_files if path.endswith((".ts", ".tsx")))
+    other_files = sorted(
+        path for path in all_files if path not in python_files and path not in frontend_files
+    )
     python_layers = list(config.get("python_layers", []))
     frontend_layers = list(config.get("frontend_layers", []))
     layers, unclassified = _classify_layers(
-        [(python_files, python_layers), (frontend_files, frontend_layers)]
+        [
+            (python_files, python_layers),
+            (frontend_files, frontend_layers),
+            (other_files, python_layers),
+        ]
     )
-
     exceptions, exception_errors = _exception_pairs(config)
     config_errors.extend(exception_errors)
-    python_graph, complexities, python_errors = _python_graph(
-        root, python_files, list(config.get("critical_python_globs", []))
+    python_graph, frontend_graph, complexities, graph_errors = _measure_graphs(
+        root, config, python_files, frontend_files
     )
-    config_errors.extend(python_errors)
-
-    frontend_graph, frontend_errors = _frontend_graph(root, frontend_files)
-    config_errors.extend(frontend_errors)
-
+    config_errors.extend(graph_errors)
     violations = _layer_violations(
         (python_graph, frontend_graph), layers, python_layers + frontend_layers, exceptions
     )
-
-    typescript_complexity, typescript_diagnostics, frontend_complexity_errors = (
-        _measure_frontend_complexity(root, config)
-    )
-    config_errors.extend(frontend_complexity_errors)
-
-    source_digest = _digest_files(root, all_files)
+    typescript = measure_typescript(root, config, frontend_files, _matches)
+    config_errors.extend(typescript["errors"])
+    file_lengths = {path: file_line_count(root, path) for path in all_files}
+    python_complexity = dict(sorted(complexities.items()))
     return {
         "schema_version": SCHEMA_VERSION,
-        "candidate_source_digest": source_digest,
+        "candidate_source_digest": _digest_files(root, all_files),
         "config_digest": _digest_files(root, config_inputs),
         "source_populations": populations,
         "source_file_count": len(all_files),
@@ -633,23 +608,24 @@ def measure(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             "python": _cycles(python_graph),
             "frontend": _cycles(frontend_graph),
         },
-        "python_complexity": dict(sorted(complexities.items())),
-        "typescript_complexity": typescript_complexity,
-        "typescript_diagnostics": typescript_diagnostics,
+        "python_complexity": python_complexity,
+        "typescript_complexity": typescript["typescript_complexity"],
+        "typescript_functions": typescript["typescript_functions"],
+        "typescript_diagnostics": typescript["typescript_diagnostics"],
+        "file_lengths": file_lengths,
+        "sealed_file_lengths": _sealed_file_lengths(root, all_files, file_lengths),
+        "governed_python_functions": len(python_complexity),
+        "governed_typescript_functions": len(typescript["typescript_functions"]),
+        "anonymous_typescript_findings": typescript["anonymous_typescript_findings"],
+        "unresolved_typescript_identities": typescript["unresolved_typescript_identities"],
     }
 
 
 def build_baseline(report: dict[str, Any], measurement_commit: str) -> dict[str, Any]:
-    critical_debt = {
-        symbol: item["ccn"]
-        for symbol, item in report.get("python_complexity", {}).items()
-        if item.get("critical") and int(item["ccn"]) > 15
-    }
-    critical_typescript_debt = {
-        symbol: item["ccn"]
-        for symbol, item in report.get("typescript_complexity", {}).items()
-        if item.get("critical") and item.get("stable") and int(item["ccn"]) > 15
-    }
+    python_complexity = report.get("python_complexity", {})
+    typescript_complexity = report.get("typescript_complexity", {})
+    python_ccn_debt = debt_map(python_complexity, "ccn", CCN_LIMIT)
+    typescript_ccn_debt = debt_map(typescript_complexity, "ccn", CCN_LIMIT)
     return {
         "schema_version": SCHEMA_VERSION,
         "measurement_commit": measurement_commit,
@@ -658,72 +634,45 @@ def build_baseline(report: dict[str, Any], measurement_commit: str) -> dict[str,
         "source_populations": {
             name: len(paths) for name, paths in report.get("source_populations", {}).items()
         },
-        "critical_complexity_debt": dict(sorted(critical_debt.items())),
-        "critical_typescript_complexity_debt": dict(sorted(critical_typescript_debt.items())),
+        "python_complexity_debt": python_ccn_debt,
+        "typescript_complexity_debt": typescript_ccn_debt,
+        "critical_complexity_debt": dict(
+            sorted(
+                (symbol, ccn)
+                for symbol, ccn in python_ccn_debt.items()
+                if python_complexity.get(symbol, {}).get("critical")
+            )
+        ),
+        "critical_typescript_complexity_debt": dict(
+            sorted(
+                (symbol, ccn)
+                for symbol, ccn in typescript_ccn_debt.items()
+                if typescript_complexity.get(symbol, {}).get("critical")
+            )
+        ),
+        "python_function_length_debt": debt_map(
+            python_complexity, "length", FUNCTION_LINE_LIMIT
+        ),
+        "typescript_function_length_debt": debt_map(
+            report.get("typescript_functions", {}), "length", FUNCTION_LINE_LIMIT
+        ),
+        "production_file_length_debt": admissible_file_length_debt(
+            report.get("file_lengths", {}),
+            report.get("sealed_file_lengths", {}),
+            FILE_LINE_LIMIT,
+        ),
         "coverage_floors": {},
         "temporary_exceptions": [],
     }
 
 
 def evaluate(report: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
-    errors = list(report.get("config_errors", []))
-    errors.extend(f"unclassified production source: {path}" for path in report.get("unclassified_files", []))
-    errors.extend(report.get("architecture_violations", []))
-    for population, cycles in report.get("dependency_cycles", {}).items():
-        for cycle in cycles:
-            errors.append(f"{population} dependency cycle: {' -> '.join(cycle)}")
-    if baseline.get("schema_version") != SCHEMA_VERSION:
-        errors.append("baseline schema mismatch")
-    if baseline.get("config_digest") != report.get("config_digest"):
-        errors.append("config_digest does not match the active quality configuration")
-
-    allowed_debt = baseline.get("critical_complexity_debt", {})
-    for symbol, item in report.get("python_complexity", {}).items():
-        ccn = int(item["ccn"])
-        if not item.get("critical") or ccn <= 15:
-            continue
-        previous = allowed_debt.get(symbol)
-        if previous is None:
-            errors.append(f"new critical function exceeds CCN 15: {symbol} has CCN {ccn}")
-        elif ccn > int(previous):
-            errors.append(f"critical complexity increased: {symbol} {previous} -> {ccn}")
-    allowed_typescript_debt = baseline.get("critical_typescript_complexity_debt", {})
-    for symbol, item in report.get("typescript_complexity", {}).items():
-        ccn = int(item["ccn"])
-        if not item.get("critical") or not item.get("stable") or ccn <= 15:
-            continue
-        previous = allowed_typescript_debt.get(symbol)
-        if previous is None:
-            errors.append(f"new critical TypeScript function exceeds CCN 15: {symbol} has CCN {ccn}")
-        elif ccn > int(previous):
-            errors.append(f"critical TypeScript complexity increased: {symbol} {previous} -> {ccn}")
+    errors = evaluate_structure(report, baseline, SCHEMA_VERSION)
+    errors.extend(python_ccn_errors(report, baseline))
+    errors.extend(typescript_ccn_errors(report, baseline))
+    errors.extend(function_length_errors(report, baseline))
+    errors.extend(file_length_errors(report, baseline))
     return sorted(set(errors))
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _write_markdown(path: Path, report: dict[str, Any], errors: list[str]) -> None:
-    lines = [
-        "# Work Stack structural quality report",
-        "",
-        f"- Candidate source digest: `{report['candidate_source_digest']}`",
-        f"- Configuration digest: `{report['config_digest']}`",
-        f"- Production files: {report['source_file_count']}",
-        f"- TypeScript complexity findings: {len(report.get('typescript_complexity', {}))}",
-        f"- TypeScript depth/size diagnostics: {sum(1 for item in report.get('typescript_diagnostics', []) if item.get('rule_id') != 'complexity')}",
-        f"- Result: {'FAIL' if errors else 'PASS'}",
-        "",
-        "## Blocking findings",
-        "",
-    ]
-    lines.extend(f"- {error}" for error in errors)
-    if not errors:
-        lines.append("- None")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _git_head(root: Path) -> str:
@@ -741,13 +690,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--baseline", type=Path, default=Path("quality/structural-baseline.json"))
     parser.add_argument("--measurement-commit")
     args = parser.parse_args(argv)
-
     root = args.root.resolve()
     config = load_config(root)
     report = measure(root, config)
     report_path = args.report if args.report.is_absolute() else root / args.report
     baseline_path = args.baseline if args.baseline.is_absolute() else root / args.baseline
-
     if args.command == "baseline":
         fatal = list(report["config_errors"])
         fatal.extend(report["unclassified_files"])
@@ -758,20 +705,19 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"BLOCKED: {finding}", file=sys.stderr)
             return 1
         baseline = build_baseline(report, args.measurement_commit or _git_head(root))
-        _write_json(baseline_path, baseline)
-        _write_json(report_path, report)
-        _write_markdown(report_path.with_suffix(".md"), report, [])
+        write_json(baseline_path, baseline)
+        write_json(report_path, report)
+        write_markdown(report_path.with_suffix(".md"), report, [])
         print(f"Wrote baseline: {baseline_path}")
         return 0
-
     if not baseline_path.is_file():
         print(f"Missing baseline: {baseline_path}", file=sys.stderr)
         return 1
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     errors = evaluate(report, baseline)
     report["blocking_findings"] = errors
-    _write_json(report_path, report)
-    _write_markdown(report_path.with_suffix(".md"), report, errors)
+    write_json(report_path, report)
+    write_markdown(report_path.with_suffix(".md"), report, errors)
     if errors:
         for error in errors:
             print(f"FAIL: {error}", file=sys.stderr)

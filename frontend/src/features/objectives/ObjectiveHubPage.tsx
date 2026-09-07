@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, createIdempotencyKey } from '../../api/client'
 import { Button, ErrorState, LoadingBlock, Pill } from '../../components/Primitives'
-import type { KeyResult, Objective, ObjectiveDetail, WorkspaceProjection } from '../../domain/types'
+import type { KeyResult, Objective, ObjectiveDetail, Task, WorkspaceProjection } from '../../domain/types'
 import { getErrorMessage, getObjectiveTitle } from '../../utils/format'
 import {
   blockingDependenciesFromIndex,
   indexDependencyTasks,
+  type TaskBlocker,
 } from '../../domain/taskRelationships'
+import {
+  projectOutcomeHierarchy,
+  type OutcomeHierarchyKeyResultNode,
+} from '../../domain/outcomeHierarchy'
 
 interface ObjectiveHubPageProps {
   objectiveId: string
@@ -29,6 +34,115 @@ function averageProgress(objective: Objective) {
   const results = objective.key_results ?? []
   if (!results.length) return 0
   return Math.round(results.reduce((sum, result) => sum + (result.progress ?? 0), 0) / results.length)
+}
+
+function recordedProgressLabel(value: number | null) {
+  return value === null ? 'Unrecorded' : `Recorded progress ${value}`
+}
+
+function objectiveAlignmentCounts(tasks: readonly Task[], objectiveId: string) {
+  let aligned = 0
+  let active = 0
+  for (const task of tasks) {
+    if (!task.objective_ids.includes(objectiveId)) continue
+    aligned += 1
+    if (task.status !== 'done' && task.status !== 'dropped') active += 1
+  }
+  return { active, aligned }
+}
+
+function LinkedTaskCard({
+  blockers,
+  onOpenTask,
+  task,
+}: {
+  blockers: readonly TaskBlocker[]
+  onOpenTask: (taskId: string) => void
+  task: Task
+}) {
+  const blocked = (task.status === 'open' || task.status === 'started') && blockers.length > 0
+  return (
+    <button onClick={() => onOpenTask(task.id)} type="button">
+      <span>
+        <strong>{task.id}</strong>
+        <Pill tone={task.status === 'done' ? 'success' : blocked ? 'warning' : 'neutral'}>
+          {blocked ? 'blocked' : task.status}
+        </Pill>
+      </span>
+      <b>{task.title}</b>
+      <small>{task.priority} · revision {task.revision}</small>
+      {blocked ? (
+        <small className="objective-task-blocker">Waiting on {blockers.map((blocker) => blocker.id).join(', ')}</small>
+      ) : null}
+    </button>
+  )
+}
+
+function KeyResultHierarchyCard({
+  dependencyIndex,
+  keyResult,
+  node,
+  onOpenTask,
+  onSave,
+  saving,
+  tasksById,
+}: {
+  dependencyIndex: ReturnType<typeof indexDependencyTasks>
+  keyResult: KeyResult
+  node: OutcomeHierarchyKeyResultNode | null
+  onOpenTask: (taskId: string) => void
+  onSave: (text: string, target: string, progress: number, status: string) => void
+  saving: boolean
+  tasksById: ReadonlyMap<string, Task>
+}) {
+  const headingId = useId()
+  const countsId = useId()
+  const progressId = useId()
+  const recorded = typeof keyResult.progress === 'number' ? keyResult.progress : node?.recordedProgress ?? null
+  const linkedCount = node?.counts.total ?? 0
+  const linkedIds = node?.taskRefs.map((ref) => ref.taskId) ?? []
+  return (
+    <article
+      aria-describedby={`${countsId} ${progressId}`}
+      aria-labelledby={headingId}
+      className="kr-card"
+    >
+      <header className="kr-card__header">
+        <div>
+          <span>Key Result</span>
+          <h4 id={headingId}>{keyResult.id}</h4>
+        </div>
+        <p className="kr-card__text">{keyResult.text}</p>
+        <div className="kr-card__meta">
+          <span>{keyResult.target ? `Target ${keyResult.target}` : 'No target label'}</span>
+          <span id={progressId}>{recordedProgressLabel(recorded)}</span>
+          <span>Status {keyResult.status ?? 'active'}</span>
+          <span id={countsId}>{linkedCount} Tasks linked to this KR</span>
+        </div>
+      </header>
+      <KeyResultEditor disabled={saving} keyResult={keyResult} onSave={onSave} />
+      <div className="kr-card__tasks">
+        {linkedIds.length ? (
+          <div className="objective-task-list">
+            {linkedIds.map((taskId) => {
+              const task = tasksById.get(taskId)
+              if (!task) return <span key={taskId}>{taskId}</span>
+              return (
+                <LinkedTaskCard
+                  blockers={blockingDependenciesFromIndex(dependencyIndex, task)}
+                  key={taskId}
+                  onOpenTask={onOpenTask}
+                  task={task}
+                />
+              )
+            })}
+          </div>
+        ) : (
+          <p className="objective-inline-empty">No Tasks are linked to this Key Result.</p>
+        )}
+      </div>
+    </article>
+  )
 }
 
 function KeyResultEditor({
@@ -211,6 +325,24 @@ export function ObjectiveHubPage({ objectiveId, onCreateAlignedTask, onNotice, o
     else counts.actionable += 1
     return counts
   }, { actionable: 0, blocked: 0, done: 0, dropped: 0 })
+  const outcomeHierarchy = useMemo(() => projectOutcomeHierarchy({
+    workspaceId: workspace.workspace.id,
+    tasks: workspace.tasks,
+    visibleTasks: workspace.tasks,
+    objectives: workspace.objectives,
+  }), [workspace.workspace.id, workspace.tasks, workspace.objectives])
+  const selectedHierarchy = outcomeHierarchy.objectiveNodes.find((node) => node.objectiveId === selectedId)
+  const tasksById = useMemo(() => {
+    const map = new Map<string, Task>()
+    for (const task of workspace.tasks) map.set(task.id, task)
+    for (const task of detail?.tasks ?? []) {
+      if (!map.has(task.id)) map.set(task.id, task)
+    }
+    return map
+  }, [detail?.tasks, workspace.tasks])
+  const unresolvedForObjective = outcomeHierarchy.projection.tasks.filter((entry) => (
+    entry.unresolvedRefs.some((ref) => ref.objective_id === selectedId)
+  ))
   return (
     <section className="objective-hub" aria-labelledby="objective-hub-heading">
       <header className="page-heading">
@@ -228,8 +360,8 @@ export function ObjectiveHubPage({ objectiveId, onCreateAlignedTask, onNotice, o
         <div className="objective-hub-layout">
           <aside className="objective-index" aria-label="Objectives">
             {sortedObjectives.map((objective) => {
-              const linked = workspace.tasks.filter((task) => task.objective_ids.includes(objective.id)).length
-              return <button aria-current={objective.id === selectedId ? 'true' : undefined} className={objective.id === selectedId ? 'is-active' : ''} key={objective.id} onClick={() => onSelectObjective(objective.id)} type="button"><span><strong>{objective.id}</strong><Pill tone={objective.status === 'active' ? 'accent' : 'neutral'}>{objective.status ?? 'active'}</Pill></span><b>{getObjectiveTitle(objective)}</b><small>{objective.quarter ?? 'No quarter'} · {linked} Tasks · {averageProgress(objective)}%</small></button>
+              const { active, aligned } = objectiveAlignmentCounts(workspace.tasks, objective.id)
+              return <button aria-current={objective.id === selectedId ? 'true' : undefined} className={objective.id === selectedId ? 'is-active' : ''} key={objective.id} onClick={() => onSelectObjective(objective.id)} type="button"><span><strong>{objective.id}</strong><Pill tone={objective.status === 'active' ? 'accent' : 'neutral'}>{objective.status ?? 'active'}</Pill></span><b>{getObjectiveTitle(objective)}</b><small>{objective.quarter ?? 'No quarter'} · {active} active of {aligned} aligned · {averageProgress(objective)}%</small></button>
             })}
           </aside>
           <div className="objective-detail-stage">
@@ -240,13 +372,85 @@ export function ObjectiveHubPage({ objectiveId, onCreateAlignedTask, onNotice, o
                   <ObjectiveEditor disabled={objectiveContentUpdate.isPending || objectiveUpdate.isPending} objective={detail.objective} onSave={(objective, quarter) => objectiveContentUpdate.mutate({ objective, quarter, revision: detail.objective.revision })} />
                   <label><span>Objective status</span><select disabled={objectiveUpdate.isPending || objectiveContentUpdate.isPending} onChange={(event) => objectiveUpdate.mutate({ fields: { status: event.target.value }, revision: detail.objective.revision })} value={detail.objective.status ?? 'active'}>{objectiveStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
                 </section>
-                <section className="objective-metrics" aria-label="Objective metrics"><div><span>Average KR</span><strong>{averageProgress(detail.objective)}%</strong></div><div><span>Key Results</span><strong>{detail.objective.key_results?.length ?? 0}</strong></div><div><span>Linked Tasks</span><strong>{detail.tasks.length}</strong></div><div><span>Recorded changes</span><strong>{detail.activity.length}</strong></div></section>
+                <section className="objective-metrics" aria-label="Objective metrics"><div><span>Average KR</span><strong>{averageProgress(detail.objective)}%</strong></div><div><span>Key Results</span><strong>{detail.objective.key_results?.length ?? 0}</strong></div><div><span>Aligned Tasks</span><strong>{detail.tasks.length}</strong></div><div><span>Recorded changes</span><strong>{detail.activity.length}</strong></div></section>
                 <section className="kr-panel">
                   <header><div><span>Measurable outcomes</span><h3>Key Results</h3></div></header>
-                  {detail.objective.key_results?.length ? <div className="kr-list">{detail.objective.key_results.map((keyResult) => <KeyResultEditor disabled={keyResultUpdate.isPending} key={keyResult.id} keyResult={keyResult} onSave={(text, target, progress, status) => keyResultUpdate.mutate({ keyResultId: keyResult.id, fields: { text, target, progress, status }, revision: detail.objective.revision })} />)}</div> : <p className="objective-inline-empty">No Key Results yet. Add the first measurable outcome below.</p>}
+                  {detail.objective.key_results?.length ? (
+                    <div className="kr-list">
+                      {detail.objective.key_results.map((keyResult) => (
+                        <KeyResultHierarchyCard
+                          dependencyIndex={dependencyIndex}
+                          key={keyResult.id}
+                          keyResult={keyResult}
+                          node={selectedHierarchy?.keyResults.find((item) => item.keyResultId === keyResult.id) ?? null}
+                          onOpenTask={onOpenTask}
+                          onSave={(text, target, progress, status) => keyResultUpdate.mutate({
+                            keyResultId: keyResult.id,
+                            fields: { text, target, progress, status },
+                            revision: detail.objective.revision,
+                          })}
+                          saving={keyResultUpdate.isPending}
+                          tasksById={tasksById}
+                        />
+                      ))}
+                    </div>
+                  ) : <p className="objective-inline-empty">No Key Results yet. Add the first measurable outcome below.</p>}
                   <form className="kr-create" onSubmit={submitKeyResult}><label><span>New Key Result</span><input disabled={addKeyResult.isPending} onChange={(event) => resetKrIntent(setKrText, event.target.value)} placeholder="A measurable outcome" value={krText} /></label><label><span>Target label</span><input disabled={addKeyResult.isPending} onChange={(event) => resetKrIntent(setKrTarget, event.target.value)} placeholder="e.g. 5 days or 95%" value={krTarget} /></label><Button disabled={addKeyResult.isPending || !krText.trim()} type="submit" variant="primary">{addKeyResult.isError ? 'Retry unchanged KR' : addKeyResult.isPending ? 'Adding…' : 'Add Key Result'}</Button></form>
                 </section>
-                <section className="objective-task-panel"><header><div><span>Planning alignment</span><h3>Linked Tasks</h3></div><Button icon="plus" onClick={() => onCreateAlignedTask(detail.objective.id)} variant="secondary">Create aligned task</Button></header><div aria-label="Objective execution readiness" className="objective-readiness"><div><span>Actionable</span><strong>{readinessCounts.actionable}</strong></div><div><span>Blocked</span><strong>{readinessCounts.blocked}</strong></div><div><span>Done</span><strong>{readinessCounts.done}</strong></div><div><span>Dropped</span><strong>{readinessCounts.dropped}</strong></div></div>{linkedTaskReadiness.length ? <div className="objective-task-list">{linkedTaskReadiness.map(({ task, blockers }) => { const blocked = (task.status === 'open' || task.status === 'started') && blockers.length > 0; return <button key={task.id} onClick={() => onOpenTask(task.id)} type="button"><span><strong>{task.id}</strong><Pill tone={task.status === 'done' ? 'success' : blocked ? 'warning' : 'neutral'}>{blocked ? 'blocked' : task.status}</Pill></span><b>{task.title}</b><small>{task.priority} · revision {task.revision}</small>{blocked ? <small className="objective-task-blocker">Waiting on {blockers.map((blocker) => blocker.id).join(', ')}</small> : null}</button> })}</div> : <p className="objective-inline-empty">No Tasks are aligned to this Objective yet.</p>}</section>
+                <section className="objective-task-panel">
+                  <header>
+                    <div><span>Planning alignment</span><h3>Aligned Tasks</h3></div>
+                    <Button icon="plus" onClick={() => onCreateAlignedTask(detail.objective.id)} variant="secondary">Create aligned task</Button>
+                  </header>
+                  <div aria-label="Objective execution readiness" className="objective-readiness">
+                    <div><span>Actionable</span><strong>{readinessCounts.actionable}</strong></div>
+                    <div><span>Blocked</span><strong>{readinessCounts.blocked}</strong></div>
+                    <div><span>Done</span><strong>{readinessCounts.done}</strong></div>
+                    <div><span>Dropped</span><strong>{readinessCounts.dropped}</strong></div>
+                  </div>
+                  <section aria-label="Objective-only Tasks" className="objective-only-panel">
+                    <h4>Objective-only Tasks</h4>
+                    {(selectedHierarchy?.objectiveOnlyTaskIds.length) ? (
+                      <div className="objective-task-list">
+                        {selectedHierarchy.objectiveOnlyTaskIds.map((taskId) => {
+                          const task = tasksById.get(taskId)
+                          if (!task) return <span key={taskId}>{taskId}</span>
+                          return (
+                            <LinkedTaskCard
+                              blockers={blockingDependenciesFromIndex(dependencyIndex, task)}
+                              key={taskId}
+                              onOpenTask={onOpenTask}
+                              task={task}
+                            />
+                          )
+                        })}
+                      </div>
+                    ) : <p className="objective-inline-empty">No Objective-only Tasks.</p>}
+                  </section>
+                  <section aria-label="Unresolved Key Result references" className="objective-unresolved-panel">
+                    <h4>Unresolved references</h4>
+                    {unresolvedForObjective.length ? (
+                      <div className="objective-task-list">
+                        {unresolvedForObjective.map((entry) => {
+                          const task = tasksById.get(entry.taskId)
+                          const refs = entry.unresolvedRefs.filter((ref) => ref.objective_id === selectedId)
+                          return (
+                            <div className="objective-unresolved-ref" key={entry.taskId}>
+                              <span>Unresolved {refs.map((ref) => ref.key_result_id).join(', ')}</span>
+                              {task ? (
+                                <LinkedTaskCard
+                                  blockers={blockingDependenciesFromIndex(dependencyIndex, task)}
+                                  onOpenTask={onOpenTask}
+                                  task={task}
+                                />
+                              ) : <span>{entry.taskId}</span>}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : <p className="objective-inline-empty">No unresolved Key Result references.</p>}
+                  </section>
+                </section>
               </>
             )}
           </div>

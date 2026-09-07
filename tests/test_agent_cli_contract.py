@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import dataclasses
 import hashlib
 import inspect
@@ -23,7 +24,7 @@ STATUS_WIRE = "agent.status"
 CONTEXT_WIRE = "agent.context"
 CHECKPOINT_WIRE = "agent.checkpoint"
 EXPECTED_FIXTURE_SHA256 = (
-    "4a93a811c76afe0208aa9d9e11ed026e6735d5f5f7c62f6bd014a5b26ab6e8d3"
+    "f85678576139aa2f67a6a0f2ec1f44f41d732a56e623b7ab32e55305be693421"
 )
 EXPECTED_EXPORTS = (
     "AuthorityAdmission",
@@ -201,10 +202,10 @@ class PublicAbiTests(unittest.TestCase):
 
     def test_dataclasses_are_frozen_keyword_only_required_and_exact(self) -> None:
         expected_fields = {
-            contract.AuthorityAdmission: ("data_dir", "workspace_uid"),
+            contract.AuthorityAdmission: ("data_dir", "workspace_uid", "storage_format"),
             contract.ServerCoordinates: ("host", "port"),
             contract.StatusRequest: ("data_dir", "expected_workspace_uid"),
-            contract.ContextRequest: ("task_id",),
+            contract.ContextRequest: ("task_id", "view"),
             contract.CheckpointRequest: (
                 "task_id",
                 "date",
@@ -236,6 +237,10 @@ class PublicAbiTests(unittest.TestCase):
                 "today",
             ),
         }
+        # The ONE defaulted field in the whole ABI, named here so it stays a
+        # deliberate exception: omitting --view must keep the exact core-v1
+        # answer, and every other field stays required.
+        expected_defaults = {contract.ContextRequest: {"view": "core-v1"}}
         for cls, names in expected_fields.items():
             with self.subTest(dataclass=cls.__name__):
                 self.assertTrue(dataclasses.is_dataclass(cls))
@@ -243,7 +248,12 @@ class PublicAbiTests(unittest.TestCase):
                 fields = dataclasses.fields(cls)
                 self.assertEqual(tuple(field.name for field in fields), names)
                 self.assertTrue(all(field.kw_only for field in fields))
-                self.assertTrue(all(field.default is dataclasses.MISSING for field in fields))
+                defaults = expected_defaults.get(cls, {})
+                for field in fields:
+                    if field.name in defaults:
+                        self.assertEqual(field.default, defaults[field.name])
+                    else:
+                        self.assertIs(field.default, dataclasses.MISSING)
                 self.assertTrue(
                     all(field.default_factory is dataclasses.MISSING for field in fields)
                 )
@@ -253,10 +263,10 @@ class PublicAbiTests(unittest.TestCase):
                     cls()
 
     def test_dataclass_annotations_are_semantically_exact(self) -> None:
-        self.assertEqual(
-            typing.get_type_hints(contract.AuthorityAdmission),
-            {"data_dir": Path, "workspace_uid": str},
-        )
+        hints = typing.get_type_hints(contract.AuthorityAdmission)
+        self.assertEqual(hints["data_dir"], Path)
+        self.assertEqual(hints["workspace_uid"], str)
+        self.assertEqual(set(typing.get_args(hints["storage_format"])), {"v3", "v5"})
         self.assertEqual(
             typing.get_type_hints(contract.ServerCoordinates),
             {"host": str, "port": int},
@@ -265,7 +275,12 @@ class PublicAbiTests(unittest.TestCase):
             typing.get_type_hints(contract.StatusRequest),
             {"data_dir": Path, "expected_workspace_uid": str},
         )
-        self.assertEqual(typing.get_type_hints(contract.ContextRequest), {"task_id": str})
+        self.assertEqual(
+            typing.get_type_hints(contract.ContextRequest),
+            {"task_id": str, "view": str},
+        )
+        # The default is the core view, so an unedited caller keeps core-v1.
+        self.assertEqual(contract.ContextRequest(task_id="T-0001").view, "core-v1")
         self.assertEqual(
             typing.get_type_hints(contract.CheckpointRequest),
             {
@@ -376,10 +391,16 @@ class FixtureAndIsolationTests(unittest.TestCase):
     def test_fixture_is_exact_frozen_projection(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         keys = manifest["digest_recipes"]["contract_fixture_projection"]
-        expected = _canonical({key: manifest[key] for key in keys})
+        oracle = {key: copy.deepcopy(manifest[key]) for key in keys}
+        live_values = ["unknown", "v3", "v4", "v5"]
+        self.assertEqual(oracle["limits"]["storage_format_values"], live_values)
         actual = contract.contract_fixture_bytes()
-        self.assertEqual(actual, expected)
-        self.assertEqual(len(actual), 7242)
+        decoded = json.loads(actual)
+        self.assertEqual(actual, _canonical(oracle))
+        self.assertEqual(decoded["limits"]["storage_format_values"], live_values)
+        for key in keys:
+            self.assertEqual(decoded[key], manifest[key])
+        self.assertEqual(len(actual), 9805)
         self.assertEqual(hashlib.sha256(actual).hexdigest(), EXPECTED_FIXTURE_SHA256)
 
     def test_fixture_builder_is_deterministic_and_uses_no_filesystem(self) -> None:
@@ -401,7 +422,7 @@ class FixtureAndIsolationTests(unittest.TestCase):
                 imported.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module)
-        allowed = {"__future__", "dataclasses", "datetime", "json", "pathlib", "re", "typing"}
+        allowed = {"__future__", "dataclasses", "datetime", "json", "pathlib", "re", "typing", "workstack.agent_context_pack"}
         self.assertEqual(imported - allowed, set())
         forbidden_calls = {"open", "exec", "eval", "compile", "__import__"}
         called_names = {
@@ -410,6 +431,28 @@ class FixtureAndIsolationTests(unittest.TestCase):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         }
         self.assertFalse(called_names & forbidden_calls)
+
+    def test_manifest_owned_paths_register_helper_and_pack_tests(self) -> None:
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        lanes = {item["lane"]: item for item in manifest["ownership"]["lanes"]}
+        self.assertEqual(
+            lanes["C2"]["owned_paths"],
+            [
+                "workstack/agent_command_context.py",
+                "workstack/agent_context_pack.py",
+            ],
+        )
+        self.assertEqual(
+            lanes["C2"]["paired_conformance"],
+            "tests/test_agent_command_context_contract.py",
+        )
+        self.assertEqual(
+            lanes["TE"]["owned_paths"],
+            [
+                "tests/test_agent_cli_e2e_contract.py",
+                "tests/test_agent_context_pack.py",
+            ],
+        )
 
 
 class CheckpointParserTests(unittest.TestCase):
@@ -911,9 +954,12 @@ class OutcomeRendererTests(unittest.TestCase):
             changed[name] = 1
             with self.subTest(type_field=name), self.assertRaises(ValueError):
                 contract.render_outcome(outcome=_outcome(data=changed))
-        changed = dict(baseline, storage_format="v5")
+        changed = dict(baseline, storage_format="v6")
         with self.assertRaises(ValueError):
             contract.render_outcome(outcome=_outcome(data=changed))
+        accepted = dict(baseline, storage_format="v5")
+        rendered = contract.render_outcome(outcome=_outcome(data=accepted))
+        self.assertEqual(json.loads(rendered)["data"]["storage_format"], "v5")
         for name in ("actual_workspace_uid", "expected_workspace_uid"):
             changed = dict(baseline)
             changed[name] = "NOT-A-CANONICAL-UUID"
@@ -1081,6 +1127,169 @@ class OutcomeRendererTests(unittest.TestCase):
         for value in (None, {}, object()):
             with self.subTest(value=type(value).__name__), self.assertRaises(ValueError):
                 contract.render_outcome(outcome=value)  # type: ignore[arg-type]
+
+
+def _planning_objective(**changes: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "id": "O-1",
+        "quarter": "2026-Q3",
+        "status": "active",
+        "title": "Fixture Objective",
+    }
+    value.update(changes)
+    return value
+
+
+def _planning_relationship(**changes: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "id": "T-0002",
+        "kind": "parent",
+        "status": "open",
+        "title": "Related Task",
+    }
+    value.update(changes)
+    return value
+
+
+def _planning_source(**changes: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "display_title": "Fixture source title",
+        "id": "C-0001",
+        "link_reasons": ["capture-link"],
+        "provider": "manual",
+        "resource_type": "message",
+        "status": "linked",
+    }
+    value.update(changes)
+    return value
+
+
+def _planning_context_data(**changes: object) -> dict[str, object]:
+    data = _context_data()
+    data["omitted"] = [
+        "actions",
+        "attachments",
+        "capture_bodies",
+        "capture_locators",
+        "notes",
+        "provenance",
+        "work_sessions",
+    ]
+    data["objectives"] = [_planning_objective()]
+    data["relationships"] = [
+        _planning_relationship(kind="parent"),
+        _planning_relationship(kind="dependency"),
+    ]
+    data["sources"] = [_planning_source()]
+    data.update(changes)
+    return data
+
+
+def _planning_outcome(data: dict[str, object]) -> contract.AgentOutcome:
+    return _outcome(command=CONTEXT_WIRE, data=data, task_id=TASK_ID)
+
+
+class PlanningContextRenderTests(unittest.TestCase):
+    def test_render_outcome_accepts_same_task_as_parent_and_dependency(self) -> None:
+        rendered, parsed = _rendered(_planning_outcome(_planning_context_data()))
+        self.assertTrue(rendered.endswith(b"\n"))
+        pairs = [(item["kind"], item["id"]) for item in parsed["data"]["relationships"]]
+        self.assertEqual(pairs, [("parent", "T-0002"), ("dependency", "T-0002")])
+        self.assertNotIn("error", parsed)
+
+    def test_render_outcome_refuses_malformed_nested_planning_blocks(self) -> None:
+        cases = {
+            "unsorted kinds": _planning_context_data(
+                relationships=[
+                    _planning_relationship(kind="dependency"),
+                    _planning_relationship(kind="parent"),
+                ]
+            ),
+            "duplicate kind+id": _planning_context_data(
+                relationships=[
+                    _planning_relationship(kind="parent"),
+                    _planning_relationship(kind="parent"),
+                ]
+            ),
+            "unknown kind": _planning_context_data(
+                relationships=[_planning_relationship(kind="blocked-by")]
+            ),
+            "null resource_type": _planning_context_data(
+                sources=[_planning_source(resource_type=None)]
+            ),
+            "resource_type 1025": _planning_context_data(
+                sources=[_planning_source(resource_type="r" * 1025)]
+            ),
+            "display_title 501": _planning_context_data(
+                sources=[_planning_source(display_title="t" * 501)]
+            ),
+            "capture id prefix": _planning_context_data(
+                sources=[_planning_source(id="CAP-0001")]
+            ),
+            "invalid provider": _planning_context_data(
+                sources=[_planning_source(provider="gmail")]
+            ),
+            "invalid capture status": _planning_context_data(
+                sources=[_planning_source(status="archived")]
+            ),
+            "invalid objective status": _planning_context_data(
+                objectives=[_planning_objective(status="open")]
+            ),
+            "objective id leading zero": _planning_context_data(
+                objectives=[_planning_objective(id="O-01")]
+            ),
+            "empty title": _planning_context_data(
+                objectives=[_planning_objective(title="")]
+            ),
+        }
+        for label, data in cases.items():
+            with self.subTest(case=label), self.assertRaises(ValueError):
+                contract.render_outcome(outcome=_planning_outcome(data))
+
+    def test_render_outcome_refuses_arbitrary_link_reason_canary(self) -> None:
+        canary = "CANARY-ARBITRARY-REASON"
+        data = _planning_context_data(
+            sources=[_planning_source(link_reasons=[canary])]
+        )
+        with self.assertRaises(ValueError):
+            contract.render_outcome(outcome=_planning_outcome(data))
+        mixed = _planning_context_data(
+            sources=[_planning_source(link_reasons=["capture-link", canary])]
+        )
+        with self.assertRaises(ValueError):
+            contract.render_outcome(outcome=_planning_outcome(mixed))
+
+    def test_render_outcome_accepts_legal_planning_field_boundaries(self) -> None:
+        cases = {
+            "resource_type 501": _planning_context_data(
+                sources=[_planning_source(resource_type="r" * 501)]
+            ),
+            "resource_type 1024": _planning_context_data(
+                sources=[_planning_source(resource_type="r" * 1024)]
+            ),
+            "display_title 500": _planning_context_data(
+                sources=[_planning_source(display_title="t" * 500)]
+            ),
+            "quarter null": _planning_context_data(
+                objectives=[_planning_objective(quarter=None)]
+            ),
+            "long objective title": _planning_context_data(
+                objectives=[_planning_objective(title="g" * 800)]
+            ),
+            "both link reasons": _planning_context_data(
+                sources=[
+                    _planning_source(
+                        link_reasons=["capture-conversion", "capture-link"]
+                    )
+                ]
+            ),
+        }
+        for label, data in cases.items():
+            with self.subTest(case=label):
+                rendered, parsed = _rendered(_planning_outcome(data))
+                self.assertNotIn("error", parsed)
+                self.assertIn("objectives", parsed["data"])
+                self.assertTrue(rendered.endswith(b"\n"))
 
 
 if __name__ == "__main__":

@@ -109,6 +109,14 @@ function uniqueDependencyIds(task: WorkspaceTask): string[] {
   return [...new Set(task.dependencies ?? [])];
 }
 
+type CompletedVisibilityRequest = CompletedVisibilityInput & {
+  /**
+   * Board-only, in-memory IDs of Tasks the current interaction moved to Done.
+   * Never persisted; hide still wins; missing/reopened IDs are ignored.
+   */
+  sessionRetainedTaskIds?: readonly string[];
+};
+
 function resolvePins(
   input: CompletedVisibilityInput,
   canonicalById: ReadonlyMap<string, WorkspaceTask>,
@@ -206,6 +214,24 @@ function classifyPrerequisites(
   });
 }
 
+function applySessionRetainedCompletedTasks(
+  visibleIds: Set<string>,
+  input: CompletedVisibilityRequest,
+  canonicalById: ReadonlyMap<string, WorkspaceTask>,
+  matchedIds: ReadonlySet<string>,
+  doneVisibility: DoneVisibility,
+) {
+  if (input.view !== "board" || doneVisibility === "hide") return;
+  for (const taskId of input.sessionRetainedTaskIds ?? []) {
+    if (visibleIds.has(taskId)) continue;
+    const task = canonicalById.get(taskId);
+    if (!task) continue;
+    if (asTaskStatus(task.status) !== "done") continue;
+    if (!matchedIds.has(taskId)) continue;
+    visibleIds.add(taskId);
+  }
+}
+
 function emptyKindFor(
   visibleCount: number,
   canonicalTotal: number,
@@ -220,8 +246,63 @@ function emptyKindFor(
   return "other-filter-empty";
 }
 
+/** Canonical-order partition of IDs that the projector did not keep visible. */
+function classifyHiddenTaskIds(
+  tasks: readonly WorkspaceTask[],
+  visibleIds: ReadonlySet<string>,
+  matchedIds: ReadonlySet<string>,
+): { hiddenCompletedTaskIds: string[]; hiddenOtherTaskIds: string[] } {
+  const hiddenCompletedTaskIds: string[] = [];
+  const hiddenOtherTaskIds: string[] = [];
+  for (const task of tasks) {
+    if (visibleIds.has(task.id)) continue;
+    if (matchedIds.has(task.id)) hiddenCompletedTaskIds.push(task.id);
+    else hiddenOtherTaskIds.push(task.id);
+  }
+  return { hiddenCompletedTaskIds, hiddenOtherTaskIds };
+}
+
+function projectPinReasons(
+  tasks: readonly WorkspaceTask[],
+  pinReasonsById: ReadonlyMap<string, PinReason[]>,
+  baseVisibleIds: ReadonlySet<string>,
+): {
+  retainedTaskIds: string[];
+  pinReasonsByTaskId: Record<string, readonly PinReason[]>;
+} {
+  const retainedTaskIds = tasks
+    .filter((task) => pinReasonsById.has(task.id) && !baseVisibleIds.has(task.id))
+    .map((task) => task.id);
+
+  const pinReasonsByTaskId: Record<string, readonly PinReason[]> = {};
+  for (const task of tasks) {
+    const reasons = pinReasonsById.get(task.id);
+    if (!reasons) continue;
+    pinReasonsByTaskId[task.id] = PIN_ORDER.filter((reason) => reasons.includes(reason));
+  }
+  return { retainedTaskIds, pinReasonsByTaskId };
+}
+
+function projectPrerequisiteMap(
+  visibleTasks: readonly WorkspaceTask[],
+  canonicalById: ReadonlyMap<string, WorkspaceTask>,
+  matchedIds: ReadonlySet<string>,
+  visibleIds: ReadonlySet<string>,
+): Record<string, readonly PrerequisiteClassification[]> {
+  const prerequisitesByTaskId: Record<string, readonly PrerequisiteClassification[]> = {};
+  for (const task of visibleTasks) {
+    prerequisitesByTaskId[task.id] = classifyPrerequisites(
+      task,
+      canonicalById,
+      matchedIds,
+      visibleIds,
+    );
+  }
+  return prerequisitesByTaskId;
+}
+
 export function projectCompletedTaskVisibility(
-  input: CompletedVisibilityInput,
+  input: CompletedVisibilityRequest,
 ): CompletedVisibilityProjection {
   const { tasks, filters } = input;
   const doneVisibility = input.doneVisibility ?? "default";
@@ -248,6 +329,13 @@ export function projectCompletedTaskVisibility(
 
   const visibleBeforeReveal = new Set(baseVisibleIds);
   for (const taskId of pinReasonsById.keys()) visibleBeforeReveal.add(taskId);
+  applySessionRetainedCompletedTasks(
+    visibleBeforeReveal,
+    input,
+    canonicalById,
+    matchedIds,
+    doneVisibility,
+  );
 
   const scopeKey = completedVisibilityScopeKey(input.view, filters, doneVisibility);
   const { reveal, remaining } = resolveReveal(
@@ -263,34 +351,22 @@ export function projectCompletedTaskVisibility(
 
   // Canonical source order, original object references, no in-place sorting.
   const visibleTasks = tasks.filter((task) => visibleIds.has(task.id));
-  const hiddenCompletedTaskIds: string[] = [];
-  const hiddenOtherTaskIds: string[] = [];
-  for (const task of tasks) {
-    if (visibleIds.has(task.id)) continue;
-    if (matchedIds.has(task.id)) hiddenCompletedTaskIds.push(task.id);
-    else hiddenOtherTaskIds.push(task.id);
-  }
-
-  const retainedTaskIds = tasks
-    .filter((task) => pinReasonsById.has(task.id) && !baseVisibleIds.has(task.id))
-    .map((task) => task.id);
-
-  const pinReasonsByTaskId: Record<string, readonly PinReason[]> = {};
-  for (const task of tasks) {
-    const reasons = pinReasonsById.get(task.id);
-    if (!reasons) continue;
-    pinReasonsByTaskId[task.id] = PIN_ORDER.filter((reason) => reasons.includes(reason));
-  }
-
-  const prerequisitesByTaskId: Record<string, readonly PrerequisiteClassification[]> = {};
-  for (const task of visibleTasks) {
-    prerequisitesByTaskId[task.id] = classifyPrerequisites(
-      task,
-      canonicalById,
-      matchedIds,
-      visibleIds,
-    );
-  }
+  const { hiddenCompletedTaskIds, hiddenOtherTaskIds } = classifyHiddenTaskIds(
+    tasks,
+    visibleIds,
+    matchedIds,
+  );
+  const { retainedTaskIds, pinReasonsByTaskId } = projectPinReasons(
+    tasks,
+    pinReasonsById,
+    baseVisibleIds,
+  );
+  const prerequisitesByTaskId = projectPrerequisiteMap(
+    visibleTasks,
+    canonicalById,
+    matchedIds,
+    visibleIds,
+  );
 
   return {
     referenceTasks: tasks,

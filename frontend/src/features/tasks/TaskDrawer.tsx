@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { ApiError, api } from '../../api/client'
 import { Icon } from '../../components/Icon'
 import { EmptyState, IconButton, LoadingBlock } from '../../components/Primitives'
@@ -18,6 +18,7 @@ import {
 import { getErrorMessage } from '../../utils/format'
 import { SnapshotExportDialog } from './SnapshotExportDialog'
 import { TaskActionsDialog } from './TaskActionsDialog'
+import { removeDeletedTaskFromWorkspace } from './taskDeletionProjection'
 import {
   createSaveRun,
   hasPatch,
@@ -226,20 +227,62 @@ function TaskDrawerActivityTab({ active, activity }: { active: boolean; activity
   return active ? <TaskActivityTimeline activity={activity} /> : null
 }
 
-function TaskDrawerDialogs({ draft, onActionClose, onDeleted, onNotice, onSaved, onSnapshotClose, snapshotOpen, taskActionsOpen, taskId }: {
+function applyConfirmedPermanentDeletion(queryClient: QueryClient, taskId: string) {
+  queryClient.setQueryData<WorkspaceProjection>(['workspace'], (current) => (
+    current ? removeDeletedTaskFromWorkspace(current, taskId) : current
+  ))
+  void queryClient.cancelQueries({ queryKey: ['task', taskId] })
+  queryClient.removeQueries({ queryKey: ['task', taskId] })
+  void queryClient.invalidateQueries({ queryKey: ['workspace'] })
+}
+
+function scheduleDeletedTaskFocusHandoff() {
+  window.setTimeout(() => {
+    const fallback = document.querySelector<HTMLElement>('[data-workspace-focus-fallback]')
+    if (fallback) {
+      fallback.focus()
+      return
+    }
+    document.querySelector<HTMLElement>('button[aria-current="page"]')?.focus()
+  }, 0)
+}
+
+function TaskDrawerDialogs({
+  draft,
+  onActionClose,
+  onNotice,
+  onPermanentlyDeleted,
+  onSaved,
+  onSnapshotClose,
+  snapshotOpen,
+  taskActionsOpen,
+  taskId,
+  workspaceUid,
+}: {
   draft: Task | null
   onActionClose: () => void
-  onDeleted: () => void
   onNotice: TaskDrawerProps['onNotice']
+  onPermanentlyDeleted: () => void
   onSaved: (task: Task) => void
   onSnapshotClose: () => void
   snapshotOpen: boolean
   taskActionsOpen: boolean
   taskId: string
+  workspaceUid: string
 }) {
   return <>
     <SnapshotExportDialog onClose={onSnapshotClose} onNotice={onNotice} open={snapshotOpen} taskId={taskId} />
-    {draft ? <TaskActionsDialog onClose={onActionClose} onDeleted={onDeleted} onNotice={onNotice} onSaved={onSaved} open={taskActionsOpen} task={draft} /> : null}
+    {draft ? (
+      <TaskActionsDialog
+        onClose={onActionClose}
+        onNotice={onNotice}
+        onPermanentlyDeleted={onPermanentlyDeleted}
+        onSaved={onSaved}
+        open={taskActionsOpen}
+        task={draft}
+        workspaceUid={workspaceUid}
+      />
+    ) : null}
   </>
 }
 
@@ -260,6 +303,7 @@ export function TaskDrawer({
   const [replyOpen, setReplyOpen] = useState(false)
   const [snapshotOpen, setSnapshotOpen] = useState(false)
   const [taskActionsOpen, setTaskActionsOpen] = useState(false)
+  const [taskRemoved, setTaskRemoved] = useState(false)
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [saveError, setSaveError] = useState<string | null>(null)
   const mountedRef = useRef(true)
@@ -270,6 +314,7 @@ export function TaskDrawer({
   const detailQuery = useQuery({
     queryKey: ['task', taskId],
     queryFn: () => api.getTask(taskId),
+    enabled: !taskRemoved,
   })
 
   useEffect(() => {
@@ -277,6 +322,7 @@ export function TaskDrawer({
     setReplyOpen(false)
     setSnapshotOpen(false)
     setTaskActionsOpen(false)
+    setTaskRemoved(false)
     setDraft(null)
     setTagText('')
     setSaveState('idle')
@@ -689,6 +735,14 @@ export function TaskDrawer({
     } : current)
   }
 
+  const handlePermanentlyDeleted = () => {
+    setTaskRemoved(true)
+    applyConfirmedPermanentDeletion(queryClient, taskId)
+    setTaskActionsOpen(false)
+    onClose()
+    scheduleDeletedTaskFocusHandoff()
+  }
+
   return (
     <aside aria-label={`Task ${taskId}`} className="detail-drawer">
       <TaskDrawerHeader navigationLocked={navigationLocked} onClose={() => navigateAfterSave(onClose)} onMore={() => setTaskActionsOpen(true)} saveState={saveState} taskId={taskId} />
@@ -723,7 +777,18 @@ export function TaskDrawer({
         <TaskDrawerContextTab active={draftTabActive(tab, 'context', draft)} context={taskDetailContext(detailQuery.data)} onCreate={createReply} onImportReceipt={importReplyReceipt} onToggle={() => setReplyOpen((value) => !value)} open={replyOpen} providerGates={providerGates} replies={taskDetailReplies(detailQuery.data)} selection={selection} taskId={taskId} />
         <TaskDrawerActivityTab active={draftTabActive(tab, 'activity', draft)} activity={taskDetailActivity(detailQuery.data)} />
       </div>
-      <TaskDrawerDialogs draft={draft} onActionClose={() => setTaskActionsOpen(false)} onDeleted={onClose} onNotice={onNotice} onSaved={recordTaskAction} onSnapshotClose={() => setSnapshotOpen(false)} snapshotOpen={snapshotOpen} taskActionsOpen={taskActionsOpen} taskId={taskId} />
+      <TaskDrawerDialogs
+        draft={draft}
+        onActionClose={() => setTaskActionsOpen(false)}
+        onNotice={onNotice}
+        onPermanentlyDeleted={handlePermanentlyDeleted}
+        onSaved={recordTaskAction}
+        onSnapshotClose={() => setSnapshotOpen(false)}
+        snapshotOpen={snapshotOpen}
+        taskActionsOpen={taskActionsOpen}
+        taskId={taskId}
+        workspaceUid={workspace.workspace.id}
+      />
     </aside>
   )
 }

@@ -24,6 +24,9 @@ with mock.patch.dict(sys.modules, {"webview": types.SimpleNamespace(Window=objec
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 
 
+REQUIRED_REMOTE_PYTHON = "/srv/workstack/venv/bin/python"
+
+
 def remote_draft(**overrides: object) -> dict[str, object]:
     draft: dict[str, object] = {
         "storage_mode": "ssh-remote",
@@ -33,6 +36,7 @@ def remote_draft(**overrides: object) -> dict[str, object]:
         "local_forward_port": 18765,
         "remote_port": 8765,
         "workspace_id": WORKSPACE_ID,
+        "remote_python": REQUIRED_REMOTE_PYTHON,
     }
     draft.update(overrides)
     return draft

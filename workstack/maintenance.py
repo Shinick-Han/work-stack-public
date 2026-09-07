@@ -4,23 +4,22 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import io
 import json
 import os
-import secrets
 import tempfile
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import __version__
-from .store import DEFAULTS, LOCK_NAME, Store
+from . import store_report_migration
+from .store import DEFAULTS, LOCK_NAME, Store, StoreLockedError
+from .storage.migration_source import freeze_v3_source, verify_v3_source_unchanged
+from .storage.migration_v3_lease import hold_v3_source
 
 
-BACKUP_SCHEMA_VERSION = 1
-BACKUP_MANIFEST = "manifest.json"
-MAX_BACKUP_BYTES = 128 * 1024 * 1024
+BACKUP_SCHEMA_VERSION = store_report_migration.BACKUP_SCHEMA_VERSION
+BACKUP_MANIFEST = store_report_migration.BACKUP_MANIFEST
+MAX_BACKUP_BYTES = store_report_migration.MAX_ARCHIVE_BYTES
 
 
 class BackupValidationError(ValueError):
@@ -73,54 +72,57 @@ def _utc_now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
 
-def _manifest_bytes(manifest: dict[str, Any]) -> bytes:
-    return json.dumps(
-        manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
+def _backup_roster(store_schema_version: object, /) -> tuple[str, ...]:
+    try:
+        return store_report_migration.backup_roster(store_schema_version)
+    except store_report_migration.BackupPackError as error:
+        raise BackupValidationError(str(error)) from error
+
+
+def _build_backup_download_from_validated_bodies(
+    bodies: object,
+    /,
+    *,
+    workspace_id: object,
+    store_schema_version: object,
+    created: object,
+) -> BackupDownload:
+    try:
+        packed = store_report_migration.pack_backup_archive(
+            bodies,
+            workspace_id=workspace_id,
+            store_schema_version=store_schema_version,
+            created=created,
+        )
+    except store_report_migration.BackupPackError as error:
+        raise BackupValidationError(str(error)) from error
+    return BackupDownload(
+        body=packed["body"],
+        filename=packed["filename"],
+        workspace_id=packed["workspace_id"],
+        created_at=packed["created_at"],
+        digest=packed["digest"],
+        file_count=packed["file_count"],
+    )
 
 
 def create_backup_download(store: Store) -> BackupDownload:
     """Build one full verified-store archive without changing the planning store."""
 
     with store.consistent_read() as readiness:
-        bodies = {name: store.path(name).read_bytes() for name in sorted(DEFAULTS)}
-        created = _utc_now()
-        created_at = created.isoformat(timespec="microseconds").replace("+00:00", "Z")
-        files = [
-            {"name": name, "sha256": _sha256(body), "size": len(body)}
-            for name, body in bodies.items()
-        ]
-        manifest = {
-            "schema_version": BACKUP_SCHEMA_VERSION,
-            "product_version": __version__,
-            "created_at": created_at,
-            "workspace_id": readiness.workspace_uid,
-            "store_schema_version": readiness.schema_version,
-            "files": files,
-        }
-        filename = "workstack-backup-{}-{}.zip".format(
-            created.strftime("%Y%m%dT%H%M%S%fZ"), readiness.workspace_uid[:8]
+        roster = _backup_roster(readiness.schema_version)
+        bodies = {name: store.path(name).read_bytes() for name in roster}
+        return _build_backup_download_from_validated_bodies(
+            bodies,
+            workspace_id=readiness.workspace_uid,
+            store_schema_version=readiness.schema_version,
+            created=_utc_now(),
         )
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr(BACKUP_MANIFEST, _manifest_bytes(manifest))
-            for name, body in bodies.items():
-                archive.writestr(name, body)
-        archive_body = buffer.getvalue()
-    return BackupDownload(
-        body=archive_body,
-        filename=filename,
-        workspace_id=readiness.workspace_uid,
-        created_at=created_at,
-        digest=_sha256(archive_body),
-        file_count=len(bodies),
-    )
 
 
-def backup_store(data_dir: Path | str, output_dir: Path | str) -> BackupArtifact:
-    """Create one validated archive while holding the store's only-writer lease."""
-
-    download = create_backup_download(Store(data_dir))
+def _persist_backup_download(
+    download: BackupDownload, output_dir: Path | str
+) -> BackupArtifact:
     output_root = Path(output_dir).expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     destination = output_root / download.filename
@@ -135,144 +137,67 @@ def backup_store(data_dir: Path | str, output_dir: Path | str) -> BackupArtifact
     )
 
 
-def _backup_candidate(path: Path | str) -> Path:
-    candidate = Path(path).expanduser().resolve()
-    if not candidate.is_file():
-        raise BackupValidationError("backup archive does not exist")
-    if candidate.stat().st_size > MAX_BACKUP_BYTES:
-        raise BackupValidationError("backup archive exceeds the size limit")
-    return candidate
+def backup_store(data_dir: Path | str, output_dir: Path | str) -> BackupArtifact:
+    """Create one validated archive while holding the store's only-writer lease."""
 
-
-def _read_archive_members(candidate: Path) -> dict[str, bytes]:
-    expected_names = {BACKUP_MANIFEST, *DEFAULTS.keys()}
-    try:
-        with zipfile.ZipFile(candidate, "r") as archive:
-            infos = archive.infolist()
-            names = [item.filename for item in infos]
-            if len(names) != len(set(names)) or set(names) != expected_names:
-                raise BackupValidationError("backup archive member set is invalid")
-            if any(
-                item.is_dir() or item.file_size > MAX_BACKUP_BYTES
-                for item in infos
-            ):
-                raise BackupValidationError("backup archive contains an invalid member")
-            if sum(item.file_size for item in infos) > MAX_BACKUP_BYTES:
-                raise BackupValidationError("expanded backup exceeds the size limit")
-            return {name: archive.read(name) for name in names}
-    except (zipfile.BadZipFile, OSError) as error:
-        raise BackupValidationError("backup archive is unreadable") from error
-
-
-def _decode_backup_manifest(bodies: dict[str, bytes]) -> dict[str, Any]:
-    try:
-        manifest = json.loads(bodies.pop(BACKUP_MANIFEST).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise BackupValidationError("backup manifest is invalid") from error
-    expected = {
-        "schema_version",
-        "product_version",
-        "created_at",
-        "workspace_id",
-        "store_schema_version",
-        "files",
-    }
-    if not isinstance(manifest, dict) or set(manifest) != expected:
-        raise BackupValidationError("backup manifest fields are invalid")
-    return manifest
-
-
-def _validate_backup_manifest_header(manifest: dict[str, Any]) -> None:
-    if manifest["schema_version"] != BACKUP_SCHEMA_VERSION:
-        raise BackupValidationError("backup schema version is unsupported")
-    if (
-        not isinstance(manifest["product_version"], str)
-        or not manifest["product_version"]
-    ):
-        raise BackupValidationError("backup product version is invalid")
-    if not isinstance(manifest["created_at"], str):
-        raise BackupValidationError("backup creation time is invalid")
-    try:
-        parsed_time = dt.datetime.fromisoformat(
-            manifest["created_at"].replace("Z", "+00:00")
-        )
-    except ValueError as error:
-        raise BackupValidationError("backup creation time is invalid") from error
-    if parsed_time.tzinfo is None or parsed_time.utcoffset() is None:
-        raise BackupValidationError("backup creation time must include a timezone")
-    if not isinstance(manifest["workspace_id"], str) or not manifest["workspace_id"]:
-        raise BackupValidationError("backup workspace identity is invalid")
-
-
-def _validate_backup_file_record(
-    record: Any,
-    bodies: dict[str, bytes],
-    indexed: dict[str, dict[str, Any]],
-) -> None:
-    if not isinstance(record, dict) or set(record) != {"name", "sha256", "size"}:
-        raise BackupValidationError("backup file record is invalid")
-    name = record["name"]
-    if name not in DEFAULTS or name in indexed:
-        raise BackupValidationError("backup file record is unknown or repeated")
-    body = bodies[name]
-    if type(record["size"]) is not int or record["size"] != len(body):
-        raise BackupValidationError("backup member size mismatch")
-    if not isinstance(record["sha256"], str) or not secrets.compare_digest(
-        record["sha256"], _sha256(body)
-    ):
-        raise BackupValidationError("backup member digest mismatch")
-    indexed[name] = record
-
-
-def _verify_backup_file_manifest(
-    manifest: dict[str, Any], bodies: dict[str, bytes]
-) -> None:
-    files = manifest["files"]
-    if not isinstance(files, list) or len(files) != len(DEFAULTS):
-        raise BackupValidationError("backup file manifest is invalid")
-    indexed: dict[str, dict[str, Any]] = {}
-    for record in files:
-        _validate_backup_file_record(record, bodies, indexed)
-
-
-def _validate_backup_store(
-    manifest: dict[str, Any], bodies: dict[str, bytes]
-) -> None:
-    with tempfile.TemporaryDirectory(prefix="workstack-backup-verify-") as temporary:
-        validation_root = Path(temporary)
-        for name, body in bodies.items():
-            (validation_root / name).write_bytes(body)
-        try:
-            readiness = Store(validation_root).initialize()
-        except (OSError, ValueError) as error:
-            raise BackupValidationError(
-                "backup store failed semantic validation"
-            ) from error
-        if readiness.workspace_uid != manifest["workspace_id"]:
-            raise BackupValidationError("backup workspace identity mismatch")
-        if readiness.schema_version != manifest["store_schema_version"]:
-            raise BackupValidationError("backup store schema mismatch")
-
-
-def _read_verified_archive(path: Path | str) -> tuple[BackupArtifact, dict[str, bytes]]:
-    candidate = _backup_candidate(path)
-    bodies = _read_archive_members(candidate)
-    manifest = _decode_backup_manifest(bodies)
-    _validate_backup_manifest_header(manifest)
-    _verify_backup_file_manifest(manifest, bodies)
-    _validate_backup_store(manifest, bodies)
-    artifact = BackupArtifact(
-        path=candidate,
-        workspace_id=manifest["workspace_id"],
-        created_at=manifest["created_at"],
-        digest=_sha256(candidate.read_bytes()),
-        file_count=len(bodies),
+    store = Store(data_dir)
+    # This read selects a reader only. The historical path must independently
+    # admit all held bytes as v3; a concurrent format change refuses there.
+    metadata_path = store.path("store-meta.json")
+    metadata = json.loads(metadata_path.read_bytes()) if metadata_path.is_file() else {}
+    historical = type(metadata) is dict and type(metadata.get("store_schema_version")) is int and metadata["store_schema_version"] == 3
+    download = _historical_backup_download(store) if historical else create_backup_download(store)
+    return _persist_backup_download(
+        download, output_dir
     )
-    return artifact, bodies
+
+
+def _historical_backup_download(store: Store) -> BackupDownload:
+    """Back up pre-upgrade v3 bytes without initializing a current-version Store."""
+
+    with hold_v3_source(store.root) as held:
+        if os.path.lexists(held.root / "store.json"):
+            raise BackupValidationError("historical backup source contains a v4 authority marker")
+        frozen = freeze_v3_source(held.root)
+        bodies = {artifact.name: frozen.body(artifact.name) for artifact in frozen.artifacts}
+        values = store._decoded_documents(bodies)
+        readiness = held.admit(values)
+        store._assert_upgrade_source_owned_locked(bodies, values, readiness)
+        download = _build_backup_download_from_validated_bodies(
+            bodies, workspace_id=readiness.workspace_uid,
+            store_schema_version=readiness.schema_version, created=_utc_now(),
+        )
+        verify_v3_source_unchanged(frozen)
+        return download
+
+
+def _read_verified_archive(
+    path: Path | str,
+) -> tuple[BackupArtifact, int, dict[str, dict[str, Any]]]:
+    """Verify an archive read-only, and report it as this layer's artifact.
+
+    The verifier itself sits below the store, because the migration must prove
+    its own rollback archive from that archive's final path while it holds the
+    writer lease. Wrapping it here keeps `BackupValidationError` the one
+    refusal a maintenance caller catches, with the messages it already matches.
+    """
+
+    try:
+        verified = store_report_migration.verify_archive_file(path)
+    except store_report_migration.BackupPackError as error:
+        raise BackupValidationError(str(error)) from error
+    artifact = BackupArtifact(
+        path=verified.path,
+        workspace_id=verified.workspace_id,
+        created_at=verified.created_at,
+        digest=verified.digest,
+        file_count=verified.file_count,
+    )
+    return artifact, verified.store_schema_version, verified.values
 
 
 def verify_backup(path: Path | str) -> BackupArtifact:
-    artifact, _ = _read_verified_archive(path)
+    artifact, _schema, _values = _read_verified_archive(path)
     return artifact
 
 
@@ -315,6 +240,118 @@ def initialize_store(data_dir: Path | str) -> InitializeReceipt:
     )
 
 
+@dataclass(frozen=True)
+class _HeldDestinationGeneration:
+    workspace_id: str
+    schema_version: int
+    bodies: dict[str, bytes]
+    manifest: bytes
+
+
+def _runtime_manifest_bytes(store: Store) -> bytes:
+    path = store.store_manifest_path
+    if not path.is_file():
+        return b""
+    return path.read_bytes()
+
+
+def _existing_destination_generation(store: Store) -> _HeldDestinationGeneration:
+    """Read an occupied destination's identity and generation, writing nothing.
+
+    `consistent_read` is the store's read boundary: it holds the writer lease,
+    refuses a pending journal, validates the generation it finds and never
+    recovers, migrates or writes. The bodies and runtime manifest returned here
+    are the generation a replace must keep bound: the safety snapshot is packed
+    from these bytes, and the destination commit revalidates them rather than
+    accepting a later foreign replacement.
+    """
+
+    with store.consistent_read() as readiness:
+        roster = _backup_roster(readiness.schema_version)
+        return _HeldDestinationGeneration(
+            workspace_id=readiness.workspace_uid,
+            schema_version=readiness.schema_version,
+            bodies={name: store.path(name).read_bytes() for name in roster},
+            manifest=_runtime_manifest_bytes(store),
+        )
+
+
+def _assert_held_destination_generation(
+    store: Store, held: _HeldDestinationGeneration
+) -> None:
+    try:
+        bodies = {name: store.path(name).read_bytes() for name in held.bodies}
+    except OSError:
+        bodies = None
+    if bodies != held.bodies or _runtime_manifest_bytes(store) != held.manifest:
+        raise BackupValidationError(
+            "destination holds a different workspace; restore refuses to replace it"
+        )
+
+
+def _safety_backup_from_held(
+    held: _HeldDestinationGeneration, output_dir: Path | str
+) -> BackupArtifact:
+    return _persist_backup_download(
+        _build_backup_download_from_validated_bodies(
+            held.bodies,
+            workspace_id=held.workspace_id,
+            store_schema_version=held.schema_version,
+            created=_utc_now(),
+        ),
+        output_dir,
+    )
+
+
+def _commit_restored_store(
+    store: Store,
+    artifact: BackupArtifact,
+    values: dict[str, dict[str, Any]],
+) -> None:
+    store.initialize()
+    store.save_many(
+        values, operation_id="maintenance-restore-{}".format(artifact.digest[7:23])
+    )
+    restored = store.initialize()
+    if restored.workspace_uid != artifact.workspace_id:
+        raise BackupValidationError("restored workspace identity did not verify")
+
+
+def _restore_occupied_destination(
+    destination: Path,
+    *,
+    artifact: BackupArtifact,
+    schema_version: int,
+    values: dict[str, dict[str, Any]],
+    safety_backup_dir: Path | str,
+) -> RestoreReceipt:
+    store = Store(destination)
+    lease = store.try_acquire_writer_lease()
+    if lease is None:
+        raise StoreLockedError(
+            "the Work Stack data directory is already owned by another writer"
+        )
+    try:
+        held = _existing_destination_generation(store)
+        if held.workspace_id != artifact.workspace_id:
+            raise BackupValidationError(
+                "destination holds a different workspace; restore refuses to replace it"
+            )
+        _assert_held_destination_generation(store, held)
+        safety = _safety_backup_from_held(held, safety_backup_dir)
+        writes = _restored_documents(schema_version, values)
+        _assert_held_destination_generation(store, held)
+        _commit_restored_store(store, artifact, writes)
+        return RestoreReceipt(
+            destination=destination,
+            workspace_id=artifact.workspace_id,
+            backup_digest=artifact.digest,
+            safety_backup=safety.path,
+        )
+    finally:
+        store.release_writer_lease(lease)
+
+
 def restore_store(
     backup_path: Path | str,
     destination_dir: Path | str,
@@ -324,39 +361,55 @@ def restore_store(
 ) -> RestoreReceipt:
     """Verify completely, optionally back up existing state, then journal-commit restore."""
 
-    artifact, bodies = _read_verified_archive(backup_path)
+    artifact, schema_version, values = _read_verified_archive(backup_path)
     destination = Path(destination_dir).expanduser().resolve()
     exists = _has_store_files(destination)
     if exists and not replace:
         raise BackupValidationError("destination already contains a Work Stack store")
-    safety_backup: Path | None = None
     if exists:
         if safety_backup_dir is None:
             raise BackupValidationError("a safety backup directory is required when replacing")
-        safety_backup = backup_store(destination, safety_backup_dir).path
-
-    values: dict[str, dict[str, Any]] = {}
-    for name, body in bodies.items():
-        try:
-            value = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:  # guarded above
-            raise BackupValidationError("backup member JSON is invalid") from error
-        if not isinstance(value, dict):
-            raise BackupValidationError("backup member must contain an object")
-        values[name] = value
-
+        return _restore_occupied_destination(
+            destination,
+            artifact=artifact,
+            schema_version=schema_version,
+            values=values,
+            safety_backup_dir=safety_backup_dir,
+        )
+    writes = _restored_documents(schema_version, values)
     store = Store(destination)
-    store.initialize()
-    store.save_many(values, operation_id="maintenance-restore-{}".format(artifact.digest[7:23]))
-    restored = Store(destination).initialize()
-    if restored.workspace_uid != artifact.workspace_id:
-        raise BackupValidationError("restored workspace identity did not verify")
+    _commit_restored_store(store, artifact, writes)
     return RestoreReceipt(
         destination=destination,
         workspace_id=artifact.workspace_id,
         backup_digest=artifact.digest,
-        safety_backup=safety_backup,
+        safety_backup=None,
     )
+
+
+def _restored_documents(
+    schema_version: int, values: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """The documents to write, upgraded when the archive predates this build.
+
+    An older archive is converted the same way an older directory is, so the
+    destination ends up a coherent v5 authority with evidence naming the
+    version the archive actually held. Dropping the archive's own metadata onto
+    a fresh v5 store would leave a generation that fails its own readiness.
+    """
+
+    if schema_version == store_report_migration.CURRENT_SCHEMA_VERSION:
+        return values
+    try:
+        writes, _operation = store_report_migration.plan_upgrade(
+            schema_version,
+            values,
+            store_report_migration.source_digest(values),
+            now=_utc_now().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        )
+    except ValueError as error:
+        raise BackupValidationError("backup store failed semantic validation") from error
+    return writes
 
 
 def relocate_store(source_dir: Path | str, destination_dir: Path | str) -> RestoreReceipt:

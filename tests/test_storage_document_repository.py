@@ -74,7 +74,7 @@ class StoreDocumentRepositoryTests(unittest.TestCase):
             root = Path(temporary)
             store = _RecordingStore(root)
             repository = StoreDocumentRepository(store)
-            sizes = range(1, 9)
+            sizes = range(1, 10)
             for name, size in zip(
                 (
                     "workspace.json",
@@ -85,6 +85,7 @@ class StoreDocumentRepositoryTests(unittest.TestCase):
                     "notes.json",
                     "captures.json",
                     "replies.json",
+                    "reports.json",
                 ),
                 sizes,
             ):

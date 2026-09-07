@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from workstack.storage.canonical import canonical_json_bytes, canonical_sha256
 from workstack.storage.migration import (
@@ -18,8 +20,11 @@ from workstack.storage.migration import (
     verify_v3_migration,
     verify_v3_migration_artifacts,
 )
-from workstack.storage.migration_source import V3_SOURCE_FILES
+from workstack.storage.migration_source import V3_SOURCE_FILES, freeze_v3_source
+from workstack.storage.migration_v3_lease import V3SourceLeaseError, hold_v3_source
 from workstack.storage.reader import read_v4
+from workstack.store import Store
+from workstack.store_rosters import REPORTS_DOCUMENT_NAME
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "store-v3" / "populated"
@@ -282,6 +287,219 @@ class StorageMigrationTests(unittest.TestCase):
             verify_v3_migration(execution)
 
         self.assertEqual(caught.exception.code, "RECEIPT_FILE_REJECTED")
+
+
+class StorageMigrationHistoricalLeaseTests(unittest.TestCase):
+    """The migration holds the real writer lease over a genuine v3 source.
+
+    Schema 5 made ``Store.consistent_read`` demand ``reports.json``, so the
+    released read boundary can no longer open a nine-file v3 directory. These
+    tests pin what replaced it: the same file lease, a pending recovery journal
+    refused rather than replayed, and the held documents admitted as exactly
+    schema 3 before anything is converted.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.parent = Path(self.temporary.name)
+        self.source = self.parent / "authority"
+        shutil.copytree(FIXTURE, self.source)
+        # The runtime directory is deliberately outside ``parent``: these tests
+        # assert that a refused migration leaves no sibling beside the source.
+        self.runtime = tempfile.TemporaryDirectory()
+        self.runtime_environment = mock.patch.dict(
+            os.environ, {"WORK_STACK_RUNTIME": self.runtime.name}
+        )
+        self.runtime_environment.start()
+
+    def tearDown(self) -> None:
+        self.runtime_environment.stop()
+        self.runtime.cleanup()
+        self.temporary.cleanup()
+
+    def source_bytes(self) -> dict[str, bytes]:
+        return {name: (self.source / name).read_bytes() for name in V3_SOURCE_FILES}
+
+    def siblings(self) -> list[str]:
+        return sorted(path.name for path in self.parent.iterdir() if path != self.source)
+
+    def assert_refused_without_artifacts(
+        self, code: str, before: dict[str, bytes]
+    ) -> None:
+        with self.assertRaises(StorageMigrationError) as caught:
+            execute_v3_migration(self.source, candidate_created_at=CREATED_AT)
+
+        self.assertEqual(caught.exception.code, code)
+        self.assertEqual(before, self.source_bytes())
+        self.assertEqual(self.siblings(), [])
+
+    def test_a_competing_store_writer_refuses_execute_and_resume(self) -> None:
+        before = self.source_bytes()
+        competitor = Store(self.source)
+        handle = competitor.try_acquire_writer_lease()
+        self.assertIsNotNone(handle)
+        try:
+            self.assert_refused_without_artifacts(
+                "SOURCE_WRITER_LEASE_UNAVAILABLE", before
+            )
+            with self.assertRaises(StorageMigrationError) as caught:
+                resume_v3_migration(
+                    self.source,
+                    candidate_created_at=CREATED_AT,
+                    candidate_path=self.parent / "candidate",
+                    backup_path=self.parent / "backup.zip",
+                    expected_source_digest="sha256:" + "0" * 64,
+                    expected_conversion_digest="sha256:" + "0" * 64,
+                )
+        finally:
+            competitor.release_writer_lease(handle)
+
+        self.assertEqual(caught.exception.code, "SOURCE_WRITER_LEASE_UNAVAILABLE")
+        self.assertEqual(before, self.source_bytes())
+        self.assertEqual(self.siblings(), [])
+
+    def test_the_lease_is_held_across_every_migration_state(self) -> None:
+        contended: list[str] = []
+
+        def probe(state: str) -> None:
+            competitor = Store(self.source)
+            handle = competitor.try_acquire_writer_lease()
+            competitor.release_writer_lease(handle)
+            if handle is None:
+                contended.append(state)
+
+        execute_v3_migration(
+            self.source, candidate_created_at=CREATED_AT, fault_hook=probe
+        )
+
+        self.assertEqual(
+            contended,
+            [
+                "lease_acquired",
+                "source_frozen",
+                "backup_verified",
+                "candidate_written",
+                "candidate_verified",
+                "before_candidate_publish",
+                "candidate_published",
+                "receipt_written",
+            ],
+        )
+
+    def test_the_lease_is_released_after_a_fault_so_a_retry_succeeds(self) -> None:
+        before = self.source_bytes()
+
+        def fail(state: str) -> None:
+            if state == "source_frozen":
+                raise RuntimeError("injected")
+
+        with self.assertRaisesRegex(RuntimeError, "injected"):
+            execute_v3_migration(
+                self.source, candidate_created_at=CREATED_AT, fault_hook=fail
+            )
+
+        self.assertEqual(self.siblings(), [])
+        competitor = Store(self.source)
+        handle = competitor.try_acquire_writer_lease()
+        self.assertIsNotNone(handle)
+        competitor.release_writer_lease(handle)
+
+        execution = execute_v3_migration(self.source, candidate_created_at=CREATED_AT)
+
+        verify_v3_migration(execution)
+        self.assertEqual(before, self.source_bytes())
+
+    def test_a_pending_recovery_journal_is_refused_and_never_replayed(self) -> None:
+        before = self.source_bytes()
+        journal = self.source / ".workstack-journal.json"
+        body = b'{"writes": []}'
+        journal.write_bytes(body)
+
+        with self.assertRaises(StorageMigrationError) as caught:
+            execute_v3_migration(self.source, candidate_created_at=CREATED_AT)
+
+        self.assertEqual(caught.exception.code, "SOURCE_RECOVERY_JOURNAL_PENDING")
+        self.assertEqual(journal.read_bytes(), body)
+        self.assertEqual(before, self.source_bytes())
+        self.assertEqual(self.siblings(), [])
+
+    def test_a_newer_roster_document_is_refused_as_newer_than_v3(self) -> None:
+        before = self.source_bytes()
+        reports = self.source / REPORTS_DOCUMENT_NAME
+        body = canonical_json_bytes({"version": 1, "reports": [], "idempotency": []})
+        reports.write_bytes(body)
+
+        with self.assertRaises(StorageMigrationError) as caught:
+            execute_v3_migration(self.source, candidate_created_at=CREATED_AT)
+
+        self.assertEqual(caught.exception.code, "SOURCE_SCHEMA_NEWER_THAN_V3")
+        self.assertEqual(reports.read_bytes(), body)
+        self.assertEqual(before, self.source_bytes())
+        self.assertEqual(self.siblings(), [])
+
+    def test_newer_roster_directory_is_refused_without_writes(self) -> None:
+        before = self.source_bytes()
+        marker = self.source / REPORTS_DOCUMENT_NAME
+        marker.mkdir()
+        self.assert_refused_without_artifacts("SOURCE_SCHEMA_NEWER_THAN_V3", before)
+        self.assertTrue(marker.is_dir())
+        self.assertEqual(list(marker.iterdir()), [])
+
+    def test_dangling_newer_roster_link_is_refused_without_dereference(self) -> None:
+        before = self.source_bytes()
+        marker = self.source / REPORTS_DOCUMENT_NAME
+        try:
+            marker.symlink_to(self.source / "absent-report-target")
+        except OSError:
+            self.skipTest("symlinks are unavailable on this host")
+        self.assert_refused_without_artifacts("SOURCE_SCHEMA_NEWER_THAN_V3", before)
+        self.assertTrue(marker.is_symlink())
+        self.assertFalse(marker.exists())
+
+    def test_metadata_claiming_a_newer_schema_is_refused_under_the_lease(self) -> None:
+        path = self.source / "store-meta.json"
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        metadata["store_schema_version"] = 5
+        path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        before = self.source_bytes()
+
+        self.assert_refused_without_artifacts("SOURCE_NOT_VERSION3", before)
+
+    def test_a_nine_file_directory_with_a_v2_backlog_is_not_admitted(self) -> None:
+        path = self.source / "backlog.json"
+        backlog = json.loads(path.read_text(encoding="utf-8"))
+        backlog["version"] = 2
+        path.write_text(json.dumps(backlog, indent=2), encoding="utf-8")
+        before = self.source_bytes()
+
+        self.assert_refused_without_artifacts("SOURCE_NOT_VERSION3", before)
+
+    def test_the_lease_never_creates_the_directory_it_claims_to_read(self) -> None:
+        absent = self.parent / "absent"
+
+        with self.assertRaises(V3SourceLeaseError) as caught:
+            with hold_v3_source(absent):  # pragma: no cover - body never runs
+                pass
+
+        self.assertEqual(caught.exception.code, "SOURCE_DIRECTORY_REQUIRED")
+        self.assertFalse(absent.exists())
+
+    def test_the_real_v3_fixture_migrates_and_keeps_its_bytes_and_digest(self) -> None:
+        before = self.source_bytes()
+        frozen_before = freeze_v3_source(self.source)
+
+        execution = execute_v3_migration(self.source, candidate_created_at=CREATED_AT)
+
+        verify_v3_migration(execution)
+        self.assertEqual(execution.receipt["source"]["format_version"], 3)
+        self.assertEqual(
+            execution.receipt["source"]["authority_digest"],
+            frozen_before.aggregate_digest,
+        )
+        self.assertEqual(before, self.source_bytes())
+        after = freeze_v3_source(self.source)
+        self.assertEqual(after.artifacts, frozen_before.artifacts)
+        self.assertEqual(after.aggregate_digest, frozen_before.aggregate_digest)
 
 
 if __name__ == "__main__":

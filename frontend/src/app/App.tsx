@@ -1,7 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
 import { useMutation, useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import { api, ApiError, CommitUnknownError, createIdempotencyKey } from '../api/client'
-import { BrandMark } from '../components/BrandMark'
 import { Icon } from '../components/Icon'
 import { Button, ErrorState, IconButton, LoadingBlock } from '../components/Primitives'
 import { microsoftProviderGates, type MicrosoftProviderGates } from '../config/providerGates'
@@ -17,7 +16,7 @@ import { ObjectiveHubPage } from '../features/objectives/ObjectiveHubPage'
 import { QuickTaskDialog } from '../features/tasks/QuickTaskDialog'
 import { WorkspaceActionsDialog } from '../features/workspace/WorkspaceActionsDialog'
 import { filterWorkspaceTasks } from '../features/workspace/views/viewModels'
-import { getErrorMessage, getObjectiveTitle, statusLabels } from '../utils/format'
+import { getErrorMessage } from '../utils/format'
 import { useUrlState } from './urlState'
 import { subscribePlanningChanges } from '../integration/planningChangeBus'
 import { SyncStatusControl, SyncStatusDialog, isSyncUnavailable, isSyncWriteBlocked } from './SyncStatusControl'
@@ -34,9 +33,10 @@ import {
 } from './useTaskStatusIntent'
 import { applyTheme, readTheme, type WorkStackTheme } from './theme'
 import { FocusSurface, ReviewSurface } from './AppSurfaces'
-import { SsotConnectionCenter } from './SsotConnectionCenter'
 import { MultiProfileConnectionCenter } from './MultiProfileConnectionCenter'
 import { useWorkspaceRebind } from './useWorkspaceRebind'
+import { AppSidebar } from './AppSidebar'
+import { projectSidebarTaskResults, type UpdateUrl } from './appSidebarModel'
 
 const TaskDrawer = lazy(() => import('../features/tasks/TaskDrawer').then((module) => ({ default: module.TaskDrawer })))
 const WorkspacePage = lazy(() => import('../features/workspace/WorkspacePage').then((module) => ({ default: module.WorkspacePage })))
@@ -147,146 +147,6 @@ function handleWorkspaceShortcut(event: KeyboardEvent, state: AppUrlState, works
   if (!tasks.length || state.surface === 'inbox') return
   event.preventDefault()
   update({ captureId: null, taskId: adjacentTaskId(tasks, state.taskId, event.key) })
-}
-
-type UpdateUrl = (patch: Partial<AppUrlState>, options?: { replace?: boolean }) => boolean
-
-interface SidebarTaskResults {
-  total: number
-  visible: WorkspaceProjection['tasks']
-}
-
-function SurfaceNavButton({ active, count, icon, label, onClick, shortcut, showCount = false }: {
-  active: boolean
-  count?: number
-  icon: Parameters<typeof Icon>[0]['name']
-  label: string
-  onClick: () => void
-  shortcut: string
-  showCount?: boolean
-}) {
-  return <button aria-current={active ? 'page' : undefined} className={active ? 'is-active' : ''} onClick={onClick} type="button">
-    <Icon name={icon} /><span>{label}</span>
-    {showCount ? <span className="nav-shortcut">{count ? <b>{count}</b> : null}<kbd>{shortcut}</kbd></span> : <kbd>{shortcut}</kbd>}
-  </button>
-}
-
-function PrimaryNavigation({ onNavigate, state, workspace }: { onNavigate: (surface: AppUrlState['surface']) => void; state: AppUrlState; workspace?: WorkspaceProjection }) {
-  return <nav aria-label="Product surfaces" className="primary-nav">
-    <SurfaceNavButton active={state.surface === 'workspace'} icon="graph" label="Workspace" onClick={() => onNavigate('workspace')} shortcut="1–4" />
-    <SurfaceNavButton active={state.surface === 'focus'} icon="target" label="Focus" onClick={() => onNavigate('focus')} shortcut="5" />
-    <SurfaceNavButton active={state.surface === 'inbox'} count={workspace?.inbox_count} icon="inbox" label="Context Inbox" onClick={() => onNavigate('inbox')} shortcut="6" showCount />
-    <SurfaceNavButton active={state.surface === 'review'} icon="activity" label="Daily Review" onClick={() => onNavigate('review')} shortcut="7" />
-    <SurfaceNavButton active={state.surface === 'objectives'} icon="target" label="Objective Hub" onClick={() => onNavigate('objectives')} shortcut="8" />
-  </nav>
-}
-
-function SidebarObjectives({ closeMobile, state, update, workspace }: { closeMobile: () => void; state: AppUrlState; update: UpdateUrl; workspace?: WorkspaceProjection }) {
-  const objectives = workspace ? workspace.objectives : []
-  const tasks = workspace ? workspace.tasks : []
-  return <details className="sidebar-section sidebar-objectives">
-    <summary role="button"><span>Objectives</span><span>{objectives.length}</span><Icon name="chevronDown" size={14} /></summary>
-    <div className="sidebar-section-body">
-      <button className="sidebar-view-all" onClick={() => update({ surface: 'objectives', objectiveId: 'all' })} type="button">Open Objective Hub</button>
-      <div className="objective-nav">
-        {objectives.map((objective, index) => {
-          const count = tasks.filter((task) => task.objective_ids.includes(objective.id) && task.status !== 'done' && task.status !== 'dropped').length
-          return <button
-            className={state.surface === 'objectives' && state.objectiveId === objective.id ? 'is-active' : ''}
-            key={objective.id}
-            onClick={() => { update({ surface: 'objectives', objectiveId: objective.id, captureId: null }); closeMobile() }}
-            type="button"
-          >
-            <span className={`objective-dot objective-dot--${(index % 5) + 1}`} />
-            <span><strong>{objective.id}</strong><small>{getObjectiveTitle(objective)}</small></span>
-            <em>{count}</em>
-          </button>
-        })}
-      </div>
-    </div>
-  </details>
-}
-
-function SidebarTasks({ closeMobile, query, results, setQuery, state, update, workspace }: {
-  closeMobile: () => void
-  query: string
-  results: SidebarTaskResults
-  setQuery: (query: string) => void
-  state: AppUrlState
-  update: UpdateUrl
-  workspace?: WorkspaceProjection
-}) {
-  return <details className="sidebar-section sidebar-tasks">
-    <summary role="button"><span>Tasks</span><span>{workspace ? workspace.tasks.length : 0}</span><Icon name="chevronDown" size={14} /></summary>
-    <div className="sidebar-section-body">
-      <button className="sidebar-view-all" onClick={() => { update({ surface: 'workspace', view: 'table', captureId: null, taskId: null }); closeMobile() }} type="button">Open Table</button>
-      <label className="sidebar-task-search">
-        <span className="sr-only">Filter sidebar tasks</span><Icon name="search" size={13} />
-        <input maxLength={120} onChange={(event) => setQuery(event.target.value)} placeholder="Find a Task…" type="search" value={query} />
-      </label>
-      <div className="task-nav">
-        {results.visible.map((task) => <button
-          aria-label={`Open task ${task.id}: ${task.title}`}
-          className={state.taskId === task.id ? 'is-active' : ''}
-          key={task.id}
-          onClick={() => { update({ surface: 'workspace', captureId: null, taskId: task.id }); closeMobile() }}
-          type="button"
-        >
-          <span className={`task-priority-dot task-priority-dot--${task.priority.toLowerCase()}`} />
-          <span><strong>{task.id}</strong><small>{task.title}</small></span>
-          <em>{task.priority} · {statusLabels[task.status]}</em>
-        </button>)}
-        {!results.total ? <p className="sidebar-task-empty">No Tasks match.</p> : null}
-      </div>
-      {results.total > results.visible.length ? <p className="sidebar-task-limit">Showing first 50 of {results.total}</p> : null}
-    </div>
-  </details>
-}
-
-function SidebarConnectionEntry({ detail, gates, label, onOpen }: { detail: string; gates: ConnectionCenterGates; label: string; onOpen: () => void }) {
-  if (!gates.registry) return <SsotConnectionCenter fallbackDetail={detail} fallbackLabel={label} />
-  return <button aria-label="Configure SSOT connections" className="ssot-connection-control" onClick={onOpen} type="button">
-    <span className="ssot-connection-control__dot" /><span><strong>{label}</strong><small>{detail}</small></span>
-  </button>
-}
-
-function AppSidebar({ connectionCenterGates, mobileNavOpen, onOpenConnectionCenter, setMobileNavOpen, setSidebarTaskQuery, sidebarTaskQuery, sidebarTaskResults, state, syncEndpointDisconnected, syncStatus, update, workspace }: {
-  connectionCenterGates: ConnectionCenterGates
-  mobileNavOpen: boolean
-  onOpenConnectionCenter: () => void
-  setMobileNavOpen: (open: boolean) => void
-  setSidebarTaskQuery: (query: string) => void
-  sidebarTaskQuery: string
-  sidebarTaskResults: SidebarTaskResults
-  state: AppUrlState
-  syncEndpointDisconnected: boolean
-  syncStatus?: SyncStatus
-  update: UpdateUrl
-  workspace?: WorkspaceProjection
-}) {
-  const closeMobile = () => setMobileNavOpen(false)
-  const navigate = (surface: AppUrlState['surface']) => {
-    update(surface === 'inbox' ? { surface, taskId: null } : { surface, captureId: null })
-    closeMobile()
-  }
-  const ssotAvailable = Boolean(syncStatus || syncEndpointDisconnected)
-  const fallbackDetail = syncStatus
-    ? `Generation ${syncStatus.generation} · ${syncStatus.state}`
-    : syncEndpointDisconnected ? 'Connection unavailable · writes blocked' : 'On this device · no background sync'
-  return <>
-    <aside className={`app-sidebar ${mobileNavOpen ? 'is-open' : ''}`}>
-      <div className="brand-block">
-        <BrandMark />
-        <div><strong>Work Stack</strong><small>Aligned execution</small></div>
-        <IconButton className="mobile-close" icon="close" label="Close navigation" onClick={closeMobile} variant="ghost" />
-      </div>
-      <PrimaryNavigation onNavigate={navigate} state={state} workspace={workspace} />
-      <SidebarObjectives closeMobile={closeMobile} state={state} update={update} workspace={workspace} />
-      <SidebarTasks closeMobile={closeMobile} query={sidebarTaskQuery} results={sidebarTaskResults} setQuery={setSidebarTaskQuery} state={state} update={update} workspace={workspace} />
-      <SidebarConnectionEntry detail={fallbackDetail} gates={connectionCenterGates} label={ssotAvailable ? 'SSOT workspace' : 'Local workspace'} onOpen={onOpenConnectionCenter} />
-    </aside>
-    {mobileNavOpen ? <button aria-label="Close navigation" className="sidebar-scrim" onClick={closeMobile} type="button" /> : null}
-  </>
 }
 
 function surfaceTitle(surface: AppUrlState['surface']) {
@@ -891,15 +751,13 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
     void queryClient.invalidateQueries()
   }), [queryClient])
 
-  const refreshAuthoritativeState = () => {
-    void Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['sync-status'] }),
-      queryClient.invalidateQueries({ queryKey: ['workspace'] }),
-      queryClient.invalidateQueries({ queryKey: ['captures'] }),
-      queryClient.invalidateQueries({ queryKey: ['task'] }),
-      queryClient.invalidateQueries({ queryKey: ['review'] }),
-    ])
-  }
+  const refreshAuthoritativeState = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['sync-status'] }),
+    queryClient.invalidateQueries({ queryKey: ['workspace'] }),
+    queryClient.invalidateQueries({ queryKey: ['captures'] }),
+    queryClient.invalidateQueries({ queryKey: ['task'] }),
+    queryClient.invalidateQueries({ queryKey: ['review'] }),
+  ])
 
   const receiveCheckpoint = useCheckpointNotices({
     workspace: workspaceQuery.data,
@@ -1189,14 +1047,10 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
       for (const drawer of drawers) drawer.inert = false
     }
   }, [selectedCapture?.id, state.taskId, syncWriteBlocked])
-  const sidebarTaskResults = useMemo(() => {
-    const query = sidebarTaskQuery.trim().toLocaleLowerCase()
-    const matches = (workspace?.tasks ?? []).filter((task) => (
-      !query
-      || `${task.id} ${task.title} ${task.status} ${task.priority}`.toLocaleLowerCase().includes(query)
-    ))
-    return { total: matches.length, visible: matches.slice(0, 50) }
-  }, [sidebarTaskQuery, workspace?.tasks])
+  const sidebarTaskResults = useMemo(
+    () => projectSidebarTaskResults(sidebarTaskQuery, workspace?.tasks),
+    [sidebarTaskQuery, workspace?.tasks],
+  )
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => handleWorkspaceShortcut(event, state, workspace, update)

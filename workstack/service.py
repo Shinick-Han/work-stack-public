@@ -9,7 +9,7 @@ import secrets
 import unicodedata
 import uuid
 from functools import wraps
-from typing import Any, Callable, Iterable, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 from urllib.parse import urlsplit
 
 from . import REMOTE_PROTOCOL_VERSION, __version__
@@ -63,7 +63,25 @@ from .storage.document_repository import (
     StoreDocumentRepository,
     WorkspaceDocument,
 )
+from .storage.task_deletion_transaction import (
+    TaskDeletionTransactionError,
+    commit_v3_task_deletion,
+    preview_v3_task_deletion,
+)
 from .store import MAX_REVISION, Store, StoreCorruptError, StoreLockedError
+from .task_display_id import (
+    TaskDisplayIdError,
+    allocate_create,
+    persist_field,
+    read_optional_high_water,
+    task_ids_from_records,
+)
+from .outcome_write_invariant import (
+    OutcomeWriteInvariantError,
+    apply_task_outcome_write_invariant,
+    canonicalize_key_result_refs,
+)
+from .mutation_service import MutationNoticeMixin
 
 
 TASK_STATUSES = ("open", "started", "done", "dropped")
@@ -125,6 +143,14 @@ class DomainError(ValueError):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.details = details or {}
+
+
+class TaskDisplayIdAuthorityError(DomainError):
+    """Content-free refusal of Task display-ID high-water admission."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class NotFoundError(DomainError):
@@ -719,62 +745,22 @@ def _normalized_key_result_ref(item: Any) -> dict[str, str]:
 def _normalize_patch_key_result_refs(changes: dict[str, Any]) -> None:
     if "key_result_refs" not in changes:
         return
-    pairs = [
-        (ref["objective_id"], ref["key_result_id"])
-        for ref in (_normalized_key_result_ref(item) for item in changes["key_result_refs"])
-    ]
-    if len(set(pairs)) != len(pairs):
-        raise DomainError("key_result_refs entries must be unique")
-    changes["key_result_refs"] = [
-        {"objective_id": objective_id, "key_result_id": key_result_id}
-        for objective_id, key_result_id in sorted(pairs)
-    ]
+    changes["key_result_refs"] = canonicalize_key_result_refs(
+        [_normalized_key_result_ref(item) for item in changes["key_result_refs"]]
+    )
 
 
-def _require_single_key_result(objective: dict[str, Any], key_result_id: str) -> None:
-    matches = [
-        item
-        for item in objective.get("key_results", [])
-        if isinstance(item, dict) and str(item.get("id", "")).strip().upper() == key_result_id
-    ]
-    if len(matches) != 1:
-        raise DomainError(
-            "unknown key result reference", {"key_result_id": key_result_id}
-        )
-
-
-def _resolve_reference_objective(
-    objective_id: str, aligned: set[str], objectives_by_id: dict[str, list[dict[str, Any]]]
-) -> dict[str, Any]:
-    """Resolve exactly one aligned Objective record, keeping duplicate multiplicity."""
-
-    if objective_id not in aligned:
-        raise DomainError(
-            "key result reference parent is not aligned",
-            {"objective_id": objective_id},
-        )
-    matches = objectives_by_id.get(objective_id, [])
-    if len(matches) != 1:
-        raise DomainError(
-            "key result reference objective is not uniquely resolvable",
-            {"objective_id": objective_id},
-        )
-    return matches[0]
-
-
-def _validate_key_result_refs_state(
-    refs: Any, objective_ids: Any, objectives_by_id: dict[str, list[dict[str, Any]]]
+def _apply_task_outcome_write_invariant(
+    changes: dict[str, Any],
+    task: dict[str, Any],
+    objectives_by_id: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """Refuse any resulting reference whose scoped target is unaligned or unresolvable."""
+    """KR parent auto-alignment and fail-closed roster checks before any write."""
 
-    if refs is None:
-        return
-    aligned = set(objective_ids or [])
-    for ref in refs:
-        objective = _resolve_reference_objective(
-            ref["objective_id"], aligned, objectives_by_id
-        )
-        _require_single_key_result(objective, ref["key_result_id"])
+    try:
+        apply_task_outcome_write_invariant(changes, task, objectives_by_id)
+    except OutcomeWriteInvariantError as exc:
+        raise DomainError(str(exc), exc.details) from exc
 
 
 def _objective_records_by_id(
@@ -1718,7 +1704,7 @@ def _append_snapshot_notes(
             edges.append({"source": note["id"], "target": link, "kind": "note"})
 
 
-class WorkStack:
+class WorkStack(MutationNoticeMixin):
     def __init__(
         self,
         store: Store | None = None,
@@ -1748,6 +1734,20 @@ class WorkStack:
         self._search_entries: list[dict[str, Any]] = []
         self.store_readiness = self.store.initialize() if initialize else None
 
+    def _next_task_display(
+        self, tasks: list[dict[str, Any]]
+    ) -> tuple[str, dict[str, Any]]:
+        workspace = self.documents.load(WorkspaceDocument.WORKSPACE)
+        try:
+            display_id, high_water = allocate_create(
+                read_optional_high_water(workspace),
+                task_ids_from_records(tasks),
+            )
+        except TaskDisplayIdError as error:
+            raise TaskDisplayIdAuthorityError(error.code) from error
+        persist_field(workspace, high_water)
+        return display_id, workspace
+
     def _append_task(
         self,
         data: dict[str, Any],
@@ -1761,14 +1761,14 @@ class WorkStack:
         dependencies: Iterable[str] = (),
         scheduled: str | None = None,
         estimate_minutes: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Validate the normal Task fields and append a new Task to ``data``."""
 
         _validate_new_task_schedule(priority, due, scheduled, estimate_minutes)
         normalized_parent, normalized_dependencies = _normalize_new_task_relationships(
             data["tasks"], parent_id, dependencies
         )
-        task_id = _next_id(data["tasks"], "T", 4)
+        task_id, workspace = self._next_task_display(data["tasks"])
         workspace_id = self.documents.load(WorkspaceDocument.WORKSPACE)["id"]
         task = _new_task_record(
             task_id=task_id,
@@ -1789,7 +1789,7 @@ class WorkStack:
         if unknown:
             raise ValueError("unknown objective ids: {}".format(", ".join(unknown)))
         data["tasks"].append(task)
-        return task
+        return task, workspace
 
     @_transactional
     def add_task(
@@ -1804,7 +1804,7 @@ class WorkStack:
         dependencies: Iterable[str] = (),
     ) -> dict[str, Any]:
         data = self.documents.load(WorkspaceDocument.TASKS)
-        task = self._append_task(
+        task, workspace = self._append_task(
             data,
             title,
             detail,
@@ -1824,7 +1824,11 @@ class WorkStack:
             provenance="cli",
         )
         self.documents.save_many(
-            {WorkspaceDocument.TASKS: data, WorkspaceDocument.ACTIVITY: activity},
+            {
+                WorkspaceDocument.TASKS: data,
+                WorkspaceDocument.ACTIVITY: activity,
+                WorkspaceDocument.WORKSPACE: workspace,
+            },
             operation_id="task-create-cli-{}".format(task["id"]),
         )
         return task
@@ -1880,7 +1884,7 @@ class WorkStack:
             return replay
 
         backlog = self.documents.load(WorkspaceDocument.TASKS)
-        task = self._append_task(backlog, **canonical_body)
+        task, workspace = self._append_task(backlog, **canonical_body)
         append_bootstrap(
             activity,
             task,
@@ -1902,7 +1906,11 @@ class WorkStack:
             response_body,
         )
         self.documents.save_many(
-            {WorkspaceDocument.TASKS: backlog, WorkspaceDocument.ACTIVITY: activity},
+            {
+                WorkspaceDocument.TASKS: backlog,
+                WorkspaceDocument.ACTIVITY: activity,
+                WorkspaceDocument.WORKSPACE: workspace,
+            },
             operation_id="task-create-{}".format(idempotency_key),
         )
         return {"status": 201, "body": response_body}
@@ -2072,6 +2080,33 @@ class WorkStack:
         task["status"] = projection[task["id"]]
         return task
 
+    def preview_task_deletion(
+        self, task_id: str, body: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return preview_v3_task_deletion(self.store, task_id, body)
+
+    def commit_task_deletion(
+        self,
+        task_id: str,
+        body: Mapping[str, Any],
+        *,
+        request_digest: str,
+        path: str,
+        idempotency_key: str,
+        if_match: str | None,
+        force_backup_failure: bool = False,
+    ) -> dict[str, Any]:
+        return commit_v3_task_deletion(
+            self.store,
+            task_id=task_id,
+            body=body,
+            request_digest=request_digest,
+            path=path,
+            idempotency_key=idempotency_key,
+            if_match=if_match,
+            force_backup_failure=force_backup_failure,
+        )
+
     @_optional_command_backend(
         "planning_commands", "set_task_status", "task"
     )
@@ -2118,6 +2153,7 @@ class WorkStack:
         )
         task["updated_at"] = today()
         task["revision"] = next_revision
+        self._record_task_status_notice(activity, task, current_status, status, current_revision, next_revision, self._status_notice_key(task, current_revision), "cli" if provenance == "cli" else "gui")
         self.documents.save_many(
             {WorkspaceDocument.TASKS: data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="task-status-{}-r{}".format(task["id"], next_revision),
@@ -2202,6 +2238,7 @@ class WorkStack:
         )
         task["updated_at"] = today()
         task["revision"] = next_revision
+        self._record_task_status_notice(activity, task, current_status, status, current_revision, next_revision, idempotency_key, "gui")
         projected = self._project_task(task, planning_status=status)
         response_body = {"data": projected, "meta": {"replayed": False}}
         self._record_idempotency(
@@ -2219,11 +2256,7 @@ class WorkStack:
     def _validate_keyed_intent_request(
         self, idempotency_key: Any, body: Any
     ) -> None:
-        """Everything about the key and the body, before any lookup or read.
-
-        The exact built-in str requirement matches the other keyed entrypoint:
-        JSON and HTTP cannot carry a subclass, so nothing on the wire changes.
-        """
+        """Everything about the key and the body, before any lookup or read."""
 
         if type(idempotency_key) is not str:
             raise DomainError(
@@ -4201,6 +4234,7 @@ class WorkStack:
         changes, requested_status = _patch_change_set(
             patch, task, tasks_by_id, objectives
         )
+        _apply_task_outcome_write_invariant(changes, task, objectives_by_id)
         activity = self.documents.load(WorkspaceDocument.ACTIVITY)
         current_status = validate_and_project(backlog, activity)[task["id"]]
         changed_fields = _patch_changed_fields(
@@ -4208,12 +4242,6 @@ class WorkStack:
         )
         if not changed_fields:
             return self._project_task(task, planning_status=current_status)
-
-        _validate_key_result_refs_state(
-            changes.get("key_result_refs", task.get("key_result_refs")),
-            changes.get("objective_ids", task.get("objective_ids", [])),
-            objectives_by_id,
-        )
         next_revision = _next_revision(task)
         task.update(changes)
         projected_status = current_status
@@ -4230,6 +4258,7 @@ class WorkStack:
                 provenance="api.v1",
             )
             projected_status = requested_status
+            self._record_task_status_notice(activity, task, current_status, requested_status, current_revision, next_revision, self._status_notice_key(task, current_revision), "gui")
         task["updated_at"] = today()
         task["revision"] = next_revision
         self._event(
@@ -4500,7 +4529,7 @@ class WorkStack:
         )
         if intent_replay is not None:
             return intent_replay
-        task = self._append_task(
+        task, workspace = self._append_task(
             backlog,
             task_input["title"],
             task_input.get("detail", ""),
@@ -4554,6 +4583,7 @@ class WorkStack:
                 WorkspaceDocument.TASKS: backlog,
                 WorkspaceDocument.CAPTURES: captures_data,
                 WorkspaceDocument.ACTIVITY: activity,
+                WorkspaceDocument.WORKSPACE: workspace,
             },
             operation_id="capture-task-{}".format(idempotency_key),
         )
@@ -4622,13 +4652,14 @@ class WorkStack:
         capture = _find(captures_data.get("captures", []), capture_id, "capture")
         action = _find(capture.get("normalized", {}).get("action_items", []), action_id, "capture action")
         backlog = self.documents.load(WorkspaceDocument.TASKS)
+        workspace = None
         if action.get("task_id"):
             task = _find(backlog.get("tasks", []), action["task_id"], "task")
             response_status = 200
             duplicate = True
         else:
-            task_id = _next_id(backlog.setdefault("tasks", []), "T", 4)
-            workspace_id = self.documents.load(WorkspaceDocument.WORKSPACE)["id"]
+            task_id, workspace = self._next_task_display(backlog.setdefault("tasks", []))
+            workspace_id = workspace["id"]
             task = {
                 "id": task_id,
                 "uid": _task_uid(workspace_id, task_id),
@@ -4680,12 +4711,15 @@ class WorkStack:
         self._record_idempotency(
             activity, idempotency_key, "POST", path, request_digest, response_status, body
         )
+        writes = {
+            WorkspaceDocument.TASKS: backlog,
+            WorkspaceDocument.CAPTURES: captures_data,
+            WorkspaceDocument.ACTIVITY: activity,
+        }
+        if workspace is not None:
+            writes[WorkspaceDocument.WORKSPACE] = workspace
         self.documents.save_many(
-            {
-                WorkspaceDocument.TASKS: backlog,
-                WorkspaceDocument.CAPTURES: captures_data,
-                WorkspaceDocument.ACTIVITY: activity,
-            },
+            writes,
             operation_id="capture-convert-{}".format(idempotency_key),
         )
         return {"status": response_status, "body": body}

@@ -51,6 +51,7 @@ from workstack_update import (
     save_update_preferences,
 )
 from remote_connection_monitor import RemoteConnectionMonitor
+from remote_startup_state import RemoteStartupState, RemoteStartupStateMachine
 from bounded_request_worker import BoundedRequestWorker
 from ssh_profile_metadata import run_remote_profile_metadata_check
 from connection_registry import ConnectionProfile, ConnectionRegistry, SshConnectionProfile
@@ -97,16 +98,19 @@ from ssot_connection import (
     REMOTE_CONNECTION_FILE,
     RemoteConnectionProfile,
     build_ssh_check_command,
+    build_ssh_stop_owned_command,
     build_ssh_tunnel_command,
     check_remote_connection,
     connection_profile_from_draft,
     find_ssh_executable,
+    generate_session_token,
     load_connection_draft,
     load_remote_connection_profile,
     profile_with_runtime_forward_port,
     resolve_runtime_forward_port,
     run_remote_connection_check,
     save_connection_draft,
+    token_hash,
     validate_connection_draft,
 )
 from startup_recovery_host import (
@@ -732,6 +736,14 @@ class WorkStackDesktopHost:
         self.startup_error: BaseException | None = None
         self.remote_ssh_process: subprocess.Popen | None = None
         self.remote_ssh_log = None
+        self.remote_session_token: str | None = None
+        self.remote_session_token_hash: str | None = None
+        self.remote_attempt_id = 0
+        self.remote_ready_attempt_id = 0
+        self.remote_lifecycle_state = "IDLE"
+        self.remote_startup = RemoteStartupStateMachine(observer=self._publish_remote_startup_state)
+        self.remote_monitor_attempt_id = ""
+        self._stop_owned_runner = None
         self.remote_monitor: RemoteConnectionMonitor | None = None
         self.remote_reconnect_lock = threading.Lock()
         self.remote_shutdown_requested = threading.Event()
@@ -798,6 +810,7 @@ class WorkStackDesktopHost:
             self.connection_registry_worker.stop(timeout=5)
             if self.startup_thread is not None:
                 self.startup_thread.join(timeout=20)
+            self.remote_shutdown_requested.set()
             self._stop_remote_monitor()
             if self.server_stop_thread is not None:
                 self.server_stop_thread.join(timeout=12)
@@ -853,6 +866,15 @@ class WorkStackDesktopHost:
             if self.options.url:
                 raise RuntimeError("--url cannot be combined with an active SSH profile")
             self.local_startup_selection = None
+            matched = next(
+                (
+                    profile
+                    for profile in current.profiles
+                    if profile.profile_id == selection.profile_id
+                ),
+                None,
+            )
+            remote_python = getattr(matched, "remote_python", None) if matched is not None else None
             configured = RemoteConnectionProfile(
                 ssh_host_alias=selection.ssh_host_alias,
                 remote_app_dir=selection.remote_app_dir,
@@ -860,6 +882,7 @@ class WorkStackDesktopHost:
                 local_forward_port=selection.preferred_forward_port,
                 workspace_id=selection.expected_workspace_id,
                 remote_port=selection.remote_port,
+                remote_python=remote_python,
             )
             self.remote_profile = profile_with_runtime_forward_port(configured)
             self.active_connection_draft = {
@@ -871,6 +894,8 @@ class WorkStackDesktopHost:
                 "workspace_id": selection.expected_workspace_id,
                 "remote_port": selection.remote_port,
             }
+            if remote_python:
+                self.active_connection_draft["remote_python"] = remote_python
             self.workstack_url = (
                 f"http://127.0.0.1:{self.remote_profile.local_forward_port}/"
             )
@@ -1077,6 +1102,7 @@ class WorkStackDesktopHost:
             self.window.load_html(html_document)
 
     def _on_form_closing(self, _sender, _event_args) -> None:
+        self.remote_shutdown_requested.set()
         self.connection_registry_worker.stop(timeout=0)
         self._stop_remote_monitor()
         if (self.server_started_by_host or self.remote_ssh_process is not None) and self.server_stop_thread is None:
@@ -1591,11 +1617,36 @@ class WorkStackDesktopHost:
         except Exception as error:
             self._trace(f"SSOT status dispatch failed: {type(error).__name__}")
 
+    def _remote_monitor_allowed_attempt(self) -> tuple[object, str] | None:
+        machine = getattr(self, "remote_startup", None)
+        if machine is not None:
+            current = machine.active_attempt_id
+            if current is None or not machine.can_start_monitor(current):
+                return None
+            return machine, current
+        lifecycle = getattr(self, "remote_lifecycle_state", None)
+        if lifecycle is not None and lifecycle != "READY":
+            return None
+        if lifecycle == "READY" and getattr(self, "remote_ready_attempt_id", 0) != getattr(
+            self, "remote_attempt_id", 0
+        ):
+            return None
+        return None, ""
+
+    def _current_attempt_check(self, machine: object, attempt_id: str):
+        if machine is None or not attempt_id:
+            return lambda: True
+        return lambda: machine.is_current(attempt_id)
+
     def _start_remote_monitor(self) -> None:
         if self.remote_profile is None:
             return
-        current = self.remote_monitor
-        if current is not None and current.is_running:
+        allowed = self._remote_monitor_allowed_attempt()
+        if allowed is None:
+            return
+        machine, attempt_id = allowed
+        current_monitor = self.remote_monitor
+        if current_monitor is not None and current_monitor.is_running:
             return
         recovery = getattr(self, "remote_recovery_required", None)
         if recovery is None:
@@ -1604,7 +1655,10 @@ class WorkStackDesktopHost:
         if recovery.is_set():
             self._publish_remote_connection_state("disconnected")
             return
-        self.remote_shutdown_requested.clear()
+        shutdown = getattr(self, "remote_shutdown_requested", None)
+        if shutdown is not None and shutdown.is_set():
+            return
+        captured = attempt_id
         self.remote_monitor = RemoteConnectionMonitor(
             is_healthy=self._is_remote_session_healthy,
             is_process_alive=self._is_remote_process_alive,
@@ -1613,17 +1667,23 @@ class WorkStackDesktopHost:
             reload_view=self._reload_workstack_after_reconnect,
             is_recovery_required=recovery.is_set,
             on_recovery_required=self._fail_closed_remote_authority,
+            is_current_attempt=self._current_attempt_check(machine, captured),
         )
+        self.remote_monitor_attempt_id = captured
         self.remote_monitor.start()
+        if machine is not None and captured:
+            machine.mark_monitor_started(captured)
 
     def _stop_remote_monitor(self) -> None:
-        shutdown = getattr(self, "remote_shutdown_requested", None)
-        if shutdown is not None:
-            shutdown.set()
         monitor = getattr(self, "remote_monitor", None)
         self.remote_monitor = None
+        started_for = getattr(self, "remote_monitor_attempt_id", "")
+        self.remote_monitor_attempt_id = ""
         if monitor is not None:
             monitor.stop(timeout=5)
+        machine = getattr(self, "remote_startup", None)
+        if machine is not None and started_for:
+            machine.mark_monitor_stopped(started_for)
 
     def _is_remote_process_alive(self) -> bool:
         process = self.remote_ssh_process
@@ -2023,6 +2083,9 @@ class WorkStackDesktopHost:
             # tunnel so an uncoordinated local profile cannot continue writing.
             with self._remote_authority_guard():
                 self._clear_remote_rebind_coordination_locked()
+            shutdown = getattr(self, "remote_shutdown_requested", None)
+            if shutdown is not None:
+                shutdown.set()
             self._stop_remote_monitor()
             self._stop_owned_remote_connection()
             self._dispatch_ssot_status(self._ssot_status_payload(
@@ -2891,6 +2954,50 @@ class WorkStackDesktopHost:
                 raise RuntimeError("Refusing to prune a backup outside the configured backup directory.")
             candidate.unlink()
 
+    def _begin_remote_attempt(self) -> int:
+        machine = getattr(self, "remote_startup", None)
+        if machine is not None:
+            attempt = machine.begin()
+            self.remote_attempt_id = int(attempt)
+            self.remote_lifecycle_state = machine.state.value
+        else:
+            self.remote_attempt_id = int(getattr(self, "remote_attempt_id", 0)) + 1
+            self.remote_lifecycle_state = "PROBING"
+        self.remote_ready_attempt_id = 0
+        token = generate_session_token()
+        self.remote_session_token = token
+        self.remote_session_token_hash = token_hash(token)
+        return self.remote_attempt_id
+
+    def _remote_attempt_current(self, attempt_id: int) -> bool:
+        machine = getattr(self, "remote_startup", None)
+        if machine is not None:
+            return machine.is_current(str(attempt_id))
+        return getattr(self, "remote_attempt_id", 0) == attempt_id
+
+    def _advance_remote_startup(self, attempt_id: int, state: str) -> bool:
+        machine = getattr(self, "remote_startup", None)
+        if machine is None:
+            if getattr(self, "remote_attempt_id", 0) != attempt_id:
+                return False
+            self.remote_lifecycle_state = state
+            return True
+        target = RemoteStartupState(state)
+        if not machine.advance(str(attempt_id), target):
+            return False
+        self.remote_lifecycle_state = machine.state.value
+        return True
+
+    def _publish_remote_startup_state(self, _attempt_id: str, state: str) -> None:
+        self.remote_lifecycle_state = state
+
+    def _apply_remote_ready_if_current(self, attempt_id: int) -> bool:
+        if not self._advance_remote_startup(attempt_id, "READY"):
+            return False
+        self.remote_ready_attempt_id = attempt_id
+        self._start_remote_monitor()
+        return True
+
     def _ensure_remote_server(self) -> None:
         if self.remote_profile is None:
             raise RuntimeError("Remote server startup requested without an SSH profile")
@@ -2899,8 +3006,15 @@ class WorkStackDesktopHost:
                 f"Local forward port {self.remote_profile.local_forward_port} is already serving Work Stack; "
                 "close that process or choose another local_forward_port"
             )
+        attempt_id = self._begin_remote_attempt()
+        if not self._advance_remote_startup(attempt_id, "STARTING_TUNNEL"):
+            return
         ssh_executable = find_ssh_executable()
-        command = build_ssh_tunnel_command(self.remote_profile, ssh_executable)
+        command = build_ssh_tunnel_command(
+            self.remote_profile,
+            ssh_executable,
+            session_token=self.remote_session_token,
+        )
         launch_root = self.state_root / "desktop-launch"
         launch_root.mkdir(parents=True, exist_ok=True)
         log_path = launch_root / "remote-ssh.log"
@@ -2917,23 +3031,48 @@ class WorkStackDesktopHost:
         except OSError as error:
             self.remote_ssh_log.close()
             self.remote_ssh_log = None
+            self._fail_remote_attempt(attempt_id)
             raise RuntimeError(f"Could not start OpenSSH: {error}") from error
+        if not self._advance_remote_startup(attempt_id, "WAITING_REMOTE_READY"):
+            return
+        self._wait_for_remote_ready(attempt_id, log_path)
 
+    def _fail_remote_attempt(self, attempt_id: int) -> None:
+        machine = getattr(self, "remote_startup", None)
+        if machine is not None:
+            machine.fail(str(attempt_id))
+            self.remote_lifecycle_state = machine.state.value
+        elif getattr(self, "remote_attempt_id", 0) == attempt_id:
+            self.remote_lifecycle_state = "FAILED"
+
+    def _wait_for_remote_ready(self, attempt_id: int, log_path: Path) -> None:
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
+            if not self._remote_attempt_current(attempt_id):
+                return
             if self.remote_ssh_process.poll() is not None:
                 returncode = self.remote_ssh_process.returncode
                 self._close_remote_log()
                 self.remote_ssh_process = None
+                self._fail_remote_attempt(attempt_id)
                 raise RuntimeError(
                     f"SSH remote Work Stack exited before becoming ready (exit {returncode}). "
                     f"Review {log_path} and run --check-remote-connection."
                 )
             if self._is_ready():
+                if not self._advance_remote_startup(attempt_id, "VERIFYING_AUTHORITY"):
+                    return
                 self._verify_remote_workspace()
-                self._trace(f"SSH remote Work Stack is ready through local port {self.remote_profile.local_forward_port}")
+                if not self._apply_remote_ready_if_current(attempt_id):
+                    return
+                self._trace(
+                    f"SSH remote Work Stack is ready through local port {self.remote_profile.local_forward_port}"
+                )
                 return
             time.sleep(0.25)
+        if not self._remote_attempt_current(attempt_id):
+            return
+        self._fail_remote_attempt(attempt_id)
         self._stop_owned_remote_connection()
         raise RuntimeError(
             f"SSH remote Work Stack did not become ready within 25 seconds. "
@@ -3074,7 +3213,42 @@ class WorkStackDesktopHost:
             self._trace("owned server stop command failed")
             pass
 
+    def _request_remote_stop_owned(self, profile: RemoteConnectionProfile, token: str) -> None:
+        runner = getattr(self, "_stop_owned_runner", None)
+        ssh_executable = find_ssh_executable()
+        command = build_ssh_stop_owned_command(profile, ssh_executable, token)
+        if runner is not None:
+            runner(command)
+            return
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.run(
+            command,
+            check=False,
+            timeout=10,
+            creationflags=creation_flags,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+        )
+
     def _stop_owned_remote_connection(self) -> None:
+        machine = getattr(self, "remote_startup", None)
+        if machine is not None:
+            machine.stop()
+            self.remote_lifecycle_state = machine.state.value
+            self.remote_attempt_id = 0
+        elif getattr(self, "remote_lifecycle_state", None) is not None:
+            self.remote_lifecycle_state = "IDLE"
+        self._stop_remote_monitor()
+        token = getattr(self, "remote_session_token", None)
+        profile = getattr(self, "remote_profile", None)
+        self.remote_session_token = None
+        self.remote_session_token_hash = None
+        self.remote_ready_attempt_id = 0
+        if token and profile is not None:
+            try:
+                self._request_remote_stop_owned(profile, token)
+            except (OSError, subprocess.SubprocessError, RuntimeError):
+                self._trace("stop-owned request failed")
         process = self.remote_ssh_process
         self.remote_ssh_process = None
         if process is not None and process.poll() is None:

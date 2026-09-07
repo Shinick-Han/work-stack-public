@@ -1,5 +1,9 @@
 # Work Stack
 
+**Latest manual-install preview: [1.0.8](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.8).**
+See the [Korean installation and upgrade guide](docs/WORKSTACK-1.0.8-INSTALL-UPGRADE.ko.md).
+The stable automatic-update channel remains on 1.0.7 pending the complete release gate.
+
 Work Stack is a local-first, goal-aligned personal execution system. It keeps
 objectives, planning tasks, work logs, notes, and sanitized external context in one
 workspace and presents the same task model through Graph, Board, Treemap, and Table views.
@@ -10,21 +14,6 @@ turn an action item into a new task, or create a task directly from the source.
 objectives → planning tasks → daily records → weekly roll-up
                  ↕ notes and sanitized captures
 ```
-
-## Download the Windows installer
-
-The current installer is Work Stack **1.0.7**:
-
-- [`WorkStack-Setup-1.0.7.ps1`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/WorkStack-Setup-1.0.7.ps1)
-- [`WorkStack-Setup-1.0.7.ps1.sha256`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/WorkStack-Setup-1.0.7.ps1.sha256)
-- [`workstack-update.json`](https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/workstack-update.json)
-
-Installer SHA-256: `c626ad88209585038ca6eca8d94a465cbf548573e01a3a354de652a86bd27edd`
-
-The same verified assets are committed under [`installer/`](installer/). The target machine needs neither Python nor Node.js. This build is not code-signed, so the checksum proves transfer integrity rather than publisher identity.
-
-A Korean install and usage guide is
-[docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md](docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md).
 
 This prototype is intentionally a thin local product shell. Activepieces and the
 Conduit runtime are not embedded. Work Stack owns `PlanningTask`; a future Conduit
@@ -79,8 +68,10 @@ Snapshot export pins Unicode Standard 17.0.0 through the hash-locked
 ## Windows one-file setup
 
 The Korean install, first-launch, desktop usage, connection-registry, CLI, backup, update, and uninstall
-guide for this 1.0.7 product is
+guide for the 1.0.7 baseline is
 [docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md](docs/WORKSTACK_INSTALL_OPERATION_GUIDE.ko.md).
+For the 1.0.8 candidate's schema migration and recovery requirements, read
+[the 1.0.8 release notes](docs/WORKSTACK-1.0.8-RELEASE.ko.md) before upgrading.
 
 The current prototype installer bundles the official 64-bit Python 3.12.10 embeddable
 runtime, the hash-locked Unicode wheel, and a pinned pywebview/pythonnet desktop host.
@@ -249,7 +240,7 @@ editing JSON directly:
 ```bash
 printf '%s' '{"workspace_id":"<uuid>","task_id":"T-0001","expected_revision":3,"changes":{"detail":"Reviewed update"}}' | \
   python3 run_work_stack.py --data-dir /srv/workstack/ssot \
-    agent apply --stdin --intent-id agent.update.0001
+    agent --workspace-uid "<uuid>" apply --stdin --intent-id agent.update.0001
 ```
 
 If the server is active, the CLI forwards through it; otherwise it acquires the Store lease and
@@ -341,8 +332,9 @@ server is stopped it removes the advertisement, and the same commands write to t
 store directly under a short-lived lease. Every other command (`backlog list|show`,
 `okr list|rollup`, `worklog list`, `weekly`, `snapshot`, `graph export`, `maintenance ...`)
 still opens the store locally, so while the server runs it refuses with `the Work Stack data
-directory is already owned by another writer`. `worklog checkpoint-state`, `capture`, and
-`agent apply` have no local form and require the running server.
+directory is already owned by another writer`. `worklog checkpoint-state` and `capture` require the running server;
+`agent apply` uses the selected running owner when present, or an exclusive local Store lease
+when no owner is advertised. It never retries a refused or ambiguous owner write locally.
 
 ```powershell
 python run_work_stack.py okr add-objective "Improve delivery quality"
@@ -355,7 +347,7 @@ python run_work_stack.py graph export --out graph-data.json
 ## Verification
 
 ```powershell
-python -m unittest discover -s tests -v
+python scripts/run_backend_tests.py --quiet
 npm --prefix frontend test
 npm --prefix frontend run build
 python scripts/audit_export.py .

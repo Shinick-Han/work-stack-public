@@ -35,6 +35,7 @@ __all__ = ["run_agent_command"]
 
 _HTTP_TIMEOUT_SECONDS = 10
 _COMMANDS = frozenset({STATUS_COMMAND, CONTEXT_COMMAND, CHECKPOINT_COMMAND})
+_DEFAULT_CONTEXT_VIEW = "core-v1"
 _ADMISSION_ERRORS = frozenset(
     {"invalid_authority", "capability_not_enabled", "workspace_mismatch"}
 )
@@ -214,7 +215,10 @@ def _handle_command(
         )
     if action == CONTEXT_COMMAND:
         return handle_context(
-            request=ContextRequest(task_id=getattr(args, "task", None)),
+            request=ContextRequest(
+                task_id=getattr(args, "task", None),
+                view=getattr(args, "view", None) or _DEFAULT_CONTEXT_VIEW,
+            ),
             backend=backend,
             today=dependencies.today(),
         )

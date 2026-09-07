@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-from workstack.service import WorkStack
 from workstack.storage.migration import StorageMigrationError, execute_v3_migration
-from workstack.store import Store
+from workstack.store_rosters import V3_DOCUMENT_NAMES
+
+
+# The checked-in nine-document schema-3 authority. The v3 migration only ever
+# accepts that source, and the released Store this build ships writes the
+# current schema instead, so building the workspace through the product here
+# would make every case below refuse for the wrong reason.
+FIXTURE = Path(__file__).parent / "fixtures" / "store-v3" / "populated"
 
 
 class T5MigrationRefusalTest(unittest.TestCase):
@@ -17,18 +24,29 @@ class T5MigrationRefusalTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.source = self.root / "workspace"
-        self.source.mkdir()
-        stack = WorkStack(Store(self.source))
-        objective = stack.add_objective("Objective")
-        key_result = stack.add_key_result(objective["id"], "Outcome")
-        task = stack.add_task("Task")
-        stack.patch_task(
-            task["id"],
-            {"objective_ids": [objective["id"]], "revision": task["revision"]},
+        shutil.copytree(FIXTURE, self.source)
+        self.assertEqual(
+            {path.name for path in self.source.iterdir()}, set(V3_DOCUMENT_NAMES)
         )
+        self.assertEqual(
+            json.loads(
+                (self.source / "store-meta.json").read_text(encoding="utf-8")
+            )["store_schema_version"],
+            3,
+        )
+        backlog = json.loads(
+            (self.source / "backlog.json").read_text(encoding="utf-8")
+        )
+        objective = json.loads(
+            (self.source / "okr.json").read_text(encoding="utf-8")
+        )["objectives"][0]
         self.objective_id = objective["id"]
-        self.key_result_id = key_result["id"]
-        self.task_id = task["id"]
+        self.key_result_id = objective["key_results"][0]["id"]
+        self.task_id = next(
+            task["id"]
+            for task in backlog["tasks"]
+            if self.objective_id in task["objective_ids"]
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -90,10 +108,20 @@ class T5MigrationRefusalTest(unittest.TestCase):
         self.assertEqual({path.name for path in self.root.iterdir()}, siblings_before)
 
     def test_legacy_workspace_without_the_field_is_not_refused_by_the_preflight(self) -> None:
+        """A historical v3 workspace lacking the field must reach the migration.
+
+        This is the one case that runs past the read-only preflight and into
+        the under-lease route, so it is also the case that depends on that
+        route still admitting a historical v3 source. The assertion is left
+        exactly as narrow as the contract it guards -- the preflight must not
+        refuse -- and any other failure is reported rather than absorbed.
+        """
+
         backlog = json.loads(
             (self.source / "backlog.json").read_text(encoding="utf-8")
         )
-        self.assertNotIn("key_result_refs", backlog["tasks"][0])
+        for task in backlog["tasks"]:
+            self.assertNotIn("key_result_refs", task)
 
         try:
             self._execute()

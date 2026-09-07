@@ -458,6 +458,38 @@ class ConnectionRegistryHostContractTest(unittest.TestCase):
                 self.assertFalse(response["ok"])
                 self.assertEqual(response["error"]["code"], "operation_failed")
 
+    def test_failed_ssh_profile_test_leaves_registry_bytes_unchanged(self) -> None:
+        tester = mock.Mock(side_effect=RuntimeError("REMOTE_LOCK_OWNED: pid=9"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = MODULE.save_connection_registry(root, local_registry(root))
+            digest = MODULE.registry_digest(current)
+            registry_path = root / "connection-registry.json"
+            before = registry_path.read_bytes()
+            service = MODULE.ConnectionRegistryHostService(
+                root,
+                ssh_profile_tester=tester,
+                mutation_service=MODULE.ConnectionRegistryMutationService(root),
+            )
+            response = json.loads(
+                service.handle_json(
+                    request(
+                        "test-profile",
+                        profile=ssh_test_profile(),
+                        base_registry_digest=digest,
+                    )
+                )
+            )
+            self.assertFalse(response["ok"])
+            self.assertEqual(response["error"]["code"], "remote_lock_owned")
+            self.assertEqual(
+                response["error"]["message"],
+                "The remote workspace is owned by another live session.",
+            )
+            serialized = json.dumps(response)
+            self.assertNotIn("pid=9", serialized)
+            self.assertEqual(registry_path.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

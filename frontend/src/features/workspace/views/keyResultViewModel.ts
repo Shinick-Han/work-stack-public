@@ -19,10 +19,12 @@ import type { WorkspaceTask } from "./types";
 
 export const DERIVED_TASK_KEY_RESULT = "derived.task-key-result";
 export const DERIVED_KEY_RESULT_OBJECTIVE = "derived.key-result-objective";
+export const DERIVED_OBJECTIVE_TASK = "derived.objective-task";
 
 export type DerivedEdgeKind =
   | typeof DERIVED_TASK_KEY_RESULT
-  | typeof DERIVED_KEY_RESULT_OBJECTIVE;
+  | typeof DERIVED_KEY_RESULT_OBJECTIVE
+  | typeof DERIVED_OBJECTIVE_TASK;
 
 export interface DerivedOutcomeEdge {
   id: string;
@@ -107,9 +109,23 @@ function edge(kind: DerivedEdgeKind, source: string, target: string): DerivedOut
   return { id: derivedEdgeId(kind, source, target), kind, source, target, derived: true };
 }
 
+function pushUnique(
+  edges: DerivedOutcomeEdge[],
+  seen: Set<string>,
+  kind: DerivedEdgeKind,
+  source: string,
+  target: string,
+) {
+  const derived = edge(kind, source, target);
+  if (seen.has(derived.id)) return;
+  seen.add(derived.id);
+  edges.push(derived);
+}
+
 /**
- * Derived Task -> KR edges for resolved refs of visible Tasks, and KR ->
- * Objective edges for every displayed KR. Nothing here touches workspace.edges.
+ * Derived Objective → KR for every displayed KR, and KR → visible Task for
+ * resolved refs. Objective-only alignment is Objective → Task. Nothing here
+ * touches workspace.edges or mutates the visible Task array.
  */
 export function deriveOutcomeEdges(
   projection: KeyResultProjection,
@@ -118,30 +134,45 @@ export function deriveOutcomeEdges(
   const visible = new Set(visibleTasks.map((task) => task.id));
   const edges: DerivedOutcomeEdge[] = [];
   const seen = new Set<string>();
+  for (const node of projection.keyResults) {
+    pushUnique(
+      edges,
+      seen,
+      DERIVED_KEY_RESULT_OBJECTIVE,
+      objectiveEndpointKey(node.objectiveId),
+      keyResultEndpointKey(node.key),
+    );
+  }
+  const tasksWithResolvedKr = new Set<string>();
   for (const task of projection.tasks) {
     if (!visible.has(task.taskId)) continue;
     for (const key of task.resolvedKeys) {
       const node = projection.byKey[key];
       if (!node) continue;
-      const derived = edge(
+      tasksWithResolvedKr.add(task.taskId);
+      pushUnique(
+        edges,
+        seen,
         DERIVED_TASK_KEY_RESULT,
-        taskEndpointKey(task.taskId),
         keyResultEndpointKey(node.key),
+        taskEndpointKey(task.taskId),
       );
-      if (seen.has(derived.id)) continue;
-      seen.add(derived.id);
-      edges.push(derived);
     }
   }
-  for (const node of projection.keyResults) {
-    const derived = edge(
-      DERIVED_KEY_RESULT_OBJECTIVE,
-      keyResultEndpointKey(node.key),
-      objectiveEndpointKey(node.objectiveId),
-    );
-    if (seen.has(derived.id)) continue;
-    seen.add(derived.id);
-    edges.push(derived);
+  for (const task of visibleTasks) {
+    if (tasksWithResolvedKr.has(task.id)) continue;
+    if ((task.key_result_refs ?? []).length > 0) continue;
+    const aligned = [...new Set(task.objective_ids ?? [])];
+    if (!aligned.length) continue;
+    for (const objectiveId of aligned) {
+      pushUnique(
+        edges,
+        seen,
+        DERIVED_OBJECTIVE_TASK,
+        objectiveEndpointKey(objectiveId),
+        taskEndpointKey(task.id),
+      );
+    }
   }
   return edges;
 }

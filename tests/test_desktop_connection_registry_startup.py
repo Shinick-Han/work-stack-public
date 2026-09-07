@@ -212,7 +212,22 @@ class DesktopConnectionRegistryStartupTest(unittest.TestCase):
                 "work-linux", "/srv/workstack/app", "/srv/workstack/ssot",
                 29123, WORKSPACE_ID, 8765,
             )
-            registry = mock.sentinel.registry
+            registry = MODULE.ConnectionRegistry(
+                schema_version=1,
+                active_profile_id=PROFILE_ID,
+                profiles=(
+                    MODULE.SshConnectionProfile(
+                        profile_id=PROFILE_ID,
+                        label="Remote",
+                        ssh_host_alias="work-linux",
+                        remote_app_dir="/srv/workstack/app",
+                        remote_data_dir="/srv/workstack/ssot",
+                        expected_workspace_id=WORKSPACE_ID,
+                        preferred_forward_port=18765,
+                        remote_port=8765,
+                    ),
+                ),
+            )
             with mock.patch.object(
                 MODULE, "ensure_connection_registry", return_value=registry
             ), mock.patch.object(
@@ -573,6 +588,7 @@ class DesktopFreshInstallBootstrapTest(unittest.TestCase):
                     "local_forward_port": 18765,
                     "workspace_id": WORKSPACE_ID,
                     "remote_port": 8765,
+                    "remote_python": "/srv/workstack/venv/bin/python",
                 }
             ),
             encoding="utf-8",

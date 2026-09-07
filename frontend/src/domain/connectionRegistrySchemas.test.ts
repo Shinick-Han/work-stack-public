@@ -4,7 +4,10 @@ import {
   CONNECTION_REGISTRY_SCHEMA_VERSION,
   MAX_CONNECTION_PROFILES,
   connectionProfileDraftSchema,
+  connectionProfileWriteSchema,
   connectionRegistrySchema,
+  remotePythonExecutableSchema,
+  sshProfileNeedsRemotePython,
 } from './connectionRegistrySchemas'
 
 const profileId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -89,5 +92,35 @@ describe('connection registry schemas', () => {
     expect(connectionRegistrySchema.safeParse(registry([{ ...localProfile, enabled: false }])).success).toBe(false)
     expect(connectionRegistrySchema.safeParse(registry([], null)).success).toBe(true)
     expect(connectionRegistrySchema.safeParse(registry([localProfile], null)).success).toBe(false)
+  })
+
+  test('loads legacy SSH rows without remote_python and requires the field to persist', () => {
+    const python = '/opt/workstack/venv/bin/python'
+    const sshProfile = {
+      profile_id: localProfile.profile_id,
+      label: localProfile.label,
+      kind: 'ssh' as const,
+      enabled: localProfile.enabled,
+      live_updates: localProfile.live_updates,
+      expected_workspace_id: localProfile.expected_workspace_id,
+      ssh_host_alias: 'work-linux',
+      remote_app_dir: '/srv/workstack/app',
+      remote_data_dir: '/srv/workstack/ssot',
+      preferred_forward_port: 24_567,
+      remote_port: 8_765,
+    }
+    expect(connectionRegistrySchema.safeParse(registry([sshProfile])).success).toBe(true)
+    expect(sshProfileNeedsRemotePython(sshProfile)).toBe(true)
+    expect(connectionProfileWriteSchema.safeParse(sshProfile).success).toBe(false)
+    expect(connectionProfileDraftSchema.safeParse({ ...sshProfile, expected_workspace_id: null, remote_python: '' }).success).toBe(true)
+    expect(connectionProfileWriteSchema.safeParse({ ...sshProfile, remote_python: python }).success).toBe(true)
+    expect(connectionRegistrySchema.parse(registry([{ ...sshProfile, remote_python: python }])).profiles[0]).toEqual({
+      ...sshProfile,
+      remote_python: python,
+    })
+    for (const remote_python of ['', '/', 'python3', '../bin/python', '/usr/bin/../bin/python', '/tmp/python ', '/tmp/./python']) {
+      expect(remotePythonExecutableSchema.safeParse(remote_python).success).toBe(false)
+      expect(connectionProfileWriteSchema.safeParse({ ...sshProfile, remote_python }).success).toBe(false)
+    }
   })
 })

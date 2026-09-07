@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckpointHistory, type FrozenAttempt } from './CheckpointHistory'
+import { DailyReportPreview, reviewDaySourceToken, reviewWeeklySourceToken, useOwnerGeneration } from './DailyReportPreview'
+import { WeeklyReportPreview } from './WeeklyReportPreview'
 import { CommitUnknownError, api, createIdempotencyKey } from '../../api/client'
 import { Button, ErrorState, LoadingBlock, Pill } from '../../components/Primitives'
 import { DateInput } from '../../components/DateInput'
-import type { CheckpointAudit, Capture, ReviewEntryInput, WorkspaceProjection } from '../../domain/types'
+import type { CheckpointAudit, Capture, ReviewEntryInput, ReviewProjection, WorkspaceProjection } from '../../domain/types'
 import { getErrorMessage } from '../../utils/format'
 import { LeadershipSignalsPanel } from './LeadershipSignalsPanel'
 
@@ -35,51 +37,48 @@ function formatDuration(totalSeconds: number) {
   return `${totalSeconds}s`
 }
 
-/**
- * An owner identity that never repeats. The workspace and day coordinate can
- * come back (A to B to A, or D to E to D), so every observed change - including
- * a synchronous cache swap with no intermediate render - advances a generation
- * counter that a returning coordinate cannot reproduce.
- */
-function useOwnerGeneration(
-  queryClient: QueryClient,
-  workspaceId: string,
-  date: string,
-): { owner: string; currentOwner: () => string } {
-  const coordinate = `${workspaceId}|${date}`
-  // A ref, not state: ownership must already have changed when a control
-  // fires inside the same React batch as the cache write.
-  const generation = useRef(0)
-  const [, forceRender] = useState(0)
-  const lastCoordinate = useRef(coordinate)
-  const lastCached = useRef<string | undefined>(undefined)
-  const identity = useRef(`${coordinate}#0`)
+function DailyReviewSummary({
+  review,
+  checkinPending,
+  checkinError,
+  onCheckin,
+}: {
+  review: ReviewProjection
+  checkinPending: boolean
+  checkinError: boolean
+  onCheckin: () => void
+}) {
+  const doneCount = review.day.entries.reduce((count, entry) => count + entry.done.length, 0)
+  const blockerCount = review.weekly.projects.reduce((count, project) => count + project.blockers.length, 0)
+  return (
+    <div className="review-summary" aria-label="Daily review summary">
+      <div><span>Check-in</span><strong>{review.day.start_time ?? 'Not yet'}</strong><Button disabled={checkinPending} onClick={onCheckin} variant="ghost">{review.day.start_time ? 'Update time' : checkinError ? 'Retry check-in' : 'Check in now'}</Button></div>
+      <div><span>Entries today</span><strong>{review.day.entries.length}</strong><small>{doneCount} done items</small></div>
+      <div><span>7-day tasks</span><strong>{review.weekly.projects.length}</strong><small>{review.weekly.range.start} → {review.weekly.range.end}</small></div>
+      <div className={blockerCount ? 'metric-attention' : ''}><span>Open signals</span><strong>{blockerCount}</strong><small>reported blockers</small></div>
+    </div>
+  )
+}
 
-  const advance = (next: string) => {
-    generation.current += 1
-    identity.current = `${next}#${generation.current}`
-  }
-
-  if (lastCoordinate.current !== coordinate) {
-    lastCoordinate.current = coordinate
-    advance(coordinate)
-  }
-
-  useEffect(() => {
-    lastCached.current = queryClient.getQueryData<WorkspaceProjection>(['workspace'])?.workspace.id
-    return queryClient.getQueryCache().subscribe(({ query }) => {
-      if (query.queryKey.length !== 1 || query.queryKey[0] !== 'workspace') return
-      const next = queryClient.getQueryData<WorkspaceProjection>(['workspace'])?.workspace.id
-      if (next === lastCached.current) return
-      // Synchronous: counted before React renders, and counted even when the
-      // Page never renders the intermediate workspace at all.
-      lastCached.current = next
-      advance(lastCoordinate.current)
-      forceRender((value) => value + 1)
-    })
-  }, [queryClient])
-
-  return { owner: identity.current, currentOwner: () => identity.current }
+function DailyReviewWeekly({
+  onOpenTask,
+  review,
+}: {
+  onOpenTask: (taskId: string) => void
+  review: ReviewProjection
+}) {
+  return (
+    <section className="weekly-review" aria-labelledby="weekly-review-heading">
+      <header><div><span>Deterministic roll-up</span><h2 id="weekly-review-heading">Seven-day review</h2></div><Pill tone="neutral">{review.weekly.range.days} days</Pill></header>
+      {review.weekly.projects.length ? <div className="weekly-project-grid">{review.weekly.projects.map((project) => (
+        <article key={project.task_id}>
+          <button onClick={() => onOpenTask(project.task_id)} type="button"><strong>{project.task_id}</strong><span>{project.task}</span></button>
+          <div className="weekly-project-meta">{project.objective_ids.map((id) => <Pill key={id} tone="accent">{id}</Pill>)}{project.duration_seconds > 0 ? <small>{formatDuration(project.duration_seconds)} focused · {project.dates.length} active day{project.dates.length === 1 ? '' : 's'}</small> : <small>{project.dates.length} active day{project.dates.length === 1 ? '' : 's'}</small>}</div>
+          <dl><div><dt>Done</dt><dd>{project.done.length}</dd></div><div><dt>Next</dt><dd>{project.next.length}</dd></div><div><dt>Blockers</dt><dd>{project.blockers.length}</dd></div></dl>
+        </article>
+      ))}</div> : <p className="review-empty">No review evidence falls in this seven-day window.</p>}
+    </section>
+  )
 }
 
 interface TransitionOwnership {
@@ -188,7 +187,120 @@ function CheckpointHistorySection(
   )
 }
 
-export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpenTask, today, workspace }: DailyReviewPageProps) {
+function DailyReviewHeading({
+  date,
+  onDate,
+  today,
+}: {
+  date: string
+  onDate: (value: string) => void
+  today: string
+}) {
+  return (
+    <header className="page-heading">
+      <div>
+        <div className="eyebrow"><span className="live-dot" /> Daily review</div>
+        <h1 id="review-heading">Turn execution into evidence.</h1>
+        <p>Capture what moved, what comes next, and what needs help—without inferring execution state.</p>
+      </div>
+      <DateInput
+        className="review-date"
+        label="Review date"
+        max={today}
+        onChange={onDate}
+        value={date}
+      />
+    </header>
+  )
+}
+
+function DailyReviewLoaded({
+  availableTasks,
+  blockers,
+  captures,
+  checkinError,
+  checkinPending,
+  date,
+  done,
+  entryError,
+  entryPending,
+  next,
+  onBlockers,
+  onCheckin,
+  onDone,
+  onNext,
+  onNotice,
+  onOpenCapture,
+  onOpenTask,
+  onSubmitEntry,
+  onTaskId,
+  review,
+  selectedTask,
+  taskId,
+  transitions,
+}: {
+  availableTasks: WorkspaceProjection['tasks']
+  blockers: string
+  captures: Capture[]
+  checkinError: boolean
+  checkinPending: boolean
+  date: string
+  done: string
+  entryError: unknown
+  entryPending: boolean
+  next: string
+  onBlockers: (value: string) => void
+  onCheckin: () => void
+  onDone: (value: string) => void
+  onNext: (value: string) => void
+  onNotice: (message: string, tone?: 'success' | 'error') => void
+  onOpenCapture?: (captureId: string) => void
+  onOpenTask: (taskId: string) => void
+  onSubmitEntry: (event: FormEvent) => void
+  onTaskId: (value: string) => void
+  review: ReviewProjection
+  selectedTask: WorkspaceProjection['tasks'][number] | undefined
+  taskId: string
+  transitions: TransitionOwnership
+}) {
+  return (
+    <>
+      <DailyReviewSummary
+        checkinError={checkinError}
+        checkinPending={checkinPending}
+        onCheckin={onCheckin}
+        review={review}
+      />
+      <div className="review-layout">
+        <form className="review-entry-card" onSubmit={onSubmitEntry}>
+          <header><span>New evidence</span><strong>{date}</strong></header>
+          <label><span>Task</span><select disabled={entryPending} onChange={(event) => onTaskId(event.target.value)} value={taskId}>{availableTasks.map((task) => <option key={task.id} value={task.id}>{task.id} · {task.title}</option>)}</select></label>
+          {selectedTask ? <button className="review-task-link" onClick={() => onOpenTask(selectedTask.id)} type="button">Open {selectedTask.id} planning detail</button> : null}
+          <label><span>Done <small>one item per line</small></span><textarea disabled={entryPending} onChange={(event) => onDone(event.target.value)} rows={4} value={done} /></label>
+          <label><span>Next <small>one item per line</small></span><textarea disabled={entryPending} onChange={(event) => onNext(event.target.value)} rows={4} value={next} /></label>
+          <label><span>Blockers <small>one item per line</small></span><textarea disabled={entryPending} onChange={(event) => onBlockers(event.target.value)} rows={3} value={blockers} /></label>
+          <Button disabled={entryPending || !taskId || ![done, next, blockers].some((value) => value.trim())} type="submit" variant="primary">{entryPending ? 'Saving…' : entryError ? 'Retry unchanged entry' : 'Add review entry'}</Button>
+          {entryError ? <p className="form-error" role="alert">{getErrorMessage(entryError)}</p> : null}
+        </form>
+        <CheckpointHistorySection date={date} transitions={transitions} />
+        <section className="review-day-card" aria-labelledby="review-day-heading">
+          <header><span>Day record</span><strong id="review-day-heading">{review.day.entries.length ? `${review.day.entries.length} entries` : 'No entries yet'}</strong></header>
+          {review.day.entries.length ? <div className="review-entry-list">{review.day.entries.map((entry, index) => (
+            <article key={`${entry.task_id}-${index}`}>
+              <button onClick={() => onOpenTask(entry.task_id)} type="button"><strong>{entry.task_id}</strong><span>{entry.task}</span></button>
+              {entry.session_id && entry.duration_seconds !== undefined ? <small className="review-entry-duration">{formatDuration(entry.duration_seconds)} focused · {entry.session_id}</small> : null}
+              {(['done', 'next', 'blockers'] as const).map((field) => entry[field].length ? <div className={`review-facts review-facts--${field}`} key={field}><span>{field}</span><ul>{entry[field].map((item) => <li key={item}>{item}</li>)}</ul></div> : null)}
+            </article>
+          ))}</div> : <p className="review-empty">Record a concrete Done, Next, or Blocker item for a Task.</p>}
+        </section>
+      </div>
+      <DailyReviewWeekly onOpenTask={onOpenTask} review={review} />
+      {onOpenCapture ? <LeadershipSignalsPanel captures={captures} onNotice={onNotice} onOpenCapture={onOpenCapture} /> : null}
+    </>
+  )
+}
+
+function useDailyReviewPage({ onNotice, today, workspace }: DailyReviewPageProps) {
   const queryClient = useQueryClient()
   const availableTasks = useMemo(() => [...workspace.tasks].sort((left, right) => (
     left.status === 'done' || left.status === 'dropped' ? 1 : -1
@@ -211,10 +323,7 @@ export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpen
     queryKey: ['review', date, 7],
     queryFn: () => api.getReview(date, 7),
   })
-
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['review', date, 7] })
-
-  // The entire workspace audit is loaded and validated before any day filter.
   const transitions = useCheckpointTransitions(workspace.workspace.id, date, refresh)
 
   const checkinMutation = useMutation({
@@ -241,6 +350,12 @@ export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpen
     },
     onError: (error) => onNotice(getErrorMessage(error), 'error'),
   })
+
+  const changeDate = (value: string) => {
+    setDate(value)
+    checkinIntent.current = null
+    entryIntentKey.current = null
+  }
 
   const startCheckin = () => {
     if (!checkinIntent.current || checkinIntent.current.date !== date) {
@@ -269,79 +384,63 @@ export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpen
   }
 
   const review = reviewQuery.data
-  const selectedTask = workspace.tasks.find((task) => task.id === taskId)
+  return {
+    availableTasks, blockers, changeDate, changeDraft, checkinMutation, date, done,
+    entryMutation, next, review, reviewQuery, startCheckin, submitEntry, taskId, transitions,
+    selectedTask: workspace.tasks.find((task) => task.id === taskId),
+    setBlockers, setDone, setNext,
+    setTaskId: (value: string) => { entryIntentKey.current = null; setTaskId(value) },
+    sourceAvailable: Boolean(review) && !reviewQuery.isError && !reviewQuery.isPending,
+    workspaceId: workspace.workspace.id,
+  }
+}
 
+export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpenTask, today, workspace }: DailyReviewPageProps) {
+  const page = useDailyReviewPage({ captures, onNotice, onOpenCapture, onOpenTask, today, workspace })
   return (
     <section className="review-page" aria-labelledby="review-heading">
-      <header className="page-heading">
-        <div>
-          <div className="eyebrow"><span className="live-dot" /> Daily review</div>
-          <h1 id="review-heading">Turn execution into evidence.</h1>
-          <p>Capture what moved, what comes next, and what needs help—without inferring execution state.</p>
-        </div>
-        <DateInput
-          className="review-date"
-          label="Review date"
-          max={today}
-          onChange={(value) => {
-            setDate(value)
-            checkinIntent.current = null
-            entryIntentKey.current = null
-          }}
-          value={date}
-        />
-      </header>
-
-      {reviewQuery.isPending ? <LoadingBlock label="Opening the review…" /> : reviewQuery.isError || !review ? (
-        <ErrorState message={getErrorMessage(reviewQuery.error)} onRetry={() => void reviewQuery.refetch()} />
+      <DailyReviewHeading date={page.date} onDate={page.changeDate} today={today} />
+      {page.reviewQuery.isPending ? <LoadingBlock label="Opening the review…" /> : page.reviewQuery.isError || !page.review ? (
+        <ErrorState message={getErrorMessage(page.reviewQuery.error)} onRetry={() => void page.reviewQuery.refetch()} />
       ) : (
-        <>
-          <div className="review-summary" aria-label="Daily review summary">
-            <div><span>Check-in</span><strong>{review.day.start_time ?? 'Not yet'}</strong><Button disabled={checkinMutation.isPending} onClick={startCheckin} variant="ghost">{review.day.start_time ? 'Update time' : checkinMutation.isError ? 'Retry check-in' : 'Check in now'}</Button></div>
-            <div><span>Entries today</span><strong>{review.day.entries.length}</strong><small>{review.day.entries.reduce((count, entry) => count + entry.done.length, 0)} done items</small></div>
-            <div><span>7-day tasks</span><strong>{review.weekly.projects.length}</strong><small>{review.weekly.range.start} → {review.weekly.range.end}</small></div>
-            <div className={review.weekly.projects.some((project) => project.blockers.length) ? 'metric-attention' : ''}><span>Open signals</span><strong>{review.weekly.projects.reduce((count, project) => count + project.blockers.length, 0)}</strong><small>reported blockers</small></div>
-          </div>
-
-          <div className="review-layout">
-            <form className="review-entry-card" onSubmit={submitEntry}>
-              <header><span>New evidence</span><strong>{date}</strong></header>
-              <label><span>Task</span><select disabled={entryMutation.isPending} onChange={(event) => { entryIntentKey.current = null; setTaskId(event.target.value) }} value={taskId}>{availableTasks.map((task) => <option key={task.id} value={task.id}>{task.id} · {task.title}</option>)}</select></label>
-              {selectedTask ? <button className="review-task-link" onClick={() => onOpenTask(selectedTask.id)} type="button">Open {selectedTask.id} planning detail</button> : null}
-              <label><span>Done <small>one item per line</small></span><textarea disabled={entryMutation.isPending} onChange={(event) => changeDraft(setDone)(event.target.value)} rows={4} value={done} /></label>
-              <label><span>Next <small>one item per line</small></span><textarea disabled={entryMutation.isPending} onChange={(event) => changeDraft(setNext)(event.target.value)} rows={4} value={next} /></label>
-              <label><span>Blockers <small>one item per line</small></span><textarea disabled={entryMutation.isPending} onChange={(event) => changeDraft(setBlockers)(event.target.value)} rows={3} value={blockers} /></label>
-              <Button disabled={entryMutation.isPending || !taskId || ![done, next, blockers].some((value) => value.trim())} type="submit" variant="primary">{entryMutation.isPending ? 'Saving…' : entryMutation.isError ? 'Retry unchanged entry' : 'Add review entry'}</Button>
-              {entryMutation.error ? <p className="form-error" role="alert">{getErrorMessage(entryMutation.error)}</p> : null}
-            </form>
-
-            <CheckpointHistorySection date={date} transitions={transitions} />
-
-            <section className="review-day-card" aria-labelledby="review-day-heading">
-              <header><span>Day record</span><strong id="review-day-heading">{review.day.entries.length ? `${review.day.entries.length} entries` : 'No entries yet'}</strong></header>
-              {review.day.entries.length ? <div className="review-entry-list">{review.day.entries.map((entry, index) => (
-                <article key={`${entry.task_id}-${index}`}>
-                  <button onClick={() => onOpenTask(entry.task_id)} type="button"><strong>{entry.task_id}</strong><span>{entry.task}</span></button>
-                  {entry.session_id && entry.duration_seconds !== undefined ? <small className="review-entry-duration">{formatDuration(entry.duration_seconds)} focused · {entry.session_id}</small> : null}
-                  {(['done', 'next', 'blockers'] as const).map((field) => entry[field].length ? <div className={`review-facts review-facts--${field}`} key={field}><span>{field}</span><ul>{entry[field].map((item) => <li key={item}>{item}</li>)}</ul></div> : null)}
-                </article>
-              ))}</div> : <p className="review-empty">Record a concrete Done, Next, or Blocker item for a Task.</p>}
-            </section>
-          </div>
-
-          <section className="weekly-review" aria-labelledby="weekly-review-heading">
-            <header><div><span>Deterministic roll-up</span><h2 id="weekly-review-heading">Seven-day review</h2></div><Pill tone="neutral">{review.weekly.range.days} days</Pill></header>
-            {review.weekly.projects.length ? <div className="weekly-project-grid">{review.weekly.projects.map((project) => (
-              <article key={project.task_id}>
-                <button onClick={() => onOpenTask(project.task_id)} type="button"><strong>{project.task_id}</strong><span>{project.task}</span></button>
-                <div className="weekly-project-meta">{project.objective_ids.map((id) => <Pill key={id} tone="accent">{id}</Pill>)}{project.duration_seconds > 0 ? <small>{formatDuration(project.duration_seconds)} focused · {project.dates.length} active day{project.dates.length === 1 ? '' : 's'}</small> : <small>{project.dates.length} active day{project.dates.length === 1 ? '' : 's'}</small>}</div>
-                <dl><div><dt>Done</dt><dd>{project.done.length}</dd></div><div><dt>Next</dt><dd>{project.next.length}</dd></div><div><dt>Blockers</dt><dd>{project.blockers.length}</dd></div></dl>
-              </article>
-            ))}</div> : <p className="review-empty">No review evidence falls in this seven-day window.</p>}
-          </section>
-          {onOpenCapture ? <LeadershipSignalsPanel captures={captures} onNotice={onNotice} onOpenCapture={onOpenCapture} /> : null}
-        </>
+        <DailyReviewLoaded
+          availableTasks={page.availableTasks}
+          blockers={page.blockers}
+          captures={captures}
+          checkinError={page.checkinMutation.isError}
+          checkinPending={page.checkinMutation.isPending}
+          date={page.date}
+          done={page.done}
+          entryError={page.entryMutation.error}
+          entryPending={page.entryMutation.isPending}
+          next={page.next}
+          onBlockers={page.changeDraft(page.setBlockers)}
+          onCheckin={page.startCheckin}
+          onDone={page.changeDraft(page.setDone)}
+          onNext={page.changeDraft(page.setNext)}
+          onNotice={onNotice}
+          onOpenCapture={onOpenCapture}
+          onOpenTask={onOpenTask}
+          onSubmitEntry={page.submitEntry}
+          onTaskId={page.setTaskId}
+          review={page.review}
+          selectedTask={page.selectedTask}
+          taskId={page.taskId}
+          transitions={page.transitions}
+        />
       )}
+      <DailyReportPreview
+        date={page.date}
+        sourceAvailable={page.sourceAvailable}
+        sourceUpdatedAt={reviewDaySourceToken(page.review)}
+        workspaceId={page.workspaceId}
+      />
+      <WeeklyReportPreview
+        endDate={page.date}
+        sourceAvailable={page.sourceAvailable}
+        sourceUpdatedAt={reviewWeeklySourceToken(page.review)}
+        workspaceId={page.workspaceId}
+      />
     </section>
   )
 }

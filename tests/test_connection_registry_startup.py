@@ -785,10 +785,11 @@ class FreshLocalStoreGateTest(unittest.TestCase):
             self.assertEqual(sorted(path.name for path in root.iterdir()), before)
 
     def test_shell_store_rosters_match_the_store_module(self) -> None:
-        from workstack.store import DEFAULTS, LOCK_NAME
+        from workstack.store import LOCK_NAME
+        from workstack.store_rosters import V3_DOCUMENT_NAMES
 
         self.assertEqual(MODULE.STORE_LEASE_FILE, LOCK_NAME)
-        self.assertEqual(MODULE.MINIMUM_LOCAL_STORE_FILES, frozenset(DEFAULTS))
+        self.assertEqual(MODULE.MINIMUM_LOCAL_STORE_FILES, V3_DOCUMENT_NAMES)
 
 
 if __name__ == "__main__":

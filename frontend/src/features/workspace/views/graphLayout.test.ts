@@ -1,5 +1,5 @@
 import type { Edge, Node } from '@xyflow/react'
-import { GRAPH_NODE_SIZES } from "./graphLayout";
+import { GRAPH_NODE_SIZES, planningGraphTopologyKey, reversesEdgeForLayout } from "./graphLayout";
 import { describe, expect, test } from 'vitest'
 
 import { layoutPlanningGraph } from './graphLayout'
@@ -35,8 +35,64 @@ describe('layoutPlanningGraph', () => {
     expect(Object.values(first.edgeRoutes).every((route) => route.points.length >= 2)).toBe(true)
   })
 
+  test('topology identity ignores selection paint, coordinates and input order', () => {
+    const nodes: Node[] = [
+      { id: 'task', position: { x: 1, y: 2 }, data: { kind: 'task', selected: true, related: false } },
+      { id: 'objective', position: { x: 3, y: 4 }, data: { kind: 'objective', selected: false } },
+    ]
+    const edges: Edge[] = [
+      { id: 'align', source: 'task', target: 'objective', data: { kind: 'alignment' }, style: { opacity: 0.12 } },
+    ]
+    const reversed: Node[] = [
+      { id: 'objective', position: { x: 90, y: 90 }, data: { kind: 'objective', selected: true, related: true } },
+      { id: 'task', position: { x: 0, y: 0 }, data: { kind: 'task', selected: false, related: true } },
+    ]
+    const restyled: Edge[] = [
+      { id: 'align', source: 'task', target: 'objective', data: { kind: 'alignment' }, style: { opacity: 1, strokeWidth: 2.8 } },
+    ]
+
+    expect(planningGraphTopologyKey(reversed, restyled)).toBe(planningGraphTopologyKey(nodes, edges))
+    expect(planningGraphTopologyKey(
+      [...nodes, { id: 'note', position: { x: 0, y: 0 }, data: { kind: 'note' } }],
+      edges,
+    )).not.toBe(planningGraphTopologyKey(nodes, edges))
+  })
+
   test('returns an empty deterministic layout for an empty graph', async () => {
     await expect(layoutPlanningGraph([], [])).resolves.toEqual({ nodes: [], edgeRoutes: {} })
+  })
+
+  test('overwrites incoming coordinates so saved positions must apply after ELK', async () => {
+    const nodes = [node('T-0001', 'task')]
+    nodes[0].position = { x: 99_999, y: 99_999 }
+    const laid = await layoutPlanningGraph(nodes, [])
+    expect(laid.nodes).toHaveLength(1)
+    expect(laid.nodes[0].position).not.toEqual({ x: 99_999, y: 99_999 })
+    expect(Number.isFinite(laid.nodes[0].position.x)).toBe(true)
+  })
+
+  test('ranks Objective then KR then Task without reversing rendered outcome edges', async () => {
+    const nodes: Node[] = [
+      { id: 'kr', position: { x: 0, y: 0 }, data: { kind: 'key-result' } },
+      { id: 'task', position: { x: 0, y: 0 }, data: { kind: 'task' } },
+      { id: 'objective', position: { x: 0, y: 0 }, data: { kind: 'objective' } },
+    ]
+    const edges: Edge[] = [
+      { id: 'o-kr', source: 'objective', target: 'kr', data: { kind: 'derived.key-result-objective' } },
+      { id: 'kr-t', source: 'kr', target: 'task', data: { kind: 'derived.task-key-result' } },
+    ]
+    expect(reversesEdgeForLayout(edges[0])).toBe(false)
+    expect(reversesEdgeForLayout(edges[1])).toBe(false)
+    expect(reversesEdgeForLayout({ id: 'a', source: 't', target: 'o', data: { kind: 'alignment' } })).toBe(true)
+
+    const first = await layoutPlanningGraph(nodes, edges)
+    const second = await layoutPlanningGraph([...nodes].reverse(), [...edges].reverse())
+    const positions = new Map(first.nodes.map((item) => [item.id, item.position]))
+
+    expect(second).toEqual(first)
+    expect(positions.get('objective')!.x).toBeLessThan(positions.get('kr')!.x)
+    expect(positions.get('kr')!.x).toBeLessThan(positions.get('task')!.x)
+    expect(first.nodes.map((item) => item.id)).toEqual(['kr', 'objective', 'task'])
   })
 })
 

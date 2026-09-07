@@ -130,6 +130,16 @@ def _make_v4_store(root: Path, *, uid: object = CANONICAL_UID) -> None:
     )
 
 
+def _make_v5(root: Path, *, uid: object = CANONICAL_UID) -> None:
+    root.mkdir(parents=True)
+    _write_json(root / "workspace.json", _workspace(uid))
+    _write_json(root / "store-meta.json", _metadata(5))
+    _write_json(
+        root / "reports.json",
+        {"version": 1, "reports": [], "idempotency": []},
+    )
+
+
 def _tree_snapshot(root: Path) -> tuple[tuple[object, ...], ...]:
     """Capture path/type/content and write metadata for the full test tree."""
 
@@ -245,6 +255,7 @@ class AuthorityContractTests(unittest.TestCase):
         self.assertIs(type(admission), AuthorityAdmission)
         self.assertEqual(admission.data_dir, authority.resolve())
         self.assertEqual(admission.workspace_uid, CANONICAL_UID)
+        self.assertEqual(admission.storage_format, "v3")
         with self.assertRaises(dataclasses.FrozenInstanceError):
             admission.workspace_uid = OTHER_UID  # type: ignore[misc]
 
@@ -307,7 +318,10 @@ class AuthorityContractTests(unittest.TestCase):
     def test_v3_metadata_shape_is_exact(self) -> None:
         variants = (
             _metadata(2),
-            _metadata(5),
+            _metadata(6),
+            _metadata(0),
+            _metadata(-1),
+            _metadata("5"),
             _metadata(True),
             _metadata(3, version=1),
             _metadata(3, migrations=[]),
@@ -387,13 +401,93 @@ class AuthorityContractTests(unittest.TestCase):
         _write_json(double_marker / "store-meta.json", _metadata(4))
         self._assert_refused(double_marker, "invalid_authority")
 
+        reports_conflict = self.root / "v4-and-reports"
+        _make_v4_store(reports_conflict)
+        _write_json(reports_conflict / "reports.json", {"version": 1, "reports": []})
+        self._assert_refused(reports_conflict, "invalid_authority")
+
+        v5_metadata_conflict = self.root / "v4-and-v5-metadata"
+        _make_v4_store(v5_metadata_conflict)
+        _write_json(v5_metadata_conflict / "store-meta.json", _metadata(5))
+        self._assert_refused(v5_metadata_conflict, "invalid_authority")
+
     def test_marker_directories_are_not_authority_documents(self) -> None:
-        for marker in ("store.json", "store-meta.json"):
+        for marker in ("store.json", "store-meta.json", "reports.json"):
             authority = self.root / f"directory-{marker}"
             authority.mkdir()
             _write_json(authority / "workspace.json", _workspace())
+            _write_json(authority / "store-meta.json", _metadata(5 if marker == "reports.json" else 3))
+            if marker == "store-meta.json":
+                (authority / marker).unlink()
             (authority / marker).mkdir()
             self._assert_refused(authority, "invalid_authority")
+
+    def test_occupied_legacy_collection_marker_directories_are_invalid(self) -> None:
+        markers = (
+            "backlog.json",
+            "okr.json",
+            "worklog.json",
+            "notes.json",
+            "captures.json",
+            "replies.json",
+            "activity.json",
+        )
+        for marker in markers:
+            authority = self.root / f"legacy-directory-{marker}"
+            _make_v3(authority)
+            (authority / marker).mkdir()
+            self._assert_refused(authority, "invalid_authority")
+
+    def test_optional_legacy_marker_files_still_admit_v3(self) -> None:
+        authority = self.root / "v3-with-backlog-file"
+        _make_v3(authority)
+        _write_json(authority / "backlog.json", {"version": 1, "tasks": []})
+        admission = self._call(authority)
+        self.assertEqual(admission.storage_format, "v3")
+        self.assertEqual(admission.workspace_uid, CANONICAL_UID)
+
+    def test_marker_symlinks_are_not_authority_documents(self) -> None:
+        target = self.root / "marker-target.json"
+        _write_json(target, {"version": 1})
+        for marker, schema in (
+            ("store.json", 3),
+            ("store-meta.json", 3),
+            ("reports.json", 5),
+        ):
+            authority = self.root / f"symlink-{marker}"
+            authority.mkdir()
+            _write_json(authority / "workspace.json", _workspace())
+            if marker != "store-meta.json":
+                _write_json(authority / "store-meta.json", _metadata(schema))
+            try:
+                (authority / marker).symlink_to(target)
+            except OSError:
+                return
+            self._assert_refused(authority, "invalid_authority")
+
+    def test_occupied_legacy_collection_marker_symlinks_are_invalid(self) -> None:
+        target = self.root / "legacy-marker-target.json"
+        _write_json(target, {"version": 1})
+        created = 0
+        for marker in (
+            "backlog.json",
+            "okr.json",
+            "worklog.json",
+            "notes.json",
+            "captures.json",
+            "replies.json",
+            "activity.json",
+        ):
+            authority = self.root / f"legacy-symlink-{marker}"
+            _make_v3(authority)
+            try:
+                (authority / marker).symlink_to(target)
+            except OSError:
+                continue
+            created += 1
+            self._assert_refused(authority, "invalid_authority")
+        if created == 0:
+            self.skipTest("symlinks are unavailable on this host")
 
     def test_actual_uid_must_be_canonical_non_nil_rfc4122(self) -> None:
         invalid = (
@@ -493,6 +587,53 @@ class AuthorityContractTests(unittest.TestCase):
         }
         with patch.dict(os.environ, environment, clear=False):
             self._assert_refused(missing, "invalid_authority")
+
+    def test_valid_v5_metadata_returns_frozen_v5_admission(self) -> None:
+        authority = self.root / "v5 authority"
+        _make_v5(authority)
+        before = _tree_snapshot(self.root)
+        admission = self._call(authority)
+        self.assertEqual(_tree_snapshot(self.root), before)
+        self.assertIs(type(admission), AuthorityAdmission)
+        self.assertEqual(admission.data_dir, authority.resolve())
+        self.assertEqual(admission.workspace_uid, CANONICAL_UID)
+        self.assertEqual(admission.storage_format, "v5")
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            admission.storage_format = "v3"  # type: ignore[misc]
+        with self.assertRaises(TypeError):
+            AuthorityAdmission(data_dir=authority, workspace_uid=CANONICAL_UID)
+
+    def test_schema_5_without_reports_json_is_invalid(self) -> None:
+        authority = self.root / "v5-missing-reports"
+        authority.mkdir()
+        _write_json(authority / "workspace.json", _workspace())
+        _write_json(authority / "store-meta.json", _metadata(5))
+        self._assert_refused(authority, "invalid_authority")
+
+    def test_schema_3_with_reports_json_is_invalid(self) -> None:
+        authority = self.root / "v3-plus-reports"
+        _make_v3(authority)
+        _write_json(
+            authority / "reports.json",
+            {"version": 1, "reports": [], "idempotency": []},
+        )
+        self._assert_refused(authority, "invalid_authority")
+
+    def test_schema_5_reports_directory_is_invalid(self) -> None:
+        authority = self.root / "v5-reports-directory"
+        authority.mkdir()
+        _write_json(authority / "workspace.json", _workspace())
+        _write_json(authority / "store-meta.json", _metadata(5))
+        (authority / "reports.json").mkdir()
+        self._assert_refused(authority, "invalid_authority")
+
+    def test_schema_6_and_newer_collection_metadata_are_invalid(self) -> None:
+        for schema in (6, 7, 99):
+            authority = self.root / f"schema-{schema}"
+            authority.mkdir()
+            _write_json(authority / "workspace.json", _workspace())
+            _write_json(authority / "store-meta.json", _metadata(schema))
+            self._assert_refused(authority, "invalid_authority")
 
 
 if __name__ == "__main__":

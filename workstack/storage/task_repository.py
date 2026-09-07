@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ..capture import canonical_digest
+from ..task_display_id import (
+    TaskDisplayIdError,
+    allocate_create,
+    persist_field,
+    read_optional_high_water,
+    task_ids_from_records,
+)
 from .canonical import canonical_json_bytes
 from .command_backend_support import (
     V4CommandBackendSupportError,
@@ -57,13 +64,16 @@ def _local_date(instant: str) -> str:
     return instant[:10]
 
 
-def _next_task_id(tasks: list[dict[str, Any]]) -> str:
-    largest = 0
-    for task in tasks:
-        match = re.fullmatch(r"T-(\d+)", str(task.get("id", "")), re.I)
-        if match:
-            largest = max(largest, int(match.group(1)))
-    return f"T-{largest + 1:04d}"
+def _next_task_id(
+    tasks: list[dict[str, Any]], store_metadata: Mapping[str, Any] | None
+) -> tuple[str, int]:
+    try:
+        return allocate_create(
+            read_optional_high_water(store_metadata),
+            task_ids_from_records(tasks),
+        )
+    except TaskDisplayIdError as error:
+        raise TaskRepositoryError(error.code) from error
 
 
 def _next_event_id(events: list[dict[str, Any]]) -> str:
@@ -230,7 +240,8 @@ class V4TaskRepository:
             return replay
         now = self.clock()
         tasks = documents["backlog.json"]["tasks"]
-        display_id = _next_task_id(tasks)
+        display_id, high_water = _next_task_id(tasks, current.store)
+        persist_field(documents["workspace.json"], high_water)
         task = {
             "id": display_id,
             "uid": str(uuid.uuid5(uuid.UUID(self.runtime.workspace_uid), display_id)),
@@ -255,7 +266,10 @@ class V4TaskRepository:
             "request_digest": digest, "response_status": 201,
             "created_at": now, "response_body": copy.deepcopy(response_body),
         })
-        self._commit(current, ledger, documents, generation, now, f"task-create-{idempotency_key}", True)
+        self._commit(
+            current, ledger, documents, generation, now,
+            f"task-create-{idempotency_key}", True, persist_store=True,
+        )
         return {"status": 201, "body": response_body}
 
     def patch_task(self, task_id: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -290,11 +304,15 @@ class V4TaskRepository:
     def _commit(
         self, current: V4ReadResult, ledger: Mapping[str, Any],
         documents: dict[str, dict[str, Any]], generation: int, now: str,
-        operation_id: str, ledger_changed: bool,
+        operation_id: str, ledger_changed: bool, persist_store: bool = False,
     ) -> None:
         conversion = convert_v3_documents(documents, candidate_created_at=now)
         targets = self._task_targets(current, conversion)
         targets.extend(self._stream_targets(current, conversion))
+        if persist_store:
+            store_target = self._store_target(current, conversion)
+            if store_target is not None:
+                targets.append(store_target)
         if ledger_changed:
             targets.append(stage_idempotency_ledger(
                 conversion.idempotency_ledger,
@@ -326,6 +344,16 @@ class V4TaskRepository:
                 staged.artifact, staged.body or b"", expected_digest=staged.expected_digest
             ))
         return targets
+
+    @staticmethod
+    def _store_target(current: V4ReadResult, conversion: Any) -> JournalTarget | None:
+        proposed = canonical_json_bytes(dict(conversion.store))
+        if dict(conversion.store) == dict(current.store):
+            return None
+        digest = next(
+            item.sha256 for item in current.artifacts if item.artifact == "store.json"
+        )
+        return JournalTarget.replace("store.json", proposed, expected_digest=digest)
 
     @staticmethod
     def _stream_targets(current, conversion) -> list[JournalTarget]:

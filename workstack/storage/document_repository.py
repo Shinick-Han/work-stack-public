@@ -21,6 +21,7 @@ class WorkspaceDocument(Enum):
     NOTES = "notes"
     CAPTURES = "captures"
     REPLIES = "replies"
+    REPORTS = "reports"
 
 
 _PHYSICAL_NAMES = {
@@ -32,6 +33,7 @@ _PHYSICAL_NAMES = {
     WorkspaceDocument.NOTES: "notes.json",
     WorkspaceDocument.CAPTURES: "captures.json",
     WorkspaceDocument.REPLIES: "replies.json",
+    WorkspaceDocument.REPORTS: "reports.json",
 }
 
 

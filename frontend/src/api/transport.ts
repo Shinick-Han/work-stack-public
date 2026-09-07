@@ -110,6 +110,8 @@ export interface MutateOptions {
   singleAttempt?: boolean
   /** Filled with the HTTP status and envelope meta of the answered request. */
   receipt?: MutateReceipt
+  /** The only caller-supplied extra header. CSRF, Origin, Content-Type, and Idempotency-Key stay transport-owned. */
+  ifMatch?: string
 }
 
 /** An unreadable 2xx body: the write may well have happened. */
@@ -122,7 +124,7 @@ export class UnreadableSuccessError extends Error {
 
 export async function mutateData<T>(
   path: string,
-  method: 'POST' | 'PATCH',
+  method: 'POST' | 'PATCH' | 'DELETE',
   body: unknown,
   schema: z.ZodType<T>,
   idempotencyKey?: string,
@@ -137,6 +139,7 @@ export async function mutateData<T>(
       'X-WorkStack-CSRF': await getCsrfToken(refreshSession),
     }
     if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
+    if (options.ifMatch !== undefined) headers['If-Match'] = options.ifMatch
     return headers
   }
 
@@ -196,10 +199,11 @@ export async function mutateIdempotent<T>(
   schema: z.ZodType<T>,
   idempotencyKey: string,
   commitUnknownMessage: string,
-  options: MutateOptions = {},
+  options: MutateOptions & { method?: 'POST' | 'DELETE' } = {},
 ): Promise<T> {
+  const { method = 'POST', ...mutateOptions } = options
   try {
-    return await mutateData(path, 'POST', body, schema, idempotencyKey, true, options)
+    return await mutateData(path, method, body, schema, idempotencyKey, true, mutateOptions)
   } catch (error) {
     if (error instanceof ApiError) throw error
     throw new CommitUnknownError(commitUnknownMessage, error)

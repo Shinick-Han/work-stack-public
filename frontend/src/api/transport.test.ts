@@ -2,7 +2,7 @@ import { expect, test, vi } from 'vitest'
 import { taskSchema } from '../domain/schemas'
 import { jsonResponse, task } from '../test/fixtures'
 import { z } from 'zod'
-import { ApiError, CommitUnknownError, mutateData, mutateIdempotent } from './transport'
+import { ApiError, CommitUnknownError, getCsrfToken, mutateData, mutateIdempotent } from './transport'
 
 test('refreshes a rotated CSRF token without changing the logical mutation request', async () => {
   let sessionRequests = 0
@@ -152,4 +152,83 @@ test('single-attempt keeps the caller key and encoded raw body unchanged', async
   const sent = control.posts[0]
   expect(new Headers(sent.headers).get('Idempotency-Key')).toBe('key-verbatim')
   expect(JSON.parse(String(sent.body)).reason.explanation).toBe('  spaced  ')
+})
+
+test('DELETE sends a typed If-Match and never lets callers override protected headers', async () => {
+  const control = countingFetch(() => jsonOk(okEnvelope))
+
+  await mutateData(
+    '/api/v1/tasks/T-0001',
+    'DELETE',
+    { preview_token: 'token', confirm: 'T-0001' },
+    okSchema,
+    'workstack:delete-key',
+    true,
+    { ifMatch: '2' },
+  )
+
+  expect(control.postCount()).toBe(1)
+  const headers = new Headers(control.posts[0].headers)
+  expect(control.posts[0].method).toBe('DELETE')
+  expect(headers.get('If-Match')).toBe('2')
+  expect(headers.get('Idempotency-Key')).toBe('workstack:delete-key')
+  expect(headers.get('Content-Type')).toBe('application/json')
+  expect(headers.get('X-WorkStack-CSRF')).toBe('csrf-token-for-test')
+  expect(headers.get('Origin')).toBeNull()
+  expect([...headers.keys()].sort()).toEqual([
+    'accept',
+    'content-type',
+    'idempotency-key',
+    'if-match',
+    'x-workstack-csrf',
+  ])
+})
+
+test('allowed DELETE retry reuses the byte-identical body, If-Match, and idempotency key', async () => {
+  let sessionRequests = 0
+  let mutations = 0
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.endsWith('/api/v1/session')) {
+      sessionRequests += 1
+      return jsonOk({
+        data: { csrf_token: sessionRequests === 1 ? 'expired-csrf-token' : 'refreshed-csrf-token' },
+      })
+    }
+    mutations += 1
+    if (mutations === 1) throw new TypeError('network down')
+    if (mutations === 2) return jsonOk({ error: { code: 'forbidden', message: 'stale csrf' } }, 403)
+    return jsonOk(okEnvelope)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  await getCsrfToken(true)
+
+  await expect(mutateIdempotent(
+    '/api/v1/tasks/T-0001',
+    { preview_token: 'token', confirm: 'T-0001' },
+    okSchema,
+    'workstack:stable-delete',
+    'unknown',
+    { ifMatch: '2', method: 'DELETE' },
+  )).resolves.toEqual({ ok: true })
+
+  const mutationCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/v1/tasks/T-0001'))
+  expect(mutationCalls).toHaveLength(3)
+  expect(mutationCalls.map(([, init]) => init?.method)).toEqual(['DELETE', 'DELETE', 'DELETE'])
+  expect(mutationCalls.map(([, init]) => init?.body)).toEqual([
+    JSON.stringify({ preview_token: 'token', confirm: 'T-0001' }),
+    JSON.stringify({ preview_token: 'token', confirm: 'T-0001' }),
+    JSON.stringify({ preview_token: 'token', confirm: 'T-0001' }),
+  ])
+  expect(mutationCalls.map(([, init]) => new Headers(init?.headers).get('Idempotency-Key'))).toEqual([
+    'workstack:stable-delete',
+    'workstack:stable-delete',
+    'workstack:stable-delete',
+  ])
+  expect(mutationCalls.map(([, init]) => new Headers(init?.headers).get('If-Match'))).toEqual(['2', '2', '2'])
+  expect(mutationCalls.map(([, init]) => new Headers(init?.headers).get('X-WorkStack-CSRF'))).toEqual([
+    'expired-csrf-token',
+    'expired-csrf-token',
+    'refreshed-csrf-token',
+  ])
 })

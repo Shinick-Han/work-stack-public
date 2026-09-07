@@ -155,30 +155,38 @@ class TaskKeyResultRefsTest(unittest.TestCase):
             {self.first["id"], self.second["id"]},
         )
 
-    def test_normalized_duplicate_pair_is_refused_without_any_write(self) -> None:
+    def test_normalized_duplicate_pair_is_canonicalized_to_one_ref(self) -> None:
         task = self.stack.add_task("Duplicate")
-        before = self._store_bytes()
 
-        with self.assertRaises(DomainError):
-            self.stack.patch_task(
-                task["id"],
+        updated = self.stack.patch_task(
+            task["id"],
+            {
+                "objective_ids": [self.first["id"]],
+                "key_result_refs": [
+                    {
+                        "objective_id": self.first["id"],
+                        "key_result_id": self.first_kr["id"],
+                    },
+                    {
+                        "objective_id": self.first["id"].lower(),
+                        "key_result_id": self.first_kr["id"].lower(),
+                    },
+                ],
+                "revision": task["revision"],
+            },
+        )
+
+        self.assertEqual(
+            updated["key_result_refs"],
+            [
                 {
-                    "objective_ids": [self.first["id"]],
-                    "key_result_refs": [
-                        {
-                            "objective_id": self.first["id"],
-                            "key_result_id": self.first_kr["id"],
-                        },
-                        {
-                            "objective_id": self.first["id"].lower(),
-                            "key_result_id": self.first_kr["id"].lower(),
-                        },
-                    ],
-                    "revision": task["revision"],
-                },
-            )
-
-        self.assertEqual(self._store_bytes(), before)
+                    "objective_id": self.first["id"],
+                    "key_result_id": self.first_kr["id"],
+                }
+            ],
+        )
+        self.assertEqual(updated["objective_ids"], [self.first["id"]])
+        self.assertEqual(updated["revision"], task["revision"] + 1)
 
     def test_malformed_blank_and_unknown_key_shapes_are_refused(self) -> None:
         task = self.stack.add_task("Malformed")
@@ -208,25 +216,33 @@ class TaskKeyResultRefsTest(unittest.TestCase):
 
         self.assertEqual(self._store_bytes(), before)
 
-    def test_reference_parent_must_be_in_the_final_objective_ids(self) -> None:
+    def test_reference_parent_is_auto_aligned_into_objective_ids(self) -> None:
         task = self.stack.add_task("Unaligned")
-        before = self._store_bytes()
 
-        with self.assertRaises(DomainError):
-            self.stack.patch_task(
-                task["id"],
+        updated = self.stack.patch_task(
+            task["id"],
+            {
+                "key_result_refs": [
+                    {
+                        "objective_id": self.first["id"],
+                        "key_result_id": self.first_kr["id"],
+                    }
+                ],
+                "revision": task["revision"],
+            },
+        )
+
+        self.assertEqual(updated["objective_ids"], [self.first["id"]])
+        self.assertEqual(
+            updated["key_result_refs"],
+            [
                 {
-                    "key_result_refs": [
-                        {
-                            "objective_id": self.first["id"],
-                            "key_result_id": self.first_kr["id"],
-                        }
-                    ],
-                    "revision": task["revision"],
-                },
-            )
-
-        self.assertEqual(self._store_bytes(), before)
+                    "objective_id": self.first["id"],
+                    "key_result_id": self.first_kr["id"],
+                }
+            ],
+        )
+        self.assertEqual(updated["revision"], task["revision"] + 1)
 
     def test_unknown_objective_or_key_result_target_is_refused(self) -> None:
         task = self.stack.add_task("Unknown target")

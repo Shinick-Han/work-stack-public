@@ -5,7 +5,12 @@ import datetime
 import json
 import pathlib
 import re
-from typing import Protocol
+from typing import Literal, Protocol
+
+from workstack.agent_context_pack import (
+    apply_planning_contract_fixture,
+    validate_planning_data,
+)
 
 
 __all__ = [
@@ -88,12 +93,17 @@ _OMITTED_CATEGORIES = {
     "work_sessions",
 }
 _OVERFLOW_MARKER = "recent_worklog_overflow"
+_CORE_VIEW = "core-v1"
+_PLANNING_VIEW = "planning-v1"
+_PLANNING_BLOCKS = ("objectives", "relationships", "sources")
+_PLANNING_CONTEXT_DATA_FIELDS = _CONTEXT_DATA_FIELDS | set(_PLANNING_BLOCKS)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class AuthorityAdmission:
     data_dir: pathlib.Path
     workspace_uid: str
+    storage_format: Literal["v3", "v5"]
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -111,6 +121,7 @@ class StatusRequest:
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class ContextRequest:
     task_id: str
+    view: str = _CORE_VIEW
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -341,9 +352,7 @@ def _validate_status_data(data: dict[str, object], workspace_uid: str) -> None:
         if type(data[field]) is not bool:
             raise ValueError("invalid status boolean")
     if type(data["storage_format"]) is not str or data["storage_format"] not in {
-        "unknown",
-        "v3",
-        "v4",
+        "unknown", "v3", "v4", "v5",
     }:
         raise ValueError("invalid status storage format")
 
@@ -379,7 +388,9 @@ def _validate_worklog_data(value: object) -> str:
 def _validate_context_data(
     data: dict[str, object], *, task_id: str, workspace_uid: str
 ) -> None:
-    data = _exact_dict(data, _CONTEXT_DATA_FIELDS, "context data")
+    planning = set(data) == _PLANNING_CONTEXT_DATA_FIELDS
+    fields = _PLANNING_CONTEXT_DATA_FIELDS if planning else _CONTEXT_DATA_FIELDS
+    data = _exact_dict(data, fields, "context data")
     if data["workspace_uid"] != workspace_uid or not _is_workspace_uid(
         data["workspace_uid"]
     ):
@@ -391,6 +402,9 @@ def _validate_context_data(
     dates = [_validate_worklog_data(entry) for entry in recent]
     if dates != sorted(dates, reverse=True):
         raise ValueError("recent worklog is not newest first")
+    if planning:
+        validate_planning_data(data, core_overflow_marker=_OVERFLOW_MARKER)
+        return
     omitted = data["omitted"]
     allowed = _OMITTED_CATEGORIES | {_OVERFLOW_MARKER}
     if (
@@ -746,7 +760,7 @@ _LIMITS = {
         "port_min": 1,
         "version": 1,
     },
-    "storage_format_values": ["unknown", "v3", "v4"],
+    "storage_format_values": ["unknown", "v3", "v4", "v5"],
     "task_id_pattern": "T-[0-9]{4,}",
     "workspace_uid": "canonical non-nil lowercase RFC 4122 UUID",
 }
@@ -770,14 +784,16 @@ def contract_fixture_bytes() -> bytes:
     """Return the frozen M0 projection without consulting the filesystem."""
 
     return _canonical_json_bytes(
-        {
-            "admission": _ADMISSION,
-            "backend_results": _BACKEND_RESULTS,
-            "cli_contract": _CLI_CONTRACT,
-            "commands": _COMMAND_DECLARATION,
-            "envelope": _ENVELOPE,
-            "errors": _ERRORS,
-            "limits": _LIMITS,
-            "transport_rules": _TRANSPORT_RULES,
-        }
+        apply_planning_contract_fixture(
+            {
+                "admission": _ADMISSION,
+                "backend_results": _BACKEND_RESULTS,
+                "cli_contract": _CLI_CONTRACT,
+                "commands": _COMMAND_DECLARATION,
+                "envelope": _ENVELOPE,
+                "errors": _ERRORS,
+                "limits": _LIMITS,
+                "transport_rules": _TRANSPORT_RULES,
+            }
+        )
     )

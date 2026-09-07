@@ -10,10 +10,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
+
+_SHELL_DIR = str(Path(__file__).resolve().parent)
+if _SHELL_DIR not in sys.path:
+    sys.path.insert(0, _SHELL_DIR)
+
+from remote_command_contract import RemoteCommandError, validated_posix_path
 
 
 REGISTRY_FILE = "connection-registry.json"
@@ -47,6 +54,7 @@ class SshConnectionProfile:
     enabled: bool = True
     live_updates: bool = True
     kind: str = "ssh"
+    remote_python: str | None = None
 
 
 ConnectionProfile: TypeAlias = LocalConnectionProfile | SshConnectionProfile
@@ -72,10 +80,13 @@ class ConnectionRegistry:
 
 
 def _require_exact_fields(
-    raw: dict[object, object], required: set[str], context: str
+    raw: dict[object, object],
+    required: set[str],
+    context: str,
+    optional: set[str] | frozenset[str] = frozenset(),
 ) -> None:
     missing = required - set(raw)
-    unexpected = set(raw) - required
+    unexpected = set(raw) - required - set(optional)
     if missing:
         raise RuntimeError(f"{context} is missing: {', '.join(sorted(missing))}")
     if unexpected:
@@ -117,15 +128,10 @@ def _port(value: object, field: str) -> int:
 
 
 def _remote_path(value: object, field: str) -> str:
-    path = _bounded_string(value, field, 4096)
-    if not path.startswith("/"):
-        raise RuntimeError(f"{field} must be an absolute Linux path")
-    if any(segment in {".", ".."} for segment in path.split("/")):
-        raise RuntimeError(f"{field} must not contain '.' or '..' path segments")
-    normalized = path.rstrip("/") or "/"
-    if normalized == "/":
-        raise RuntimeError(f"{field} must not be the Linux filesystem root")
-    return normalized
+    try:
+        return validated_posix_path(value, field)
+    except RemoteCommandError as error:
+        raise RuntimeError(str(error)) from error
 
 
 def _local_path(value: object) -> str:
@@ -194,13 +200,14 @@ def _validate_profile(raw: object, index: int) -> dict[str, object]:
                 "remote_port",
             },
             f"profiles[{index}]",
+            optional={"remote_python"},
         )
         alias = _bounded_string(raw["ssh_host_alias"], "ssh_host_alias", 255)
         if not SSH_HOST_ALIAS_PATTERN.fullmatch(alias):
             raise RuntimeError(
                 "ssh_host_alias must be a configured OpenSSH alias without spaces or shell characters"
             )
-        return {
+        ssh_values: dict[str, object] = {
             **_common_profile_values(raw),
             "kind": "ssh",
             "ssh_host_alias": alias,
@@ -211,6 +218,9 @@ def _validate_profile(raw: object, index: int) -> dict[str, object]:
             ),
             "remote_port": _port(raw["remote_port"], "remote_port"),
         }
+        if "remote_python" in raw:
+            ssh_values["remote_python"] = _remote_path(raw["remote_python"], "remote_python")
+        return ssh_values
     raise RuntimeError(f"profiles[{index}].kind must be 'local' or 'ssh'")
 
 
@@ -297,6 +307,9 @@ def _profile_from_document(raw: dict[str, object]) -> ConnectionProfile:
         remote_data_dir=str(raw["remote_data_dir"]),
         preferred_forward_port=int(raw["preferred_forward_port"]),
         remote_port=int(raw["remote_port"]),
+        remote_python=(
+            str(raw["remote_python"]) if raw.get("remote_python") is not None else None
+        ),
     )
 
 
@@ -335,6 +348,8 @@ def registry_to_document(registry: ConnectionRegistry) -> dict[str, object]:
                     "remote_port": profile.remote_port,
                 }
             )
+            if profile.remote_python is not None:
+                common["remote_python"] = profile.remote_python
         profiles.append(common)
     return validate_connection_registry(
         {
@@ -470,7 +485,7 @@ def migrate_singleton_draft(
             "local_forward_port",
             "workspace_id",
         }
-        allowed = required | {"remote_port"}
+        allowed = required | {"remote_port", "remote_python"}
         missing = required - set(raw)
         unexpected = set(raw) - allowed
         if missing:
@@ -498,6 +513,11 @@ def migrate_singleton_draft(
                 raw["local_forward_port"], "local_forward_port"
             ),
             remote_port=_port(raw.get("remote_port", 8765), "remote_port"),
+            remote_python=(
+                _remote_path(raw["remote_python"], "remote_python")
+                if "remote_python" in raw
+                else None
+            ),
         )
     else:
         raise RuntimeError("Legacy storage_mode must be 'local' or 'ssh-remote'")
@@ -516,7 +536,7 @@ def singleton_draft_from_registry(registry: ConnectionRegistry) -> dict[str, obj
         raise RuntimeError("Legacy conversion requires the sole profile to be active")
     if isinstance(profile, LocalConnectionProfile):
         return {"storage_mode": "local"}
-    return {
+    draft: dict[str, object] = {
         "storage_mode": "ssh-remote",
         "ssh_host_alias": profile.ssh_host_alias,
         "remote_app_dir": profile.remote_app_dir,
@@ -525,3 +545,6 @@ def singleton_draft_from_registry(registry: ConnectionRegistry) -> dict[str, obj
         "workspace_id": profile.expected_workspace_id,
         "remote_port": profile.remote_port,
     }
+    if profile.remote_python is not None:
+        draft["remote_python"] = profile.remote_python
+    return draft

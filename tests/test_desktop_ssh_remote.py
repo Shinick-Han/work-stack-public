@@ -15,6 +15,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
+REQUIRED_REMOTE_PYTHON = "/srv/workstack/venv/bin/python"
+RUNTIME_SESSION_TOKEN = "r5pending-token-not-enforced-01"
 MODULE_PATH = ROOT / "desktop" / "python-webview-shell" / "workstack_desktop.py"
 SPEC = importlib.util.spec_from_file_location("workstack_desktop_ssh_test", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -32,6 +34,7 @@ def write_profile(root: Path, **overrides: object) -> None:
         "remote_data_dir": "/srv/workstack/ssot",
         "local_forward_port": 18765,
         "workspace_id": WORKSPACE_ID,
+        "remote_python": REQUIRED_REMOTE_PYTHON,
     }
     payload.update(overrides)
     (root / "remote-connection.json").write_text(json.dumps(payload), encoding="utf-8")
@@ -141,38 +144,57 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
     def test_tunnel_is_loopback_only_strict_and_owns_remote_server_command(self) -> None:
         profile = MODULE.RemoteConnectionProfile(
             ssh_host_alias="work-linux",
-            remote_app_dir="/srv/workstack/app files",
-            remote_data_dir="/srv/workstack/private ssot",
+            remote_app_dir="/srv/workstack/app",
+            remote_data_dir="/srv/workstack/ssot",
             local_forward_port=18765,
             workspace_id=WORKSPACE_ID,
             remote_port=9876,
+            remote_python=REQUIRED_REMOTE_PYTHON,
         )
-        command = MODULE.build_ssh_tunnel_command(profile, r"C:\Windows\System32\OpenSSH\ssh.exe")
+        command = MODULE.build_ssh_tunnel_command(
+            profile,
+            r"C:\Windows\System32\OpenSSH\ssh.exe",
+            session_token=RUNTIME_SESSION_TOKEN,
+        )
 
         self.assertIn("127.0.0.1:18765:127.0.0.1:9876", command)
         self.assertIn("ExitOnForwardFailure=yes", command)
         self.assertIn("StrictHostKeyChecking=yes", command)
         self.assertNotIn("StrictHostKeyChecking=no", command)
         self.assertEqual(command[-2], "work-linux")
-        self.assertIn("exec python3", command[-1])
-        self.assertIn("--host 127.0.0.1", command[-1])
-        self.assertIn("--public-port 18765", command[-1])
-        self.assertIn("--exit-with-parent", command[-1])
-        self.assertIn("'/srv/workstack/private ssot'", command[-1])
+        remote = command[-1]
+        self.assertIn("remote_entry.py", remote)
+        self.assertIn(" serve ", f" {remote} ")
+        self.assertIn(REQUIRED_REMOTE_PYTHON, remote)
+        self.assertIn("--host 127.0.0.1", remote)
+        self.assertIn("--public-port 18765", remote)
+        self.assertIn("--exit-with-parent", remote)
+        self.assertIn(RUNTIME_SESSION_TOKEN, remote)
+        self.assertNotIn("exec python3", remote)
+        self.assertNotIn("&&", remote)
+        self.assertNotIn(" ", "/srv/workstack/app")
 
     def test_check_is_read_only_and_uses_batch_mode(self) -> None:
         profile = MODULE.RemoteConnectionProfile(
-            "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
+            "work-linux",
+            "/app",
+            "/ssot",
+            18765,
+            WORKSPACE_ID,
+            8765,
+            REQUIRED_REMOTE_PYTHON,
         )
         command = MODULE.build_ssh_check_command(profile, "ssh")
 
         self.assertIn("BatchMode=yes", command)
         self.assertIn("StrictHostKeyChecking=yes", command)
-        self.assertIn("test -f /app/run_work_stack.py", command[-1])
-        self.assertIn("test -d /ssot", command[-1])
-        self.assertIn("test -f /ssot/store-meta.json", command[-1])
-        self.assertIn("python3 /app/run_work_stack.py --help", command[-1])
-        self.assertNotIn("mkdir", command[-1])
+        remote = command[-1]
+        self.assertIn("remote_entry.py", remote)
+        self.assertIn(" probe ", f" {remote} ")
+        self.assertIn(REQUIRED_REMOTE_PYTHON, remote)
+        self.assertNotIn("test -f", remote)
+        self.assertNotIn("python3 --help", remote)
+        self.assertNotIn("mkdir", remote)
 
     @mock.patch("ssot_connection.find_ssh_executable", return_value="ssh")
     @mock.patch.object(MODULE.subprocess, "run")
@@ -381,6 +403,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             "local_forward_port": 18765,
             "remote_port": 8765,
             "workspace_id": WORKSPACE_ID,
+            "remote_python": REQUIRED_REMOTE_PYTHON,
         }
         host.remote_profile = MODULE.connection_profile_from_draft(host.active_connection_draft)
         host.state_root = Path("C:/state")
@@ -466,6 +489,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             "remote_data_dir": "/srv/workstack/ssot",
             "local_forward_port": 18765,
             "workspace_id": WORKSPACE_ID,
+            "remote_python": REQUIRED_REMOTE_PYTHON,
         }
         for forbidden in ("password", "private_key", "identity_file", "ssh_args"):
             with self.subTest(forbidden=forbidden):
@@ -495,6 +519,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             "local_forward_port": 18765,
             "workspace_id": WORKSPACE_ID,
             "remote_port": 8765,
+            "remote_python": REQUIRED_REMOTE_PYTHON,
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -525,6 +550,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
                 "remote_data_dir": "/srv/workstack/ssot",
                 "local_forward_port": 18765,
                 "workspace_id": WORKSPACE_ID,
+                "remote_python": REQUIRED_REMOTE_PYTHON,
             }
             encoded = urllib.parse.quote(json.dumps(draft, separators=(",", ":")), safe="")
 
@@ -549,10 +575,11 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             "local_forward_port": 18765,
             "remote_port": 8765,
             "workspace_id": WORKSPACE_ID,
+            "remote_python": REQUIRED_REMOTE_PYTHON,
         }
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/srv/workstack/app", "/srv/workstack/ssot",
-            24567, WORKSPACE_ID, 8765,
+            24567, WORKSPACE_ID, 8765, REQUIRED_REMOTE_PYTHON,
         )
 
         payload = host._ssot_status_payload(host.active_connection_draft, "ready")
@@ -573,6 +600,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             "local_forward_port": 18765,
             "remote_port": 8765,
             "workspace_id": WORKSPACE_ID,
+            "remote_python": REQUIRED_REMOTE_PYTHON,
         }
 
         with mock.patch.object(MODULE, "run_remote_connection_check"):
@@ -613,6 +641,117 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             "type": "workstack-ssot-rebind-ready",
             "workspace_id": workspace_id,
         })
+
+    def test_mocked_start_path_supplies_runtime_session_token(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            host = object.__new__(MODULE.WorkStackDesktopHost)
+            host.state_root = Path(directory)
+            host.remote_profile = MODULE.RemoteConnectionProfile(
+                "work-linux",
+                "/srv/workstack/app",
+                "/srv/workstack/ssot",
+                18765,
+                WORKSPACE_ID,
+                8765,
+                REQUIRED_REMOTE_PYTHON,
+            )
+            host.remote_attempt_id = 0
+            host.remote_ready_attempt_id = 0
+            host.remote_lifecycle_state = "IDLE"
+            host.remote_session_token = None
+            host.remote_ssh_process = None
+            host.remote_ssh_log = None
+            host._is_ready = mock.Mock(side_effect=[False, True])
+            host._verify_remote_workspace = mock.Mock()
+            host._start_remote_monitor = mock.Mock()
+            host._trace = mock.Mock()
+            with (
+                mock.patch.object(MODULE, "find_ssh_executable", return_value="ssh"),
+                mock.patch.object(MODULE, "generate_session_token", return_value=RUNTIME_SESSION_TOKEN),
+                mock.patch.object(MODULE.subprocess, "Popen", return_value=process) as popen,
+            ):
+                host._ensure_remote_server()
+            if host.remote_ssh_log is not None:
+                host.remote_ssh_log.close()
+                host.remote_ssh_log = None
+
+        command = popen.call_args.args[0]
+        self.assertIn(RUNTIME_SESSION_TOKEN, command[-1])
+        self.assertIn("remote_entry.py", command[-1])
+        self.assertEqual(host.remote_lifecycle_state, "READY")
+        self.assertEqual(host.remote_ready_attempt_id, host.remote_attempt_id)
+        host._verify_remote_workspace.assert_called_once_with()
+        host._start_remote_monitor.assert_called_once_with()
+        self.assertNotIn(RUNTIME_SESSION_TOKEN, str(host._trace.call_args_list))
+
+    def test_stale_attempt_does_not_mutate_newer_connection_state(self) -> None:
+        host = object.__new__(MODULE.WorkStackDesktopHost)
+        host.remote_profile = MODULE.RemoteConnectionProfile(
+            "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID, 8765, REQUIRED_REMOTE_PYTHON
+        )
+        host.remote_attempt_id = 2
+        host.remote_ready_attempt_id = 2
+        host.remote_lifecycle_state = "READY"
+        host.remote_session_token = "newer-token-not-logged"
+        host._start_remote_monitor = mock.Mock()
+
+        self.assertFalse(host._apply_remote_ready_if_current(1))
+        self.assertEqual(host.remote_attempt_id, 2)
+        self.assertEqual(host.remote_session_token, "newer-token-not-logged")
+        host._start_remote_monitor.assert_not_called()
+
+    def test_monitor_does_not_start_before_remote_ready(self) -> None:
+        host = object.__new__(MODULE.WorkStackDesktopHost)
+        host.remote_profile = MODULE.RemoteConnectionProfile(
+            "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID, 8765, REQUIRED_REMOTE_PYTHON
+        )
+        host.remote_monitor = None
+        host.remote_lifecycle_state = "STARTING_TUNNEL"
+        host.remote_attempt_id = 1
+        host.remote_ready_attempt_id = 0
+        with mock.patch.object(MODULE, "RemoteConnectionMonitor") as monitor_type:
+            host._start_remote_monitor()
+        monitor_type.assert_not_called()
+
+    def test_own_owner_stop_requests_stop_owned_then_closes_local_ssh(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.pid = 1234
+        log = mock.Mock()
+        runner = mock.Mock()
+        host = object.__new__(MODULE.WorkStackDesktopHost)
+        host.remote_ssh_process = process
+        host.remote_ssh_log = log
+        host.remote_session_token = RUNTIME_SESSION_TOKEN
+        host.remote_session_token_hash = "hash-not-the-token"
+        host.remote_lifecycle_state = "READY"
+        host.remote_ready_attempt_id = 1
+        host.remote_profile = MODULE.RemoteConnectionProfile(
+            "work-linux",
+            "/srv/workstack/app",
+            "/srv/workstack/ssot",
+            18765,
+            WORKSPACE_ID,
+            8765,
+            REQUIRED_REMOTE_PYTHON,
+        )
+        host._stop_owned_runner = runner
+        host._trace = mock.Mock()
+
+        with mock.patch.object(MODULE, "find_ssh_executable", return_value="ssh"):
+            host._stop_owned_remote_connection()
+
+        runner.assert_called_once()
+        remote = runner.call_args.args[0][-1]
+        self.assertIn("stop-owned", remote)
+        self.assertIn(RUNTIME_SESSION_TOKEN, remote)
+        self.assertNotIn("pkill", remote)
+        process.terminate.assert_called_once_with()
+        log.close.assert_called_once_with()
+        self.assertIsNone(host.remote_session_token)
+        self.assertNotIn(RUNTIME_SESSION_TOKEN, str(host._trace.call_args_list))
 
 
 if __name__ == "__main__":

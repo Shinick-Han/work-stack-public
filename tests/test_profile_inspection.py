@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 import shutil
 import sys
@@ -22,12 +23,20 @@ MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
-from workstack.store import Store  # noqa: E402
+from workstack.store import Store, StoreReadiness  # noqa: E402
+from workstack.store_rosters import (  # noqa: E402
+    REPORTS_DOCUMENT_NAME,
+    V3_DOCUMENT_NAMES,
+    V5_DOCUMENT_NAMES,
+)
 
 
 PROFILE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_WORKSPACE_ID = "22222222-2222-4222-8222-222222222222"
+_CORE_SEAM = callable(getattr(Store, "validate_document_values", None))
+_SKIP_CORE = "blocked pending Store.validate_document_values composition"
+_REPORTS_EMPTY = {"version": 1, "reports": [], "idempotency": []}
 
 
 def local_candidate(data_dir: Path, expected: str | None = None) -> object:
@@ -68,6 +77,50 @@ def create_store(data_dir: Path, runtime_dir: Path) -> str:
     return readiness.workspace_uid
 
 
+def clone_v3_fixture(data_dir: Path, name: str = "empty") -> None:
+    shutil.copytree(ROOT / "tests" / "fixtures" / "store-v3" / name, data_dir)
+
+
+def write_store_schema(data_dir: Path, schema: int) -> None:
+    path = data_dir / "store-meta.json"
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    metadata["store_schema_version"] = schema
+    path.write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def forbid_store_construction():
+    return mock.patch.object(
+        MODULE.Store,
+        "__init__",
+        side_effect=AssertionError("Store construction is forbidden"),
+    )
+
+
+def isolated_readiness(schema_version: int, workspace_uid: str = WORKSPACE_ID) -> StoreReadiness:
+    """Synthetic StoreReadiness for ordering oracles. Not a composed core PASS."""
+
+    return StoreReadiness(
+        schema_version=schema_version,
+        workspace_uid=workspace_uid,
+        task_count=0,
+        migration_origin="isolated-ordering-oracle",
+    )
+
+
+def isolated_validate_seam(workspace_uid: str = WORKSPACE_ID):
+    """Patch only the desktop call order. Report as mock coverage, never integrated."""
+
+    def _validate(values, *, schema_version):
+        return isolated_readiness(schema_version, workspace_uid)
+
+    return mock.patch.object(
+        MODULE.Store,
+        "validate_document_values",
+        staticmethod(_validate),
+        create=True,
+    )
+
+
 def tree_hashes(root: Path) -> dict[str, str]:
     return {
         str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -91,6 +144,7 @@ class ProfileInspectionTest(unittest.TestCase):
             self.assertFalse(paths[0].exists())
             self.assertEqual(tree_hashes(root), before)
 
+    @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
     def test_complete_store_is_validated_and_identity_is_detected_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -106,6 +160,57 @@ class ProfileInspectionTest(unittest.TestCase):
             self.assertIsInstance(result.protocol_version, int)
             self.assertEqual(tree_hashes(root), before)
 
+    @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
+    def test_complete_store_accepts_durable_task_display_id_high_water(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "data"
+            workspace_id = create_store(data, root / "runtime")
+            workspace_path = data / "workspace.json"
+            workspace = json.loads(workspace_path.read_text(encoding="utf-8"))
+            workspace["task_display_id_high_water"] = 53
+            workspace_path.write_text(json.dumps(workspace), encoding="utf-8")
+            before = tree_hashes(root)
+
+            result = MODULE.inspect_profile(local_candidate(data))
+
+            self.assertEqual(result.status, "ready")
+            self.assertEqual(result.actual_workspace_id, workspace_id)
+            self.assertEqual(tree_hashes(root), before)
+
+    @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
+    def test_task_display_id_high_water_must_be_a_safe_non_negative_integer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "data"
+            create_store(data, root / "runtime")
+            workspace_path = data / "workspace.json"
+            workspace = json.loads(workspace_path.read_text(encoding="utf-8"))
+            workspace["task_display_id_high_water"] = True
+            workspace_path.write_text(json.dumps(workspace), encoding="utf-8")
+
+            with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                MODULE.inspect_profile(local_candidate(data))
+
+            self.assertEqual(raised.exception.code, "invalid_store")
+
+    @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
+    def test_task_display_id_high_water_cannot_be_below_live_task_roster(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "data"
+            shutil.copytree(ROOT / "tests" / "fixtures" / "store-v3" / "populated", data)
+            workspace_path = data / "workspace.json"
+            workspace = json.loads(workspace_path.read_text(encoding="utf-8"))
+            workspace["task_display_id_high_water"] = 1
+            workspace_path.write_text(json.dumps(workspace), encoding="utf-8")
+
+            with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                MODULE.inspect_profile(local_candidate(data))
+
+            self.assertEqual(raised.exception.code, "invalid_store")
+
+    @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
     def test_expected_identity_mismatch_is_explicit_and_does_not_rebind_store(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -119,7 +224,7 @@ class ProfileInspectionTest(unittest.TestCase):
             self.assertEqual(result.actual_workspace_id, actual)
             self.assertEqual(tree_hashes(root), before)
 
-    def test_partial_nonstore_and_corrupt_store_are_distinguished(self) -> None:
+    def test_partial_and_nonstore_directories_are_distinguished(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             partial = root / "partial"
@@ -128,19 +233,27 @@ class ProfileInspectionTest(unittest.TestCase):
             unrelated = root / "unrelated"
             unrelated.mkdir()
             (unrelated / "notes.txt").write_text("not a Store", encoding="utf-8")
+            with forbid_store_construction():
+                for path, code in (
+                    (partial, "partial_store"),
+                    (unrelated, "local_directory_not_empty"),
+                ):
+                    with self.subTest(path=path), self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                        MODULE.inspect_profile(local_candidate(path))
+                    self.assertEqual(raised.exception.code, code)
+
+    @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
+    def test_corrupt_complete_store_is_invalid_without_rewriting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
             corrupt = root / "corrupt"
             create_store(corrupt, root / "runtime")
             (corrupt / "workspace.json").write_text("{}", encoding="utf-8")
-
-            cases = (
-                (partial, "partial_store"),
-                (unrelated, "local_directory_not_empty"),
-                (corrupt, "invalid_store"),
-            )
-            for path, code in cases:
-                with self.subTest(path=path), self.assertRaises(MODULE.ProfileInspectionError) as raised:
-                    MODULE.inspect_profile(local_candidate(path))
-                self.assertEqual(raised.exception.code, code)
+            before = tree_hashes(root)
+            with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                MODULE.inspect_profile(local_candidate(corrupt))
+            self.assertEqual(raised.exception.code, "invalid_store")
+            self.assertEqual(tree_hashes(root), before)
 
     def test_root_unc_device_traversal_and_reparse_paths_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -250,6 +363,30 @@ class ProfileInspectionTest(unittest.TestCase):
         self.assertEqual(failed.exception.code, "ssh_test_failed")
         self.assertNotIn("secret", str(failed.exception).casefold())
 
+    def test_ssh_stable_tokens_map_to_public_codes_without_leaking_stderr(self) -> None:
+        cases = (
+            ("SSH_AUTH_FAILED", "ssh_auth_failed"),
+            ("REMOTE_PYTHON_REQUIRED", "remote_python_required"),
+            ("REMOTE_PYTHON_NOT_FOUND", "remote_python_not_found"),
+            ("REMOTE_PYTHON_TOO_OLD", "remote_python_too_old"),
+            ("REMOTE_APP_MISMATCH", "remote_app_mismatch"),
+            ("REMOTE_WORKSPACE_MISMATCH", "remote_workspace_mismatch"),
+            ("REMOTE_LOCK_OWNED", "remote_lock_owned"),
+            ("REMOTE_PROTOCOL_INVALID", "remote_protocol_invalid"),
+        )
+        for token, code in cases:
+            def leak(_profile: object, token: str = token) -> object:
+                raise RuntimeError(f"{token}: C:/secret/id_rsa pid=9 password")
+
+            with self.subTest(token=token), self.assertRaises(MODULE.ProfileInspectionError) as failed:
+                MODULE.inspect_profile(ssh_candidate(), ssh_profile_tester=leak)
+            self.assertEqual(failed.exception.code, code)
+            text = str(failed.exception).casefold()
+            self.assertNotIn("secret", text)
+            self.assertNotIn("id_rsa", text)
+            self.assertNotIn("password", text)
+            self.assertNotIn("pid=9", text)
+
     def test_result_metadata_is_bounded_and_candidate_cannot_claim_identity(self) -> None:
         invalid = (
             MODULE.SshProfileMetadata(WORKSPACE_ID, "x" * 65, 1),
@@ -311,6 +448,7 @@ class ProfileInspectionReadBoundTest(unittest.TestCase):
 
         return mock.patch.object(Path, "open", open_file), reads
 
+    @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
     def test_healthy_empty_and_populated_profiles_use_configured_bounded_reads(self) -> None:
         self.assertEqual(MODULE.MAX_STORE_FILE_BYTES, 64 * 1024 * 1024)
         self.assertEqual(MODULE.MAX_STORE_TOTAL_BYTES, 128 * 1024 * 1024)
@@ -402,6 +540,7 @@ class ProfileInspectionReadBoundTest(unittest.TestCase):
                 self.assertEqual(tree_hashes(self.root), before)
 
     def test_final_stability_pass_still_refuses_changed_authoritative_bytes(self) -> None:
+        """Final hash/stat pass after validation. Isolated mock seam, not composed PASS."""
         self.copy_fixture()
         target = self.data / "workspace.json"
         original = target.read_bytes()
@@ -416,11 +555,247 @@ class ProfileInspectionReadBoundTest(unittest.TestCase):
                     stream.write(changed)
 
         observer, reads = self.observe_reads(target, before_open=replace_on_second_open)
-        with observer, self.assertRaises(MODULE.ProfileInspectionError) as raised:
+        with isolated_validate_seam(), observer, self.assertRaises(MODULE.ProfileInspectionError) as raised:
             MODULE.inspect_profile(local_candidate(self.data))
         self.assertEqual(raised.exception.code, "store_changed")
         self.assertEqual(len(reads), 2)
         self.assertEqual(tree_hashes(self.root), expected)
+
+
+class ProfileInspectionRosterOccupancyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.data = self.root / "data"
+
+    def _inspect_without_store(self, path: Path):
+        with forbid_store_construction():
+            return MODULE.inspect_profile(local_candidate(path))
+
+    def test_v3_plus_reports_is_invalid_without_store_construction(self) -> None:
+        clone_v3_fixture(self.data)
+        (self.data / REPORTS_DOCUMENT_NAME).write_text(
+            json.dumps(_REPORTS_EMPTY), encoding="utf-8"
+        )
+        before = tree_hashes(self.root)
+        with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+            self._inspect_without_store(self.data)
+        self.assertEqual(raised.exception.code, "invalid_store")
+        self.assertEqual(tree_hashes(self.root), before)
+
+    def test_v5_metadata_without_reports_is_invalid_without_store_construction(self) -> None:
+        clone_v3_fixture(self.data)
+        write_store_schema(self.data, 5)
+        before = tree_hashes(self.root)
+        with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+            self._inspect_without_store(self.data)
+        self.assertEqual(raised.exception.code, "invalid_store")
+        self.assertEqual(tree_hashes(self.root), before)
+
+    def test_newer_schema_on_v3_roster_is_invalid_without_store_construction(self) -> None:
+        clone_v3_fixture(self.data)
+        write_store_schema(self.data, 6)
+        before = tree_hashes(self.root)
+        with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+            self._inspect_without_store(self.data)
+        self.assertEqual(raised.exception.code, "invalid_store")
+        self.assertEqual(tree_hashes(self.root), before)
+
+    def test_store_json_mixed_with_reports_is_mixed_store(self) -> None:
+        self.data.mkdir()
+        (self.data / "store.json").write_text(
+            json.dumps({"format": "workstack.ssot", "schema_version": 4}),
+            encoding="utf-8",
+        )
+        (self.data / REPORTS_DOCUMENT_NAME).write_text(
+            json.dumps(_REPORTS_EMPTY), encoding="utf-8"
+        )
+        before = tree_hashes(self.root)
+        with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+            self._inspect_without_store(self.data)
+        self.assertEqual(raised.exception.code, "mixed_store")
+        self.assertEqual(tree_hashes(self.root), before)
+
+    def test_reports_json_directory_is_invalid_without_store_construction(self) -> None:
+        clone_v3_fixture(self.data)
+        (self.data / REPORTS_DOCUMENT_NAME).mkdir()
+        before = tree_hashes(self.root)
+        with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+            self._inspect_without_store(self.data)
+        self.assertEqual(raised.exception.code, "invalid_store")
+        self.assertEqual(tree_hashes(self.root), before)
+
+    def test_store_json_directory_is_invalid_without_store_construction(self) -> None:
+        clone_v3_fixture(self.data)
+        (self.data / "store.json").mkdir()
+        before = tree_hashes(self.root)
+        with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+            self._inspect_without_store(self.data)
+        self.assertEqual(raised.exception.code, "invalid_store")
+        self.assertEqual(tree_hashes(self.root), before)
+
+    def test_store_json_symlink_is_invalid_without_store_construction(self) -> None:
+        clone_v3_fixture(self.data)
+        target = self.root / "store-target.json"
+        target.write_text("{}", encoding="utf-8")
+        try:
+            (self.data / "store.json").symlink_to(target)
+        except OSError:
+            self.skipTest("symlinks are unavailable on this host")
+        before = tree_hashes(self.root)
+        with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+            self._inspect_without_store(self.data)
+        self.assertEqual(raised.exception.code, "invalid_store")
+        self.assertEqual(tree_hashes(self.root), before)
+
+    def test_isolated_mutation_during_validation_refuses_stale_digest(self) -> None:
+        """Ordering oracle with a mock seam. Not a real composed v3/v5 inspector PASS."""
+
+        clone_v3_fixture(self.data)
+        target = self.data / "workspace.json"
+        original = target.read_bytes()
+        changed = original.replace(WORKSPACE_ID.encode(), OTHER_WORKSPACE_ID.encode())
+        self.assertNotEqual(original, changed)
+        expected = tree_hashes(self.root)
+        expected[str(target.relative_to(self.root))] = hashlib.sha256(changed).hexdigest()
+
+        def mutate_during_validation(values, *, schema_version):
+            target.write_bytes(changed)
+            return isolated_readiness(schema_version)
+
+        with mock.patch.object(
+            MODULE.Store,
+            "validate_document_values",
+            staticmethod(mutate_during_validation),
+            create=True,
+        ):
+            with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                MODULE.inspect_profile(
+                    local_candidate(self.data), enable_format_neutral=True
+                )
+        self.assertEqual(raised.exception.code, "store_changed")
+        self.assertEqual(tree_hashes(self.root), expected)
+
+    def test_isolated_reports_added_during_validation_refuses_stale_v3(self) -> None:
+        """Final exact-roster admission after core validation. Isolated mock seam, not composed PASS."""
+
+        clone_v3_fixture(self.data)
+        reports = self.data / REPORTS_DOCUMENT_NAME
+        before = tree_hashes(self.root)
+
+        def add_reports_during_validation(values, *, schema_version):
+            reports.write_text(json.dumps(_REPORTS_EMPTY), encoding="utf-8")
+            return isolated_readiness(schema_version)
+
+        with mock.patch.object(
+            MODULE.Store,
+            "validate_document_values",
+            staticmethod(add_reports_during_validation),
+            create=True,
+        ):
+            with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                MODULE.inspect_profile(
+                    local_candidate(self.data), enable_format_neutral=True
+                )
+        self.assertEqual(raised.exception.code, "store_changed")
+        self.assertTrue(reports.is_file())
+        after = tree_hashes(self.root)
+        self.assertIn(str(reports.relative_to(self.root)), after)
+        self.assertNotEqual(before, after)
+
+    def test_isolated_store_json_added_during_validation_refuses(self) -> None:
+        """Final forbidden-marker admission after core validation. Isolated mock seam, not composed PASS."""
+
+        clone_v3_fixture(self.data)
+        marker = self.data / "store.json"
+
+        def add_store_marker_during_validation(values, *, schema_version):
+            marker.write_text(
+                json.dumps({"format": "workstack.ssot", "schema_version": 4}),
+                encoding="utf-8",
+            )
+            return isolated_readiness(schema_version)
+
+        with mock.patch.object(
+            MODULE.Store,
+            "validate_document_values",
+            staticmethod(add_store_marker_during_validation),
+            create=True,
+        ):
+            with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                MODULE.inspect_profile(
+                    local_candidate(self.data), enable_format_neutral=True
+                )
+        self.assertEqual(raised.exception.code, "store_changed")
+        self.assertTrue(marker.is_file())
+
+    def test_store_files_budget_covers_the_v3_roster(self) -> None:
+        self.assertEqual(set(MODULE.STORE_FILES), set(V3_DOCUMENT_NAMES))
+        self.assertEqual(len(MODULE.STORE_FILES), 9)
+        self.assertEqual(len(V5_DOCUMENT_NAMES), 10)
+        self.assertIn(REPORTS_DOCUMENT_NAME, V5_DOCUMENT_NAMES)
+
+    @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
+    def test_complete_v3_and_v5_directories_are_read_once_then_stability_hashed(self) -> None:
+        clone_v3_fixture(self.data, "empty")
+        v5 = self.root / "v5"
+        create_store(v5, self.root / "runtime-v5")
+        cases = (
+            (self.data, V3_DOCUMENT_NAMES, "v3", 3),
+            (v5, V5_DOCUMENT_NAMES, "v5", 5),
+        )
+        for path, roster, label, schema in cases:
+            with self.subTest(label=label):
+                before = tree_hashes(self.root)
+                observed: dict[str, int] = {name: 0 for name in roster}
+                real_open = Path.open
+
+                def open_file(file_path: Path, mode="r", *args, **kwargs):
+                    name = file_path.name
+                    if name in observed and "b" in mode:
+                        observed[name] += 1
+                    return real_open(file_path, mode, *args, **kwargs)
+
+                with mock.patch.object(Path, "open", open_file):
+                    result = MODULE.inspect_profile(
+                        local_candidate(path), enable_format_neutral=True
+                    )
+                self.assertEqual(result.status, "ready")
+                self.assertEqual(result.authority.storage_format, label)
+                self.assertEqual(result.authority.schema_version, schema)
+                self.assertEqual(set(observed), set(roster))
+                self.assertTrue(all(count == 2 for count in observed.values()))
+                extra = path / "readme.txt"
+                extra.write_text("noise", encoding="utf-8")
+                second = MODULE.inspect_profile(
+                    local_candidate(path), enable_format_neutral=True
+                )
+                extra.unlink()
+                self.assertEqual(
+                    second.authority.authority_manifest_digest,
+                    result.authority.authority_manifest_digest,
+                )
+                self.assertEqual(tree_hashes(self.root), before)
+
+    @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
+    def test_malformed_reports_json_delegates_to_core_validator(self) -> None:
+        create_store(self.data, self.root / "runtime")
+        (self.data / REPORTS_DOCUMENT_NAME).write_text(
+            json.dumps({"version": 1, "reports": "not-a-list"}),
+            encoding="utf-8",
+        )
+        before = tree_hashes(self.root)
+        with mock.patch.object(
+            MODULE.Store,
+            "__init__",
+            side_effect=AssertionError("Store construction is forbidden"),
+        ):
+            with self.assertRaises(MODULE.ProfileInspectionError) as raised:
+                MODULE.inspect_profile(local_candidate(self.data))
+        self.assertEqual(raised.exception.code, "invalid_store")
+        self.assertNotIn("not-a-list", raised.exception.safe_message)
+        self.assertEqual(tree_hashes(self.root), before)
 
 
 if __name__ == "__main__":

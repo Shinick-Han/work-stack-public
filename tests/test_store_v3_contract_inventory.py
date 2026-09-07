@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from workstack.planning_status import validate_and_project
-from workstack.store import DEFAULTS, Store
+from workstack.store import Store
+from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "store-v3"
@@ -23,7 +24,7 @@ def _load_fixture(name: str) -> dict[str, dict]:
     root = FIXTURES / name
     return {
         filename: json.loads((root / filename).read_text(encoding="utf-8"))
-        for filename in sorted(DEFAULTS)
+        for filename in sorted(V3_DOCUMENT_NAMES)
     }
 
 
@@ -64,20 +65,31 @@ class StoreV3ContractInventoryTest(unittest.TestCase):
         root.mkdir()
         for filename in documents:
             (root / filename).write_bytes((FIXTURES / fixture_name / filename).read_bytes())
+        # Compared by value, not by bytes: the upgrade rewrites every document
+        # through the store's canonical serializer, and the contract promises
+        # the payloads' content survives, not their incidental formatting.
         before = {
-            filename: hashlib.sha256((root / filename).read_bytes()).hexdigest()
+            filename: json.loads((root / filename).read_text(encoding="utf-8"))
             for filename in documents
         }
         runtime = Path(self.temporary.name) / "runtime" / fixture_name
         with mock.patch.dict(os.environ, {"WORK_STACK_RUNTIME": str(runtime)}):
             store = Store(root)
             readiness = store.initialize()
-        self.assertEqual(readiness.schema_version, 3)
+        # The fixture stays a frozen v3 document set; opening a copy of it with
+        # this build upgrades that copy, and every payload except the metadata
+        # record has to survive the upgrade untouched.
+        self.assertEqual(readiness.schema_version, 5)
         after = {
-            filename: hashlib.sha256((root / filename).read_bytes()).hexdigest()
+            filename: json.loads((root / filename).read_text(encoding="utf-8"))
             for filename in documents
+            if filename != "store-meta.json"
         }
-        self.assertEqual(after, before)
+        self.assertEqual(
+            after, {name: before[name] for name in before if name != "store-meta.json"}
+        )
+        written = {item.name for item in root.iterdir() if item.suffix == ".json"}
+        self.assertEqual(written, set(V5_DOCUMENT_NAMES))
         return store, before
 
     def setUp(self) -> None:
@@ -99,7 +111,7 @@ class StoreV3ContractInventoryTest(unittest.TestCase):
 
     def test_document_and_record_field_inventory_is_frozen(self) -> None:
         documents = _load_fixture("populated")
-        self.assertEqual(set(documents), set(DEFAULTS))
+        self.assertEqual(set(documents), set(V3_DOCUMENT_NAMES))
         self.assertEqual(set(documents["workspace.json"]), {"version", "id", "name"})
         self.assertEqual(set(documents["backlog.json"]), {"version", "tasks"})
         self.assertEqual(

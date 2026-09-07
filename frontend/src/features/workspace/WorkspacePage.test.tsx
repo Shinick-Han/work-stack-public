@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkspacePage } from './WorkspacePage'
 import { task, workspace as populatedWorkspace } from '../../test/fixtures'
 import { readSavedFilters, writeSavedFilters } from './savedFilters'
+import type { WorkspaceProjection } from '../../domain/types'
 
 const state = {
   surface: 'workspace' as const,
@@ -249,5 +250,369 @@ describe('WorkspacePage filter summary', () => {
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(disclosure).toHaveFocus())
     expect(screen.queryByRole('combobox', { name: 'Filter by priority' })).not.toBeInTheDocument()
+  })
+})
+
+describe('WorkspacePage outcome navigator', () => {
+  const outcomeWorkspace = {
+    ...populatedWorkspace,
+    objectives: [
+      {
+        id: 'O-1',
+        objective: 'Release quality customers trust',
+        status: 'active' as const,
+        revision: 0,
+        key_results: [{ id: 'KR-1', text: 'O-1 KR-1', progress: 20, status: 'active' }],
+      },
+      {
+        id: 'O-2',
+        objective: 'Zero-linked outcome',
+        status: 'active' as const,
+        revision: 0,
+        key_results: [{ id: 'KR-1', text: 'O-2 KR-1', status: 'active' }],
+      },
+    ],
+    tasks: [{
+      ...task,
+      key_result_refs: [{ objective_id: 'O-1', key_result_id: 'KR-1' }],
+    }],
+  }
+
+  it('renders OutcomeNavigator, reaches a zero-linked KR, and updates the URL filter without Task activation', async () => {
+    const updateUrl = vi.fn()
+    render(
+      <WorkspacePage
+        isRefreshing={false}
+        onChangeTaskStatus={vi.fn()}
+        onCreateTask={vi.fn()}
+        onOpenObjectives={vi.fn()}
+        onRefresh={vi.fn()}
+        state={{ ...state, view: 'table' }}
+        updateUrl={updateUrl}
+        workspace={outcomeWorkspace}
+      />,
+    )
+
+    expect(screen.getAllByRole('navigation', { name: 'Outcome navigator' })).toHaveLength(1)
+    const trigger = screen.getByRole('button', { name: 'Outcome navigator' })
+    expect(trigger).toHaveAccessibleDescription('All outcomes')
+    await userEvent.click(trigger)
+    const zeroLinked = screen.getByRole('button', { name: 'Select outcome O-2 KR-1' })
+    expect(within(zeroLinked).getByText('0 visible of 0 linked')).toBeVisible()
+    await userEvent.click(zeroLinked)
+    expect(updateUrl).toHaveBeenCalledExactlyOnceWith({
+      outcomeFilter: { kind: 'pair', objectiveId: 'O-2', keyResultId: 'KR-1' },
+    })
+  })
+
+  it('keeps the active KR summary on a wide layout and preserves URL coordinates across Escape', async () => {
+    const updateUrl = vi.fn()
+    render(
+      <WorkspacePage
+        isRefreshing={false}
+        onChangeTaskStatus={vi.fn()}
+        onCreateTask={vi.fn()}
+        onOpenObjectives={vi.fn()}
+        onRefresh={vi.fn()}
+        state={{
+          ...state,
+          view: 'table',
+          taskId: 'T-0001',
+          status: 'started',
+          outcomeFilter: { kind: 'pair', objectiveId: 'O-1', keyResultId: 'KR-1' },
+        }}
+        updateUrl={updateUrl}
+        workspace={outcomeWorkspace}
+      />,
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Outcome navigator' })
+    expect(trigger).toHaveAccessibleDescription('O-1 · KR-1')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('tab', { name: 'Table' })).toHaveAttribute('aria-selected', 'true')
+
+    await userEvent.click(trigger)
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Select outcome O-1 KR-1' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(trigger).toHaveFocus()
+    expect(updateUrl).not.toHaveBeenCalled()
+    expect(screen.getByRole('tab', { name: 'Table' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('uses the same compact empty-branch disclosure without a second live navigator', async () => {
+    render(
+      <WorkspacePage
+        isRefreshing={false}
+        onChangeTaskStatus={vi.fn()}
+        onCreateTask={vi.fn()}
+        onOpenObjectives={vi.fn()}
+        onRefresh={vi.fn()}
+        state={state}
+        updateUrl={vi.fn()}
+        workspace={{
+          schema_version: '1.0',
+          workspace: { id: '00000000-0000-4000-8000-000000000001', name: 'Work Stack' },
+          tasks: [],
+          objectives: [],
+          notes: [],
+          edges: [],
+          inbox_count: 0,
+        }}
+      />,
+    )
+
+    expect(screen.getAllByRole('navigation', { name: 'Outcome navigator' })).toHaveLength(1)
+    const trigger = screen.getByRole('button', { name: 'Outcome navigator' })
+    expect(trigger).toHaveAccessibleDescription('No outcomes')
+    expect(screen.queryByRole('button', { name: /Select outcome/ })).not.toBeInTheDocument()
+    await userEvent.click(trigger)
+    expect(screen.getByRole('status')).toHaveTextContent('No outcomes are defined yet')
+    expect(screen.getByRole('heading', { name: 'Start with an outcome—or capture the first task.' })).toBeVisible()
+  })
+
+  it('keeps the navigator reachable on a narrow layout through its disclosure trigger', async () => {
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('720'),
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as typeof window.matchMedia
+    try {
+      const updateUrl = vi.fn()
+      render(
+        <WorkspacePage
+          isRefreshing={false}
+          onChangeTaskStatus={vi.fn()}
+          onCreateTask={vi.fn()}
+          onOpenObjectives={vi.fn()}
+          onRefresh={vi.fn()}
+          state={{ ...state, view: 'table' }}
+          updateUrl={updateUrl}
+          workspace={outcomeWorkspace}
+        />,
+      )
+      const trigger = screen.getByRole('button', { name: 'Outcome navigator' })
+      await userEvent.click(trigger)
+      await userEvent.click(screen.getByRole('button', { name: 'Select outcome O-2 KR-1' }))
+      expect(updateUrl).toHaveBeenCalledExactlyOnceWith({
+        outcomeFilter: { kind: 'pair', objectiveId: 'O-2', keyResultId: 'KR-1' },
+      })
+    } finally {
+      window.matchMedia = original
+    }
+  })
+})
+
+describe('WorkspacePage Board move-to-Done retention', () => {
+  interface Deferred {
+    promise: Promise<void>
+    resolve: () => void
+    reject: (reason: Error) => void
+  }
+
+  function deferred(): Deferred {
+    let resolve!: () => void
+    let reject!: (reason: Error) => void
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise
+      reject = rejectPromise
+    })
+    return { promise, resolve, reject }
+  }
+
+  const boardTask = {
+    ...task,
+    status: 'started' as const,
+  }
+
+  function pageProps(
+    onChangeTaskStatus: (taskId: string, status: 'open' | 'started' | 'done' | 'dropped') => Promise<void>,
+    tasks: WorkspaceProjection['tasks'] = [boardTask],
+    doneVisibility: 'default' | 'hide' | 'show' = 'default',
+  ) {
+    return {
+      isRefreshing: false,
+      onChangeTaskStatus,
+      onCreateTask: vi.fn(),
+      onOpenObjectives: vi.fn(),
+      onRefresh: vi.fn(),
+      state: { ...state, view: 'board' as const, doneVisibility },
+      updateUrl: vi.fn(),
+      workspace: { ...populatedWorkspace, tasks, edges: [] },
+    }
+  }
+
+  function statusSelect() {
+    return screen.getByRole('combobox', { name: `Change ${boardTask.id} status` })
+  }
+
+  function boardColumn(name: 'Open' | 'In progress' | 'Done' | 'Dropped') {
+    return screen.getByRole('region', { name })
+  }
+
+  it('keeps a successful Done move visible under default without fabricating a second card', async () => {
+    const request = deferred()
+    const onChange = vi.fn(() => request.promise)
+    const props = pageProps(onChange)
+    const { rerender } = render(<WorkspacePage {...props} />)
+
+    await userEvent.selectOptions(statusSelect(), 'done')
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(boardTask.id, 'done')
+    expect(statusSelect()).toBeDisabled()
+    expect(screen.getAllByRole('article', { name: `${boardTask.id}: ${boardTask.title}` })).toHaveLength(1)
+
+    await act(async () => request.resolve())
+    const completed = { ...boardTask, status: 'done' as const, revision: boardTask.revision + 1 }
+    rerender(<WorkspacePage {...pageProps(onChange, [completed])} />)
+
+    const select = statusSelect()
+    expect(select).toHaveValue('done')
+    expect(select).toBeEnabled()
+    expect(screen.getAllByRole('article', { name: `${boardTask.id}: ${boardTask.title}` })).toHaveLength(1)
+    expect(screen.getByText(/1 of 1 tasks shown/)).toBeVisible()
+  })
+
+  it('retains an authoritative Done card while the revision-guarded mutation is pending', async () => {
+    const request = deferred()
+    const onChange = vi.fn(() => request.promise)
+    const props = pageProps(onChange)
+    const { rerender } = render(<WorkspacePage {...props} />)
+
+    await userEvent.selectOptions(statusSelect(), 'done')
+    const completed = { ...boardTask, status: 'done' as const, revision: boardTask.revision + 1 }
+    rerender(<WorkspacePage {...pageProps(onChange, [completed])} />)
+
+    expect(statusSelect()).toHaveValue('done')
+    expect(statusSelect()).toBeDisabled()
+
+    await act(async () => request.resolve())
+
+    expect(statusSelect()).toHaveValue('done')
+    expect(screen.getAllByRole('article', { name: `${boardTask.id}: ${boardTask.title}` })).toHaveLength(1)
+  })
+
+  it('hides the retained Done card when completed visibility is explicitly hide', async () => {
+    const onChange = vi.fn().mockResolvedValue(undefined)
+    const completed = { ...boardTask, status: 'done' as const, revision: boardTask.revision + 1 }
+    const props = pageProps(onChange)
+    const { rerender } = render(<WorkspacePage {...props} />)
+
+    await userEvent.selectOptions(statusSelect(), 'done')
+    rerender(<WorkspacePage {...pageProps(onChange, [completed])} />)
+    expect(statusSelect()).toHaveValue('done')
+
+    rerender(<WorkspacePage {...pageProps(onChange, [completed], 'hide')} />)
+    expect(screen.queryByRole('combobox', { name: `Change ${boardTask.id} status` })).not.toBeInTheDocument()
+    expect(screen.getByText(/0 of 1 tasks shown/)).toBeVisible()
+  })
+
+  it('rolls back a failed Done move instead of retaining it', async () => {
+    const request = deferred()
+    const onChange = vi.fn(() => request.promise)
+    render(<WorkspacePage {...pageProps(onChange)} />)
+
+    await userEvent.selectOptions(statusSelect(), 'done')
+    await act(async () => request.reject(new Error('Revision conflict')))
+
+    expect(statusSelect()).toHaveValue('started')
+    expect(statusSelect()).toBeEnabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Revision conflict')
+    expect(screen.getAllByRole('article', { name: `${boardTask.id}: ${boardTask.title}` })).toHaveLength(1)
+  })
+
+  it('reasserts only the completed ID after a stale non-Done refresh before success', async () => {
+    const kept = {
+      ...boardTask,
+      id: 'T-0002',
+      uid: '22222222-2222-4222-8222-222222222223',
+      title: 'Already retained',
+      status: 'started' as const,
+    }
+    const firstDone = deferred()
+    const secondDone = deferred()
+    const onChange = vi.fn((taskId: string) => (
+      taskId === kept.id ? firstDone.promise : secondDone.promise
+    ))
+    const { rerender } = render(<WorkspacePage {...pageProps(onChange, [boardTask, kept])} />)
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: `Change ${kept.id} status` }),
+      'done',
+    )
+    await act(async () => firstDone.resolve())
+    const keptCompleted = { ...kept, status: 'done' as const, revision: kept.revision + 1 }
+    rerender(<WorkspacePage {...pageProps(onChange, [boardTask, keptCompleted])} />)
+    expect(screen.getByRole('combobox', { name: `Change ${kept.id} status` })).toHaveValue('done')
+
+    await userEvent.selectOptions(statusSelect(), 'done')
+    expect(statusSelect()).toBeDisabled()
+
+    // In-flight workspace/SSE refresh still has the target as non-Done, which
+    // prunes the optimistic ID before the mutation response.
+    rerender(<WorkspacePage {...pageProps(onChange, [{ ...boardTask }, keptCompleted])} />)
+
+    await act(async () => secondDone.resolve())
+    const completed = { ...boardTask, status: 'done' as const, revision: boardTask.revision + 1 }
+    rerender(<WorkspacePage {...pageProps(onChange, [completed, keptCompleted])} />)
+
+    expect(statusSelect()).toHaveValue('done')
+    expect(statusSelect()).toBeEnabled()
+    expect(screen.getAllByRole('article', { name: `${boardTask.id}: ${boardTask.title}` })).toHaveLength(1)
+    expect(screen.getAllByRole('article', { name: `${kept.id}: ${kept.title}` })).toHaveLength(1)
+    expect(screen.getByText(/2 of 2 tasks shown/)).toBeVisible()
+  })
+
+  it('uses the refreshed canonical Done Task after SSE without duplicating or keeping a stale revision', async () => {
+    const onChange = vi.fn().mockResolvedValue(undefined)
+    const props = pageProps(onChange)
+    const { rerender } = render(<WorkspacePage {...props} />)
+
+    await userEvent.selectOptions(statusSelect(), 'done')
+    const first = { ...boardTask, status: 'done' as const, revision: 3 }
+    rerender(<WorkspacePage {...pageProps(onChange, [first])} />)
+    expect(statusSelect()).toHaveValue('done')
+
+    const refreshed = { ...first, revision: 4, detail: 'Server-authoritative detail' }
+    rerender(<WorkspacePage {...pageProps(onChange, [refreshed])} />)
+
+    expect(screen.getAllByRole('article', { name: `${boardTask.id}: ${boardTask.title}` })).toHaveLength(1)
+    expect(statusSelect()).toHaveValue('done')
+    expect(screen.getByText('Server-authoritative detail')).toBeVisible()
+  })
+
+  it('stops retention when an external undo returns the Task to started', async () => {
+    const onChange = vi.fn().mockResolvedValue(undefined)
+    const { rerender } = render(<WorkspacePage {...pageProps(onChange)} />)
+
+    await userEvent.selectOptions(statusSelect(), 'done')
+    const completed = { ...boardTask, status: 'done' as const, revision: boardTask.revision + 1 }
+    rerender(<WorkspacePage {...pageProps(onChange, [completed])} />)
+    expect(statusSelect()).toHaveValue('done')
+    expect(within(boardColumn('Done')).getByRole('article', { name: `${boardTask.id}: ${boardTask.title}` })).toBeVisible()
+
+    const restored = { ...boardTask, status: 'started' as const, revision: boardTask.revision + 2 }
+    rerender(<WorkspacePage {...pageProps(onChange, [restored])} />)
+
+    expect(statusSelect()).toHaveValue('started')
+    expect(statusSelect()).toBeEnabled()
+    expect(screen.getAllByRole('article', { name: `${boardTask.id}: ${boardTask.title}` })).toHaveLength(1)
+    expect(within(boardColumn('In progress')).getByRole('article', { name: `${boardTask.id}: ${boardTask.title}` })).toBeVisible()
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(boardTask.id, 'done')
+
+    const doneAgain = { ...boardTask, status: 'done' as const, revision: boardTask.revision + 3 }
+    rerender(<WorkspacePage {...pageProps(onChange, [doneAgain])} />)
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(boardTask.id, 'done')
+    expect(screen.queryByRole('article', { name: `${boardTask.id}: ${boardTask.title}` })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: `Change ${boardTask.id} status` })).not.toBeInTheDocument()
+    expect(screen.getByText(/0 of 1 tasks shown/)).toBeVisible()
+    expect(screen.getByText('All matching tasks are completed')).toBeVisible()
   })
 })

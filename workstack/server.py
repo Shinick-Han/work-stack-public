@@ -6,6 +6,7 @@ import json
 import mimetypes
 import re
 import secrets
+import select
 import socket
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -27,9 +28,12 @@ from .service import (
     SnapshotExportConflictError,
     SourceRevisionConflictError,
     StaleCaptureError,
+    TaskDeletionTransactionError,
     WorkSessionConflictError,
     WorkStack,
 )
+from .mutation_service import MutationNoticeHttpMixin, MutationReceiptError
+from .reporting_http import DailyReportPreviewHttpMixin; from .weekly_reporting_http import WeeklyReportPreviewHttpMixin
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +71,7 @@ V1_POST_ROUTES = (
     _post_route("work_session_action", r"/api/v1/work-sessions/([^/]+)/(pause|resume|stop|worklog)", "_post_work_session_action"),
     _post_route("backup", r"/api/v1/maintenance/backup", "_post_backup"),
     _post_route("snapshot_export", r"/api/v1/tasks/([^/]+)/snapshot/export", "_post_snapshot_export"),
+    _post_route("task_deletion_preview", r"/api/v1/tasks/([^/]+)/deletion-preview", "_post_deletion_preview"),
     _post_route("task_note", r"/api/v1/tasks/([^/]+)/notes", "_post_task_note"),
     _post_route("task_subtask", r"/api/v1/tasks/([^/]+)/subtasks", "_post_task_subtask"),
     _post_route("objective_create", r"/api/v1/objectives", "_post_objective_create"),
@@ -91,6 +96,7 @@ V1_POST_ROUTES = (
     _post_route("capture_dismiss", r"/api/v1/captures/([^/]+)/dismiss", "_post_capture_dismiss"),
     _post_route("reply_create", r"/api/v1/replies", "_post_reply_create"),
     _post_route("reply_receipt", r"/api/v1/replies/([^/]+)/receipt", "_post_reply_receipt"),
+    _post_route("mutation_notice_undo", r"/api/v1/mutation-notices/([^/]+)/undo", "_post_mutation_notice_undo"),
 )
 
 IDEMPOTENT_POST_ROUTES = frozenset({
@@ -109,6 +115,7 @@ IDEMPOTENT_POST_ROUTES = frozenset({
     "checkpoint_transition",
     "reply_create",
     "reply_receipt",
+    "mutation_notice_undo",
 })
 
 
@@ -140,6 +147,7 @@ V1_GET_ROUTES = (
     _get_route(r"/api/v1/storage", "_get_storage"),
     _get_route(r"/api/v1/workspace", "_get_workspace"),
     _get_route(r"/api/v1/search", "_get_search"),
+    _get_route(r"/api/v1/reports/daily-preview", "_get_daily_report_preview"), _get_route(r"/api/v1/reports/weekly-preview", "_get_weekly_report_preview"),
     _get_route(r"/api/v1/review/checkpoints", "_get_checkpoint_audit"),
     _get_route(r"/api/v1/review", "_get_review"),
     _get_route(r"/api/v1/work-sessions", "_get_work_sessions"),
@@ -147,6 +155,7 @@ V1_GET_ROUTES = (
     _get_route(r"/api/v1/tasks/([^/]+)/snapshot", "_get_snapshot"),
     _get_route(r"/api/v1/tasks/([^/]+)", "_get_task"),
     _get_route(r"/api/v1/captures", "_get_captures"),
+    _get_route(r"/api/v1/mutation-notices", "_get_mutation_notices"),
 )
 
 
@@ -227,7 +236,7 @@ class WorkStackHTTPServer(ThreadingHTTPServer):
             self._lease.__exit__(None, None, None)
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(DailyReportPreviewHttpMixin, WeeklyReportPreviewHttpMixin, MutationNoticeHttpMixin, BaseHTTPRequestHandler):
     server: WorkStackHTTPServer
 
     def log_message(self, format: str, *args: object) -> None:
@@ -246,11 +255,18 @@ class Handler(BaseHTTPRequestHandler):
             self._workstack_request_id = value
         return value
 
-    def send_json(self, value: object, status: int = HTTPStatus.OK) -> None:
-        body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    def _send_bytes(
+        self,
+        status: int,
+        content_type: str,
+        body: bytes,
+        extra: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         self.send_response(int(status))
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        for name, value in extra:
+            self.send_header(name, value)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-WorkStack-Request-Id", self.request_id)
@@ -261,44 +277,27 @@ class Handler(BaseHTTPRequestHandler):
             # A closed browser tab is an expected transport event, not a product error.
             return
 
-    def send_snapshot(
-        self, body: bytes, filename: str, digest: str
-    ) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Content-Disposition", 'attachment; filename="{}"'.format(filename))
-        self.send_header("X-WorkStack-Snapshot-Digest", digest)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-WorkStack-Request-Id", self.request_id)
-        self.end_headers()
-        try:
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
-            return
+    def send_json(self, value: object, status: int = HTTPStatus.OK) -> None:
+        self._send_bytes(
+            status,
+            "application/json; charset=utf-8",
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        )
+
+    def send_snapshot(self, body: bytes, filename: str, digest: str) -> None:
+        self._send_bytes(HTTPStatus.OK, "application/json; charset=utf-8", body, (
+            ("Content-Disposition", 'attachment; filename="{}"'.format(filename)),
+            ("X-WorkStack-Snapshot-Digest", digest),
+        ))
 
     def send_backup(
-        self,
-        body: bytes,
-        filename: str,
-        digest: str,
-        workspace_id: str,
+        self, body: bytes, filename: str, digest: str, workspace_id: str
     ) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/zip")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Content-Disposition", 'attachment; filename="{}"'.format(filename))
-        self.send_header("X-WorkStack-Backup-Digest", digest)
-        self.send_header("X-WorkStack-Workspace-Id", workspace_id)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-WorkStack-Request-Id", self.request_id)
-        self.end_headers()
-        try:
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
-            return
+        self._send_bytes(HTTPStatus.OK, "application/zip", body, (
+            ("Content-Disposition", 'attachment; filename="{}"'.format(filename)),
+            ("X-WorkStack-Backup-Digest", digest),
+            ("X-WorkStack-Workspace-Id", workspace_id),
+        ))
 
     def send_api_error(
         self,
@@ -330,17 +329,7 @@ class Handler(BaseHTTPRequestHandler):
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
             return
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-WorkStack-Request-Id", self.request_id)
-        self.end_headers()
-        try:
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
-            return
+        self._send_bytes(HTTPStatus.OK, "text/event-stream; charset=utf-8", body)
 
     def _agent_client_origin(self) -> str | None:
         """The attributed Agent CLI origin, or None when the header is absent.
@@ -431,6 +420,21 @@ class Handler(BaseHTTPRequestHandler):
                 "unsupported_media_type", "Content-Type must be application/json", 415
             )
 
+    def _discard_rejected_body(self, declared: int) -> None:
+        """Steal kernel-buffered rejected bytes; never wait on a lying length."""
+
+        self.close_connection = True
+        leftover = min(declared, DEFAULT_BODY_LIMIT)
+        sock = self.connection
+        while leftover > 0:
+            ready, _w, _x = select.select([sock], [], [], 0)
+            if not ready:
+                break
+            chunk = sock.recv(min(leftover, 65536))
+            if not chunk:
+                break
+            leftover -= len(chunk)
+
     def read_json(self, maximum: int = DEFAULT_BODY_LIMIT) -> tuple[dict[str, Any], str]:
         self._require_json_content_type()
         if self.headers.get("Transfer-Encoding"):
@@ -445,6 +449,7 @@ class Handler(BaseHTTPRequestHandler):
         if length < 0:
             raise RequestError("invalid_body", "Content-Length is invalid", 400)
         if length > maximum:
+            self._discard_rejected_body(length)
             raise RequestError(
                 "body_too_large", "request body exceeds {} bytes".format(maximum), 413
             )
@@ -468,7 +473,9 @@ class Handler(BaseHTTPRequestHandler):
         return value
 
     def _dispatch_error(self, error: BaseException) -> None:
-        if isinstance(error, RequestError):
+        if isinstance(error, (MutationReceiptError, TaskDeletionTransactionError)):
+            self.send_api_error(error.code, str(error), error.status, error.details)
+        elif isinstance(error, RequestError):
             self.send_api_error(error.code, str(error), error.status, error.details)
         elif isinstance(error, NotFoundError):
             self.send_api_error(error.code, str(error), 404, error.details)
@@ -736,12 +743,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _post_needs_idempotency(path: str, route: PostRoute | None) -> bool:
-        return path.startswith("/api/v1/captures") or (
-            route is not None and route.name in IDEMPOTENT_POST_ROUTES
-        )
-
-    def _send_service_result(self, result: dict[str, Any]) -> None:
-        self.send_json(result["body"], result["status"])
+        return path.startswith("/api/v1/captures") or (route is not None and route.name in IDEMPOTENT_POST_ROUTES)
 
     def _handle_v1_post(self, path: str) -> None:
         route, match = self._match_v1_post_route(path)
@@ -955,6 +957,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_snapshot(
             artifact.canonical_bytes, artifact.filename, artifact.digest
         )
+
+    def _post_deletion_preview(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        del path, request_digest, idempotency_key
+        data = self.stack.preview_task_deletion(unquote(match.group(1)), body)
+        self.send_json({"data": data})
 
     def _post_task_note(
         self, path: str, match: re.Match[str], body: dict[str, Any],
@@ -1356,6 +1366,41 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
+        except BaseException as error:
+            self._dispatch_error(error)
+
+    def _delete_task(
+        self,
+        task_id: str,
+        body: dict[str, Any],
+        request_digest: str,
+        path: str,
+    ) -> None:
+        data = self.stack.commit_task_deletion(
+            task_id=task_id,
+            body=body,
+            request_digest=request_digest,
+            path=path,
+            idempotency_key=self._idempotency_key(),
+            if_match=self._header_once("If-Match"),
+            force_backup_failure=self._header_once("X-WorkStack-Force-Backup-Failure") == "1",
+        )
+        self.send_json({"data": data})
+
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        try:
+            self._validate_host()
+            body, request_digest = self.read_json()
+            self._require_browser_mutation()
+            if not path.startswith("/api/v1/"):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            match = re.fullmatch(r"/api/v1/tasks/([^/]+)", path)
+            if match is None:
+                self.send_api_error("not_found", "API endpoint not found", 404)
+                return
+            self._delete_task(unquote(match.group(1)), body, request_digest, path)
         except BaseException as error:
             self._dispatch_error(error)
 

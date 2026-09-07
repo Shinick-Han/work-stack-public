@@ -6,6 +6,7 @@ import { App } from './App'
 import { api, ApiError } from '../api/client'
 import type { Capture, Task, WorkspaceProjection } from '../domain/types'
 import { capture, jsonResponse, task, workspace } from '../test/fixtures'
+import productStylesheet from '../styles.css?raw'
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -693,7 +694,10 @@ test('undoes only the latest status change through a new revision-guarded fact',
   await userEvent.click(screen.getByRole('button', { name: 'Filter tasks' }))
   await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Change T-0001 status' }), 'done')
   const undo = await screen.findByRole('button', { name: 'Undo' })
-  expect(screen.queryByRole('combobox', { name: 'Change T-0001 status' })).not.toBeInTheDocument()
+  const completedSelect = screen.getByRole('combobox', { name: 'Change T-0001 status' })
+  expect(completedSelect).toHaveValue('done')
+  expect(screen.getAllByRole('article', { name: `${task.id}: ${task.title}` })).toHaveLength(1)
+  expect(within(screen.getByRole('region', { name: 'Done' })).getByRole('article', { name: `${task.id}: ${task.title}` })).toBeVisible()
   expect(client.getQueryData<WorkspaceProjection>(['workspace'])?.tasks[0]).toMatchObject({
     status: 'done', revision: task.revision + 1,
   })
@@ -710,6 +714,9 @@ test('undoes only the latest status change through a new revision-guarded fact',
   }))
   expect(screen.getByText(`${task.id} restored to ${task.status}`)).toBeInTheDocument()
   expect(screen.getByRole('combobox', { name: 'Change T-0001 status' })).toHaveValue(task.status)
+  expect(screen.getAllByRole('article', { name: `${task.id}: ${task.title}` })).toHaveLength(1)
+  expect(within(screen.getByRole('region', { name: 'In progress' })).getByRole('article', { name: `${task.id}: ${task.title}` })).toBeVisible()
+  expect(within(screen.getByRole('region', { name: 'Done' })).queryByRole('article', { name: `${task.id}: ${task.title}` })).not.toBeInTheDocument()
 })
 
 test('returns every workspace view to the unselected state when the active task is clicked again', async () => {
@@ -896,4 +903,291 @@ test('healthy control: with All outcomes j, j and k walk the canonical order', a
   expect(await screen.findByRole('complementary', { name: 'Task T-2002' })).toBeInTheDocument()
   fireEvent.keyDown(window, { key: 'k' })
   expect(await screen.findByRole('complementary', { name: 'Task T-2001' })).toBeInTheDocument()
+})
+
+const sidebarObjectives = [
+  { id: 'O-1', objective: 'Release quality customers trust', status: 'active', revision: 0 },
+  { id: 'O-2', objective: 'Faster recovery from incidents', status: 'active', revision: 0 },
+]
+
+function sidebarTask(id: string, title: string, objectiveIds: string[], status: Task['status'] = 'open'): Task {
+  const uid = `9000${id.slice(-4)}-0000-4000-8000-00000000${id.slice(-4)}`
+  return { ...task, id, uid, title, objective_ids: objectiveIds, status, priority: 'P1' }
+}
+
+const sidebarWorkspace: WorkspaceProjection = {
+  ...workspace,
+  objectives: sidebarObjectives,
+  tasks: [
+    sidebarTask('T-9002', 'Shared alignment work', ['O-1', 'O-2']),
+    sidebarTask('T-9001', 'Ship the release gate', ['O-1']),
+    sidebarTask('T-9003', 'Unlinked follow-up', []),
+    sidebarTask('T-9004', 'Link the projection cannot resolve', ['O-404']),
+    sidebarTask('T-9000', 'Closed alignment work', ['O-1'], 'done'),
+  ],
+}
+
+function stubSidebarWorkspace() {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.includes('/api/v1/workspace')) return jsonResponse({ data: sidebarWorkspace })
+    if (url.includes('/api/v1/captures')) return jsonResponse({ data: { captures: [] } })
+    if (url.includes('/api/v1/objectives/')) {
+      const id = url.split('/api/v1/objectives/')[1].split(/[?#]/)[0]
+      return jsonResponse({ data: {
+        objective: sidebarObjectives.find((objective) => objective.id === id) ?? sidebarObjectives[0],
+        tasks: sidebarWorkspace.tasks.filter((entry) => entry.objective_ids.includes(id)),
+        activity: [],
+      } })
+    }
+    if (url.includes('/api/v1/tasks/')) {
+      const id = url.split('/api/v1/tasks/')[1].split(/[?#]/)[0]
+      const found = sidebarWorkspace.tasks.find((entry) => entry.id === id) ?? sidebarWorkspace.tasks[0]
+      return jsonResponse({ data: { task: found, context: [], activity: [], replies: [] } })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }))
+}
+
+/**
+ * The rendered sidebar hierarchy, flattened in DOM order: an Objective (or the unassigned group)
+ * at the left margin, each revealed Task indented under the Objective it is listed beneath. The
+ * outline is the assertion target because "beneath THAT Objective, before the next one" is an
+ * ordering claim that a per-element query cannot make.
+ */
+function sidebarObjectiveOutline() {
+  const nodes = document.querySelectorAll(
+    '.objective-nav__select, .objective-nav__tasks:not([hidden]) > li > .objective-nav__task, .objective-nav__tasks:not([hidden]) > li.objective-nav__empty',
+  )
+  return Array.from(nodes).map((node) => (
+    node.classList.contains('objective-nav__select')
+      ? node.querySelector('strong')?.textContent ?? ''
+      : `  ${node.querySelector('strong')?.textContent ?? node.textContent ?? ''}`
+  ))
+}
+
+function objectiveSelect(objectiveId: string) {
+  const group = screen.getByRole('button', { name: `Tasks linked to ${objectiveId}` }).closest('.objective-nav__group')
+  const select = group?.querySelector('.objective-nav__select')
+  if (!(select instanceof HTMLElement)) throw new Error(`No Objective row for ${objectiveId}`)
+  return select
+}
+
+async function openSidebarObjectives() {
+  stubSidebarWorkspace()
+  renderApp()
+  await screen.findByRole('heading', { name: /keep execution connected/i }, { timeout: 5_000 })
+  await userEvent.click(screen.getByRole('button', { name: 'Objectives 2' }))
+}
+
+test('reveals an Objective’s linked Tasks beneath that Objective and before the next one', async () => {
+  await openSidebarObjectives()
+
+  expect(sidebarObjectiveOutline()).toEqual(['O-1', 'O-2', 'Unassigned'])
+
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks linked to O-1' }))
+
+  // Open Tasks first, then closed ones, each ordered by ID — and all of them before O-2.
+  expect(sidebarObjectiveOutline()).toEqual(['O-1', '  T-9001', '  T-9002', '  T-9000', 'O-2', 'Unassigned'])
+  expect(screen.getByRole('button', { name: 'Tasks linked to O-1' })).toHaveAttribute('aria-expanded', 'true')
+  expect(screen.getByRole('button', { name: 'Tasks linked to O-2' })).toHaveAttribute('aria-expanded', 'false')
+
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks linked to O-1' }))
+
+  expect(sidebarObjectiveOutline()).toEqual(['O-1', 'O-2', 'Unassigned'])
+})
+
+test('lists a Task carrying two Objectives under each of them and names that fan-out', async () => {
+  await openSidebarObjectives()
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks linked to O-1' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks linked to O-2' }))
+
+  expect(sidebarObjectiveOutline()).toEqual([
+    'O-1', '  T-9001', '  T-9002', '  T-9000', 'O-2', '  T-9002', 'Unassigned',
+  ])
+
+  // Each copy is separately addressable and says how far the Task reaches, so the repetition reads
+  // as one Task on two Objectives rather than two Tasks that happen to share an ID.
+  expect(screen.getByRole('button', {
+    name: 'Open task T-9002: Shared alignment work under O-1, shared with 1 other Objective',
+  })).toBeInTheDocument()
+  expect(screen.getByRole('button', {
+    name: 'Open task T-9002: Shared alignment work under O-2, shared with 1 other Objective',
+  })).toBeInTheDocument()
+  expect(screen.getByRole('button', {
+    name: 'Open task T-9001: Ship the release gate under O-1',
+  })).toBeInTheDocument()
+})
+
+test('keeps a Task with no resolvable Objective reachable and openable from the sidebar', async () => {
+  await openSidebarObjectives()
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks with no Objective' }))
+
+  expect(sidebarObjectiveOutline()).toEqual(['O-1', 'O-2', 'Unassigned', '  T-9003', '  T-9004'])
+
+  await userEvent.click(screen.getByRole('button', {
+    name: 'Open task T-9004: Link the projection cannot resolve under no Objective',
+  }))
+
+  expect(await screen.findByRole('complementary', { name: 'Task T-9004' })).toBeInTheDocument()
+})
+
+test('an Objective with no linked Tasks says so instead of collapsing into the next Objective', async () => {
+  await openSidebarObjectives()
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks linked to O-2' }))
+  await userEvent.click(objectiveSelect('O-2'))
+
+  const list = screen.getByRole('list', { name: 'Tasks linked to O-2' })
+  expect(list.closest('.objective-nav__group')).toContainElement(objectiveSelect('O-2'))
+  expect(within(list).getByRole('button', {
+    name: 'Open task T-9002: Shared alignment work under O-2, shared with 1 other Objective',
+  })).toBeInTheDocument()
+})
+
+test('honours an explicit sidebar collapse through every later Objective selection', async () => {
+  await openSidebarObjectives()
+
+  // Selecting an Objective reveals its Tasks…
+  await userEvent.click(objectiveSelect('O-1'))
+  expect(sidebarObjectiveOutline()).toEqual(['O-1', '  T-9001', '  T-9002', '  T-9000', 'O-2', 'Unassigned'])
+
+  // …but an explicit collapse outranks that default and is not undone by navigating away and back.
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks linked to O-1' }))
+  expect(sidebarObjectiveOutline()).toEqual(['O-1', 'O-2', 'Unassigned'])
+
+  await userEvent.click(objectiveSelect('O-2'))
+  expect(sidebarObjectiveOutline()).toEqual(['O-1', 'O-2', '  T-9002', 'Unassigned'])
+
+  await userEvent.click(objectiveSelect('O-1'))
+  expect(sidebarObjectiveOutline()).toEqual(['O-1', 'O-2', 'Unassigned'])
+  expect(screen.getByRole('button', { name: 'Tasks linked to O-1' })).toHaveAttribute('aria-expanded', 'false')
+})
+
+test('exposes the Objective hierarchy to assistive technology and keeps the list scrollable', async () => {
+  await openSidebarObjectives()
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks linked to O-1' }))
+
+  const disclosure = screen.getByRole('button', { name: 'Tasks linked to O-1' })
+  const list = screen.getByRole('list', { name: 'Tasks linked to O-1' })
+  expect(disclosure.getAttribute('aria-controls')).toBe(list.id)
+
+  // The Tasks are a list nested inside the Objective's own list item, so the reading order carries
+  // the containment rather than presenting one flat run of buttons.
+  const group = disclosure.closest('.objective-nav__group')
+  expect(group?.tagName).toBe('LI')
+  expect(list.parentElement).toBe(group)
+  expect(list.closest('.objective-nav')?.tagName).toBe('UL')
+
+  // The scroll container the sidebar layout targets is still the direct child of the section body,
+  // so a long Objective list scrolls on its own instead of pushing the section controls away.
+  expect(document.querySelector('.sidebar-section-body > ul.objective-nav')).not.toBeNull()
+
+  // Both controls stay in the natural tab order, disclosure before the Objective it discloses.
+  await userEvent.tab()
+  const order = Array.from(document.querySelectorAll('.objective-nav__row > button'))
+  expect(order[0]).toBe(disclosure)
+  expect(order[1]).toBe(objectiveSelect('O-1'))
+})
+
+test('announces the selected Objective as the current sidebar item, not only in its styling', async () => {
+  await openSidebarObjectives()
+
+  expect(document.querySelectorAll('.objective-nav [aria-current]')).toHaveLength(0)
+
+  await userEvent.click(objectiveSelect('O-1'))
+
+  expect(objectiveSelect('O-1')).toHaveAttribute('aria-current', 'page')
+  expect(objectiveSelect('O-1')).toHaveClass('is-active')
+  expect(objectiveSelect('O-2')).not.toHaveAttribute('aria-current')
+
+  // The disclosure keeps its own vocabulary, and revealing Tasks is still a separate state from
+  // being the current Objective.
+  const disclosure = screen.getByRole('button', { name: 'Tasks linked to O-1' })
+  expect(disclosure).toHaveAttribute('aria-expanded', 'true')
+  expect(disclosure).not.toHaveAttribute('aria-current')
+  expect(screen.getByRole('list', { name: 'Tasks linked to O-1' })).toBeInTheDocument()
+
+  await userEvent.click(objectiveSelect('O-2'))
+
+  expect(objectiveSelect('O-2')).toHaveAttribute('aria-current', 'page')
+  expect(objectiveSelect('O-1')).not.toHaveAttribute('aria-current')
+})
+
+test('announces the selected Task from the nested list and from the flat Task navigator', async () => {
+  await openSidebarObjectives()
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks linked to O-1' }))
+
+  const nestedName = 'Open task T-9001: Ship the release gate under O-1'
+  expect(screen.getByRole('button', { name: nestedName })).not.toHaveAttribute('aria-current')
+
+  await userEvent.click(screen.getByRole('button', { name: nestedName }))
+
+  expect(screen.getByRole('button', { name: nestedName })).toHaveAttribute('aria-current', 'page')
+  expect(screen.getByRole('button', { name: nestedName })).toHaveClass('is-active')
+
+  // The same Task selected through the flat navigator carries the same state, so the two lists
+  // cannot disagree about which Task is current.
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks 5' }))
+  const flat = screen.getByRole('button', { name: 'Open task T-9001: Ship the release gate' })
+  expect(flat).toHaveAttribute('aria-current', 'page')
+  expect(screen.getByRole('button', { name: 'Open task T-9003: Unlinked follow-up' })).not.toHaveAttribute('aria-current')
+
+  await userEvent.click(screen.getByRole('button', { name: 'Open task T-9003: Unlinked follow-up' }))
+
+  expect(screen.getByRole('button', { name: 'Open task T-9003: Unlinked follow-up' })).toHaveAttribute('aria-current', 'page')
+  expect(screen.getByRole('button', { name: 'Open task T-9001: Ship the release gate' })).not.toHaveAttribute('aria-current')
+  expect(screen.getByRole('button', { name: nestedName })).not.toHaveAttribute('aria-current')
+})
+
+test('never paints a sidebar row as selected without announcing it', async () => {
+  await openSidebarObjectives()
+  await userEvent.click(objectiveSelect('O-1'))
+  await userEvent.click(screen.getByRole('button', { name: 'Tasks 5' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Open task T-9003: Unlinked follow-up' }))
+
+  const sidebar = document.querySelector('.app-sidebar')
+  const painted = Array.from(sidebar?.querySelectorAll('button.is-active') ?? [])
+  const announced = Array.from(sidebar?.querySelectorAll('button[aria-current="page"]') ?? [])
+
+  expect(painted.length).toBeGreaterThan(1)
+  expect(painted).toEqual(announced)
+})
+
+test('resolves every audited surface from the shared type steps instead of raw pixel sizes', () => {
+  for (const step of [
+    '--ws-type-entity-heading', '--ws-type-metric', '--ws-type-metric-compact', '--ws-type-panel-heading',
+    '--ws-type-item-title', '--ws-type-control-label', '--ws-type-meta', '--ws-type-eyebrow',
+    '--ws-control-min-height',
+  ]) expect(productStylesheet).toMatch(new RegExp(`${step}:\\s*\\d+px`))
+
+  const audited = productStylesheet
+    .split('\n')
+    .filter((line) => /^\.(sidebar-|task-nav|ssot-connection-control|objective-|kr-)/.test(line))
+  expect(audited.length).toBeGreaterThan(20)
+  expect(audited.filter((line) => /font-size:\s*[0-9]/.test(line))).toEqual([])
+
+  // The controls the audit covered — inputs, selects and the KR slider — sit on one target height
+  // and one control type step rather than the 16px browser default they used to inherit.
+  expect(productStylesheet).toMatch(/\.objective-overview input[^\n]*font-size: var\(--ws-type-control-label\)/)
+  expect(productStylesheet).toMatch(/\.objective-overview input[^\n]*min-height: var\(--ws-control-min-height\)/)
+  expect(productStylesheet).toMatch(/\.kr-progress-input input\[type="range"\][^\n]*accent-color: var\(--ws-brand-accent\)/)
+  expect(productStylesheet).toMatch(/\.kr-progress-input input\[type="range"\][^\n]*min-height: var\(--ws-control-min-height\)/)
+})
+
+test('collapses every Objective Hub metric grid at the 320px reflow width', () => {
+  const narrow = productStylesheet.split('@media (max-width: 660px) {')[1].split('\n}')[0]
+
+  // The base layout keeps its four columns; only the reflow width drops to two, which is what makes
+  // a 320px-equivalent viewport (a 640px window at 200% zoom) fit without horizontal scrolling.
+  expect(productStylesheet).toMatch(/\.objective-readiness \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/)
+  expect(narrow).toContain('.objective-readiness { grid-template-columns: 1fr 1fr; }')
+  expect(narrow).toContain('.objective-metrics { grid-template-columns: 1fr 1fr; }')
+  expect(narrow).toMatch(/\.kr-row, \.kr-create, \.kr-card \.kr-row \{ grid-template-columns: 1fr; \}/)
+  expect(narrow).not.toMatch(/repeat\(4/)
+})
+
+test('Daily Review DateInput uses the shared control type steps instead of inherited 16px', () => {
+  expect(productStylesheet).toMatch(/\.review-date input \{[^}]*font-size: var\(--ws-type-control-label\)/)
+  expect(productStylesheet).toMatch(/\.review-date input \{[^}]*min-height: var\(--ws-control-min-height\)/)
+  expect(productStylesheet).toMatch(/\.review-date > label, \.review-date span, \.review-entry-card label > span \{[^}]*font-size: var\(--ws-type-control-label\)/)
 })

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 import threading
 import time
@@ -12,50 +11,37 @@ from typing import BinaryIO
 
 from connection_registry import SshConnectionProfile
 from profile_inspection import SshProfileMetadata
+from remote_command_contract import join_probe_command
 from ssot_connection import find_ssh_executable
 
 
 MAX_METADATA_BYTES = 4096
 METADATA_TIMEOUT_SECONDS = 15.0
-_REMOTE_METADATA_SCRIPT = r"""
-import ast,json,pathlib,sys
-app=pathlib.Path(sys.argv[1]); data=pathlib.Path(sys.argv[2])
-def bounded_json(path):
-    with path.open('rb') as stream: payload=stream.read(1048577)
-    if len(payload)>1048576: raise RuntimeError('metadata too large')
-    value=json.loads(payload.decode('utf-8-sig'))
-    if not isinstance(value,dict): raise RuntimeError('metadata shape')
-    return value
-workspace=bounded_json(data/'workspace.json')
-bounded_json(data/'store-meta.json')
-source=(app/'workstack'/'__init__.py').read_text(encoding='utf-8')
-tree=ast.parse(source)
-constants={}
-for node in tree.body:
-    if isinstance(node,(ast.Assign,ast.AnnAssign)):
-        targets=node.targets if isinstance(node,ast.Assign) else [node.target]
-        for target in targets:
-            if isinstance(target,ast.Name) and target.id in {'__version__','REMOTE_PROTOCOL_VERSION'}:
-                constants[target.id]=ast.literal_eval(node.value)
-print(json.dumps({'workspace_id':workspace.get('id'),'product_version':constants.get('__version__'),'protocol_version':constants.get('REMOTE_PROTOCOL_VERSION')},separators=(',',':')))
-""".strip()
+STABLE_PROBE_CODES = frozenset(
+    {
+        "SSH_AUTH_FAILED",
+        "REMOTE_PYTHON_NOT_FOUND",
+        "REMOTE_PYTHON_TOO_OLD",
+        "REMOTE_APP_MISMATCH",
+        "REMOTE_WORKSPACE_MISMATCH",
+        "REMOTE_LOCK_OWNED",
+        "REMOTE_PROTOCOL_INVALID",
+        "REMOTE_SESSION_TOKEN_INVALID",
+        "REMOTE_PYTHON_REQUIRED",
+    }
+)
 
 
 def build_ssh_profile_metadata_command(
     profile: SshConnectionProfile, ssh_executable: str
 ) -> list[str]:
-    """Build fixed-shape argv; profile paths are quoted only as remote argv values."""
+    """Build fixed-shape argv from the shared probe token contract."""
 
-    remote_argv = (
-        "python3",
-        "-I",
-        "-B",
-        "-c",
-        _REMOTE_METADATA_SCRIPT,
-        profile.remote_app_dir,
-        profile.remote_data_dir,
+    remote_command = join_probe_command(
+        remote_python=profile.remote_python,
+        remote_app_dir=profile.remote_app_dir,
+        remote_data_dir=profile.remote_data_dir,
     )
-    remote_command = " ".join(shlex.quote(value) for value in remote_argv)
     return [
         ssh_executable,
         "-T",
@@ -94,7 +80,7 @@ def run_remote_profile_metadata_check(
             command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             creationflags=creation_flags,
         )
     except OSError as error:
@@ -103,11 +89,39 @@ def run_remote_profile_metadata_check(
         process.kill()
         raise RuntimeError("OpenSSH metadata check did not expose bounded output")
     payload, too_large = _read_process_output(process, process.stdout, timeout)
+    stderr_payload = _read_stderr_bounded(process)
     if too_large:
         raise RuntimeError("SSH metadata response exceeded the safe limit")
     if process.returncode != 0:
-        raise RuntimeError("SSH metadata check failed")
+        raise RuntimeError(_metadata_failure_message(stderr_payload))
     return _parse_metadata(payload)
+
+
+def _read_stderr_bounded(process: subprocess.Popen[bytes]) -> bytes:
+    stream = getattr(process, "stderr", None)
+    if stream is None:
+        return b""
+    try:
+        payload = stream.read(512)
+    except OSError:
+        payload = b""
+    try:
+        stream.close()
+    except OSError:
+        pass
+    return payload
+
+
+def _metadata_failure_message(stderr_payload: bytes) -> str:
+    try:
+        text = stderr_payload.decode("utf-8", errors="replace")
+    except UnicodeError:
+        return "SSH metadata check failed"
+    line = text.strip().splitlines()[0] if text.strip() else ""
+    code = line.split(":", 1)[0].strip()
+    if code in STABLE_PROBE_CODES:
+        return f"SSH metadata check failed: {code}"
+    return "SSH metadata check failed"
 
 
 def _read_process_output(

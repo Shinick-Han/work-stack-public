@@ -22,6 +22,8 @@ _SERVER_INFO_MAX_BYTES = 4096
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _SYNC_STATES = frozenset({"external-change-detected", "in-sync", "invalid"})
 _SYNC_REQUIRED_REASON = "store_sync_required"
+_PLANNING_VIEW = "planning-v1"
+_IDENTITY_FIELDS = ("id", "revision", "uid")
 
 # Frozen sender provenance for agent-written checkpoints. Named here so the
 # request site and its contract test agree on one spelling rather than two
@@ -76,6 +78,8 @@ def _storage_format(value: object) -> str:
         return "v3"
     if value == 4:
         return "v4"
+    if value == 5:
+        return "v5"
     return "unknown"
 
 
@@ -185,7 +189,7 @@ class _RunningServerBackend:
         host, port, _csrf, storage = self._preflight()
         actual_uid = _canonical_workspace_uid(storage["workspace_id"])
         storage_format = _storage_format(storage.get("store_schema_version"))
-        supported = storage_format == "v3"
+        supported = storage_format in {"v3", "v5"}
         in_sync = self._sync_state(host=host, port=port) == "in-sync"
         if not supported:
             capability_reason = "unsupported storage format"
@@ -206,6 +210,71 @@ class _RunningServerBackend:
             "storage_format": storage_format,
         }
 
+    @staticmethod
+    def _identity(task: dict[str, object]) -> tuple[object, ...]:
+        values = tuple(task.get(field) for field in _IDENTITY_FIELDS)
+        if any(value is None for value in values):
+            raise OSError("Task identity is incomplete")
+        return values
+
+    def _planning_material(
+        self, *, host: str, port: int, task_id: str, detail: dict[str, object]
+    ) -> dict[str, object]:
+        """Planning material from the same owner, cross-checked before projecting.
+
+        Two GETs are two moments. The selected Task's id, uid and revision must be
+        identical in both projections, and the check runs BEFORE anything is
+        projected, so an owner that changed the Task between the calls is refused
+        rather than answered from a mixed pair. There is no local fallback.
+        """
+
+        status, payload = self._request(
+            host=host, port=port, method="GET", path="/api/v1/workspace"
+        )
+        workspace = self._data(status, payload, "workspace")
+        context = detail.get("context")
+        objectives = workspace.get("objectives")
+        tasks = workspace.get("tasks")
+        if (
+            type(context) is not list
+            or type(objectives) is not list
+            or type(tasks) is not list
+        ):
+            raise OSError("workspace response is invalid")
+        selected = [
+            item
+            for item in tasks
+            if type(item) is dict and item.get("id") == task_id
+        ]
+        if len(selected) != 1:
+            raise ValueError("selected Task is not uniquely present in both projections")
+        if self._identity(detail["task"]) != self._identity(selected[0]):
+            raise ValueError("selected Task identity differs between projections")
+        return {"context": context, "objectives": objectives, "tasks": tasks}
+
+    def _reconfirm_task(
+        self, *, host: str, port: int, task_id: str, task: dict[str, object]
+    ) -> None:
+        """Re-read the selected Task after the worklog GETs and compare identity.
+
+        This bounds ONE thing: the selected Task did not change across the whole
+        planning read. It is NOT an atomic snapshot of the Objectives, related
+        Tasks or Captures, which are still read at their own moments and are not
+        re-checked here. A changed selected Task refuses; there is no fallback.
+        """
+
+        status, payload = self._request(
+            host=host,
+            port=port,
+            method="GET",
+            path="/api/v1/tasks/{}".format(task_id),
+        )
+        final = self._data(status, payload, "Task").get("task")
+        if type(final) is not dict:
+            raise OSError("Task response is invalid")
+        if self._identity(final) != self._identity(task):
+            raise ValueError("selected Task changed during the planning read")
+
     def context(self, *, request: ContextRequest, today: object) -> dict[str, object]:
         host, port, _csrf, storage = self._preflight()
         status, payload = self._request(
@@ -218,6 +287,11 @@ class _RunningServerBackend:
         task = detail.get("task")
         if type(task) is not dict:
             raise OSError("Task response is invalid")
+        planning: dict[str, object] | None = None
+        if request.view == _PLANNING_VIEW:
+            planning = self._planning_material(
+                host=host, port=port, task_id=request.task_id, detail=detail
+            )
         entries: list[dict[str, object]] = []
         for date in _review_dates(today):
             status, payload = self._request(
@@ -236,12 +310,19 @@ class _RunningServerBackend:
                 raw = dict(entry)
                 raw["date"] = date
                 entries.append(raw)
-        return {
+        if planning is not None:
+            self._reconfirm_task(
+                host=host, port=port, task_id=request.task_id, task=task
+            )
+        result: dict[str, object] = {
             "entries": entries,
             "task": task,
             "transport": "running-server",
             "workspace_uid": storage["workspace_id"],
         }
+        if planning is not None:
+            result["planning"] = planning
+        return result
 
     def checkpoint(self, *, request: CheckpointRequest) -> dict[str, object]:
         host, port, csrf, storage = self._preflight()

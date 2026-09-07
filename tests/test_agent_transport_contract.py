@@ -198,6 +198,52 @@ class RunningServerMetadataContractTest(unittest.TestCase):
                     ],
                 )
 
+    def test_schema_5_status_is_supported_v5_with_the_same_call_count(self) -> None:
+        _server_info(self.info)
+        storage = (
+            200,
+            {"data": {"store_schema_version": 5, "workspace_id": WORKSPACE_UID}},
+        )
+        requester = RecordingRequester(SESSION, storage, SYNC)
+        result = _status(_backend(self.info, requester), self.root)
+        self.assertEqual(result["storage_format"], "v5")
+        self.assertTrue(result["capability_supported"])
+        self.assertTrue(result["ready"])
+        self.assertIsNone(result["capability_reason"])
+        self.assertEqual(
+            [call["path"] for call in requester.calls],
+            ["/api/v1/session", "/api/v1/storage", "/api/v1/sync/status"],
+        )
+
+    def test_v4_and_unknown_schema_remain_unsupported_without_local_fallback(self) -> None:
+        cases = (
+            (4, "v4"),
+            (6, "unknown"),
+            (True, "unknown"),
+            ("5", "unknown"),
+        )
+        for schema, label in cases:
+            with self.subTest(schema=schema, label=label):
+                _server_info(self.info)
+                storage = (
+                    200,
+                    {"data": {"store_schema_version": schema, "workspace_id": WORKSPACE_UID}},
+                )
+                requester = RecordingRequester(SESSION, storage, SYNC)
+                with mock.patch(
+                    "workstack.store.Store.__init__",
+                    side_effect=AssertionError("running status must not construct Store"),
+                ):
+                    result = _status(_backend(self.info, requester), self.root)
+                self.assertEqual(result["storage_format"], label)
+                self.assertFalse(result["capability_supported"])
+                self.assertFalse(result["ready"])
+                self.assertEqual(result["capability_reason"], "unsupported storage format")
+                self.assertEqual(
+                    [call["path"] for call in requester.calls],
+                    ["/api/v1/session", "/api/v1/storage", "/api/v1/sync/status"],
+                )
+
     def test_non_in_sync_status_is_not_ready_and_redacts_sync_details(self) -> None:
         _server_info(self.info)
         requester = RecordingRequester(

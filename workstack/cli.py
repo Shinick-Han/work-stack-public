@@ -7,14 +7,12 @@ import hashlib
 import http.client
 import json
 import os
-import re
 import sys
-import uuid
 from pathlib import Path
 from urllib.parse import quote
 
-from . import agent_runtime
-from . import checkpoint_state_cli, cli_writer
+from . import agent_apply_admission, agent_runtime
+from . import checkpoint_state_cli, cli_capabilities, cli_routing, cli_writer
 from .server import serve
 from .service import DomainError, WorkStack
 from .maintenance import backup_store, initialize_store, relocate_store, restore_store, verify_backup
@@ -39,15 +37,25 @@ from .storage.v4_backup import (
 
 
 PROJECT_DATA = Path(__file__).resolve().parents[1] / "data"
-AGENT_APPLY_LIMIT = 32 * 1024
-AGENT_TASK_FIELDS = frozenset({
-    "title", "detail", "status", "priority", "due", "scheduled",
-    "estimate_minutes", "tags", "objective_ids", "parent_id", "dependencies",
-})
+AGENT_APPLY_LIMIT = agent_apply_admission.AGENT_APPLY_LIMIT
+_APPLY_COMMIT_UNKNOWN = (
+    "agent apply commit is unknown; inspect the Task revision before retrying"
+)
 
 
 def emit(value: object) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
+
+
+def _add_context_arguments(agent_context: argparse.ArgumentParser) -> None:
+    """`agent context` flags. `--view` is opt-in: omitting it keeps core-v1,
+    and an unknown value is a parser refusal (exit 2), never a silent default.
+    """
+
+    agent_context.add_argument("--task", required=True)
+    agent_context.add_argument(
+        "--view", choices=("core-v1", "planning-v1"), default="core-v1"
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -155,7 +163,7 @@ def parser() -> argparse.ArgumentParser:
     agent_apply.add_argument("--intent-id", required=True)
     agent_sub.add_parser("status")
     agent_context = agent_sub.add_parser("context")
-    agent_context.add_argument("--task", required=True)
+    _add_context_arguments(agent_context)
     agent_checkpoint = agent_sub.add_parser("checkpoint")
     agent_checkpoint.add_argument("--intent-id", required=True)
     agent_checkpoint.add_argument("--stdin", action="store_true", required=True)
@@ -341,46 +349,6 @@ def forward_capture(store: Store, raw: bytes, idempotency_key: str | None) -> in
     return 0 if 200 <= status < 300 else 2
 
 
-def _agent_apply_packet(raw: bytes) -> dict[str, object]:
-    if len(raw) > AGENT_APPLY_LIMIT:
-        raise ValueError("agent apply packet exceeds 32 KiB")
-    try:
-        packet = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError("stdin must contain one UTF-8 JSON object") from error
-    if not isinstance(packet, dict) or set(packet) != {
-        "workspace_id", "task_id", "expected_revision", "changes"
-    }:
-        raise ValueError(
-            "agent apply requires only workspace_id, task_id, expected_revision, and changes"
-        )
-    workspace_id = packet["workspace_id"]
-    try:
-        parsed_workspace_id = uuid.UUID(str(workspace_id))
-    except (ValueError, AttributeError) as error:
-        raise ValueError("workspace_id must be a canonical UUID") from error
-    if str(parsed_workspace_id) != workspace_id or parsed_workspace_id.int == 0:
-        raise ValueError("workspace_id must be a canonical non-nil UUID")
-    task_id = packet["task_id"]
-    if not isinstance(task_id, str) or re.fullmatch(r"T-[0-9]{4,}", task_id) is None:
-        raise ValueError("task_id must be a canonical Work Stack Task ID")
-    expected_revision = packet["expected_revision"]
-    if (
-        not isinstance(expected_revision, int)
-        or isinstance(expected_revision, bool)
-        or expected_revision < 0
-    ):
-        raise ValueError("expected_revision must be a non-negative integer")
-    changes = packet["changes"]
-    if (
-        not isinstance(changes, dict)
-        or not changes
-        or not set(changes) <= AGENT_TASK_FIELDS
-    ):
-        raise ValueError("changes must contain only supported mutable Task fields")
-    return packet
-
-
 def _server_coordinates(store: Store) -> tuple[str, int] | None:
     if not store.server_info_path.is_file():
         return None
@@ -441,9 +409,15 @@ def _task_from_detail(payload: dict[str, object]) -> dict[str, object] | None:
 
 
 def _matches_agent_result(
-    task: dict[str, object], expected_revision: int, changes: dict[str, object]
+    task: dict[str, object],
+    expected_revision: int,
+    changes: dict[str, object],
+    task_id: str,
 ) -> bool:
-    return task.get("revision") == expected_revision + 1 and all(
+    revision = task.get("revision")
+    if type(revision) is not int or task.get("id") != task_id:
+        return False
+    return revision == expected_revision + 1 and all(
         task.get(field) == value for field, value in changes.items()
     )
 
@@ -477,7 +451,7 @@ def _forward_agent_apply(
     }
     task_id = str(packet["task_id"])
     expected_revision = int(packet["expected_revision"])
-    changes = dict(packet["changes"])  # validated by _agent_apply_packet
+    changes = dict(packet["changes"])
     request_body = {**changes, "revision": expected_revision}
     path = "/api/v1/tasks/{}".format(quote(task_id, safe=""))
     try:
@@ -485,11 +459,14 @@ def _forward_agent_apply(
             host, port, "PATCH", path, body=request_body, headers=headers
         )
     except (OSError, TimeoutError):
-        # A lost response is commit-unknown. Reread once and accept only an exact
-        # next-revision match; never replay the mutation automatically.
-        verify_status, verified = _request_json(host, port, "GET", path)
+        try:
+            verify_status, verified = _request_json(host, port, "GET", path)
+        except (OSError, TimeoutError):
+            raise OSError(_APPLY_COMMIT_UNKNOWN) from None
         task = _task_from_detail(verified) if verify_status == 200 else None
-        if task is not None and _matches_agent_result(task, expected_revision, changes):
+        if task is not None and _matches_agent_result(
+            task, expected_revision, changes, task_id
+        ):
             emit({
                 "data": task,
                 "meta": {
@@ -499,9 +476,7 @@ def _forward_agent_apply(
                 },
             })
             return 0
-        raise OSError(
-            "agent apply commit is unknown; inspect the Task revision before retrying"
-        )
+        raise OSError(_APPLY_COMMIT_UNKNOWN)
     if 200 <= status < 300:
         task = _task_from_detail(result)
         if task is None:
@@ -519,21 +494,27 @@ def _forward_agent_apply(
     return 2
 
 
-def apply_agent_update(store: Store, raw: bytes, intent_id: str) -> int:
-    if re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", intent_id) is None:
-        raise ValueError("intent_id must be 8-128 safe identifier characters")
-    packet = _agent_apply_packet(raw)
-    coordinates = _server_coordinates(store)
+def apply_agent_update(
+    store: Store,
+    packet: dict[str, object],
+    intent_id: str,
+    *,
+    route: str | None = None,
+) -> int:
+    agent_apply_admission.require_intent_id(intent_id)
+    coordinates = None if route == "exclusive-local-store" else _server_coordinates(store)
+    if route == "running-server" and coordinates is None:
+        raise OSError("Work Stack server is not running for this data directory")
     if coordinates is not None:
         return _forward_agent_apply(store, packet, intent_id, coordinates)
-
-    stack = WorkStack(store)
-    if store.load("workspace.json")["id"] != packet["workspace_id"]:
-        raise ValueError("agent apply workspace_id does not match this Store")
-    task = stack.patch_task(
-        str(packet["task_id"]),
-        {**dict(packet["changes"]), "revision": packet["expected_revision"]},
-    )
+    agent_apply_admission.require_held_local_apply(store, packet["workspace_id"])
+    with store.transaction():
+        agent_apply_admission.require_held_local_apply(store, packet["workspace_id"])
+        stack = WorkStack(store)
+        task = stack.patch_task(
+            str(packet["task_id"]),
+            {**dict(packet["changes"]), "revision": packet["expected_revision"]},
+        )
     emit({
         "data": task,
         "meta": {
@@ -771,19 +752,6 @@ def _run_storage(arguments: argparse.Namespace) -> int:
     return 0 if report.valid else 2
 
 
-# The only backlog actions this packet forwards to a running owner.
-_STATUS_ACTIONS = ("start", "done", "drop", "reopen")
-
-
-def _planning_status(action: str) -> str:
-    return {
-        "start": "started",
-        "done": "done",
-        "drop": "dropped",
-        "reopen": "open",
-    }[action]
-
-
 def _run_backlog(arguments: argparse.Namespace, stack: WorkStack) -> None:
     if arguments.action == "add":
         result = stack.add_task(
@@ -813,10 +781,12 @@ def _run_backlog(arguments: argparse.Namespace, stack: WorkStack) -> None:
             result = stack.set_subtask_status(
                 arguments.task,
                 arguments.subtask_or_title,
-                _planning_status(arguments.operation),
+                cli_routing.planning_status(arguments.operation),
             )
     else:
-        result = stack.set_task_status(arguments.id, _planning_status(arguments.action))
+        result = stack.set_task_status(
+            arguments.id, cli_routing.planning_status(arguments.action)
+        )
     emit(result)
 
 
@@ -943,248 +913,104 @@ STACK_COMMANDS = {
 }
 
 
-def _is_subtask_status_write(arguments: argparse.Namespace) -> bool:
-    """Exactly the four subtask status operations, and nothing else.
-
-    Named so the owner selector reads as one condition per route; the routing
-    order, the bodies and the behaviour are unchanged.
-    """
-
-    return (
-        arguments.domain == "backlog"
-        and arguments.action == "subtask"
-        and arguments.operation in _STATUS_ACTIONS
-    )
+def _store_from_args(arguments: argparse.Namespace) -> Store:
+    return Store(arguments.data_dir) if arguments.data_dir else Store()
 
 
-def _checkin_owner_writer(arguments: argparse.Namespace):
-    def forward(store: Store, owner_state: str) -> dict[str, object]:
-        return cli_writer.forward_checkin(
-            store, owner_state, arguments.time, arguments.date,
-            coordinates_reader=_server_coordinates, request_json=_request_json,
-        )
-
-    return forward
-
-
-def _worklog_entry_owner_writer(arguments: argparse.Namespace):
-    def forward(store: Store, owner_state: str) -> dict[str, object]:
-        return cli_writer.forward_worklog_entry(
-            store, owner_state, arguments.task, arguments.date, arguments.done,
-            arguments.next_items, arguments.blocker,
-            coordinates_reader=_server_coordinates, request_json=_request_json,
-        )
-
-    return forward
-
-
-def _worklog_owner_writer(arguments: argparse.Namespace):
-    if arguments.domain != "worklog":
-        return None
-    factory = {"checkin": _checkin_owner_writer, "add": _worklog_entry_owner_writer}.get(
-        getattr(arguments, "action", None)
-    )
-    return factory(arguments) if factory is not None else None
-
-
-def _backlog_add_owner_writer(arguments: argparse.Namespace):
-    def forward(store: Store, owner_state: str) -> dict[str, object]:
-        return cli_writer.forward_backlog_add(
-            store, owner_state, arguments.title, arguments.detail, arguments.priority,
-            arguments.due, arguments.tag, arguments.objective, arguments.parent,
-            arguments.depends_on,
-            coordinates_reader=_server_coordinates, request_json=_request_json,
-        )
-
-    return forward
-
-
-def _okr_link_owner_writer(arguments: argparse.Namespace):
-    def forward(store: Store, owner_state: str) -> dict[str, object]:
-        return cli_writer.forward_okr_link(
-            store, owner_state, arguments.objective, arguments.task,
-            coordinates_reader=_server_coordinates, request_json=_request_json,
-        )
-
-    return forward
-
-
-def _okr_progress_owner_writer(arguments: argparse.Namespace):
-    def forward(store: Store, owner_state: str) -> dict[str, object]:
-        return cli_writer.forward_okr_progress(
-            store, owner_state, arguments.objective, arguments.key_result, arguments.value,
-            coordinates_reader=_server_coordinates, request_json=_request_json,
-        )
-
-    return forward
-
-
-def _legacy_owner_writer(arguments: argparse.Namespace):
-    worklog_writer = _worklog_owner_writer(arguments)
-    if worklog_writer is not None:
-        return worklog_writer
-    factory = {
-        ("backlog", "add"): _backlog_add_owner_writer,
-        ("okr", "link"): _okr_link_owner_writer,
-        ("okr", "progress"): _okr_progress_owner_writer,
-    }.get(
-        (arguments.domain, getattr(arguments, "action", None))
-    )
-    return factory(arguments) if factory is not None else None
+def _execute_stack(arguments: argparse.Namespace, store: Store) -> int:
+    stack = WorkStack(store, initialize=arguments.domain != "snapshot")
+    STACK_COMMANDS[arguments.domain](arguments, stack)
+    return 0
 
 
 def _owner_forwarded_write(arguments: argparse.Namespace):
-    """Return the owner-route writer for this invocation, or None.
+    return cli_routing.owner_writer(
+        arguments,
+        coordinates_reader=_server_coordinates,
+        request_json=_request_json,
+    )
 
-    Only the explicit branches below forward; other commands retain their
-    existing local dispatch.
-    """
 
-    legacy_writer = _legacy_owner_writer(arguments)
-    if legacy_writer is not None:
-        return legacy_writer
-    if arguments.domain == "note":
-        def forward(store: Store, owner_state: str) -> dict[str, object]:
-            return cli_writer.forward_note(
-                store,
-                owner_state,
-                arguments.text,
-                arguments.link,
-                coordinates_reader=_server_coordinates,
-                request_json=_request_json,
-            )
+def _dispatch_path_tool(arguments: argparse.Namespace) -> int:
+    if arguments.domain == "storage":
+        return _run_storage(arguments)
+    _run_maintenance(arguments, _store_from_args(arguments))
+    return 0
 
-        return forward
-    if arguments.domain == "okr" and arguments.action == "add-objective":
-        def forward(store: Store, owner_state: str) -> dict[str, object]:
-            return cli_writer.forward_objective(
-                store,
-                owner_state,
-                arguments.text,
-                arguments.quarter,
-                coordinates_reader=_server_coordinates,
-                request_json=_request_json,
-            )
 
-        return forward
-    if arguments.domain == "backlog" and arguments.action == "note":
-        def forward(store: Store, owner_state: str) -> dict[str, object]:
-            return cli_writer.forward_task_note(
-                store,
-                owner_state,
-                arguments.id,
-                arguments.text,
-                coordinates_reader=_server_coordinates,
-                request_json=_request_json,
-            )
+def _dispatch_agent_envelope(arguments: argparse.Namespace) -> int:
+    if arguments.action == "checkpoint":
+        arguments.checkpoint_raw = sys.stdin.buffer.read(AGENT_APPLY_LIMIT + 1)
+    return agent_runtime.run_agent_command(
+        args=arguments,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        dependencies=agent_runtime._default_runtime_dependencies(),
+    )
 
-        return forward
-    if arguments.domain == "backlog" and arguments.action in _STATUS_ACTIONS:
-        def forward(store: Store, owner_state: str) -> dict[str, object]:
-            return cli_writer.forward_task_status(
-                store,
-                owner_state,
-                arguments.id,
-                _planning_status(arguments.action),
-                coordinates_reader=_server_coordinates,
-                request_json=_request_json,
-            )
 
-        return forward
-    if (
-        arguments.domain == "backlog"
-        and arguments.action == "subtask"
-        and arguments.operation == "add"
-    ):
-        def forward(store: Store, owner_state: str) -> dict[str, object]:
-            return cli_writer.forward_subtask(
-                store,
-                owner_state,
-                arguments.task,
-                arguments.subtask_or_title,
-                arguments.priority,
-                coordinates_reader=_server_coordinates,
-                request_json=_request_json,
-            )
+def _dispatch_process_owner(arguments: argparse.Namespace) -> int:
+    store = _store_from_args(arguments)
+    STACK_COMMANDS["graph"](arguments, WorkStack(store, initialize=True))
+    return 0
 
-        return forward
-    if _is_subtask_status_write(arguments):
-        def forward(store: Store, owner_state: str) -> dict[str, object]:
-            return cli_writer.forward_subtask_status(
-                store,
-                owner_state,
-                arguments.task,
-                arguments.subtask_or_title,
-                _planning_status(arguments.operation),
-                coordinates_reader=_server_coordinates,
-                request_json=_request_json,
-            )
 
-        return forward
-    if arguments.domain == "okr" and arguments.action == "add-key-result":
-        def forward(store: Store, owner_state: str) -> dict[str, object]:
-            return cli_writer.forward_key_result(
-                store,
-                owner_state,
-                arguments.objective,
-                arguments.text,
-                arguments.target,
-                coordinates_reader=_server_coordinates,
-                request_json=_request_json,
-            )
+def _dispatch_owner_required(arguments: argparse.Namespace) -> int:
+    store = _store_from_args(arguments)
+    if arguments.domain == "worklog":
+        return forward_checkpoint_state(
+            store,
+            sys.stdin.buffer.read(checkpoint_state_cli.STDIN_LIMIT + 1),
+            arguments.checkpoint,
+            arguments.idempotency_key,
+        )
+    return forward_capture(
+        store,
+        sys.stdin.buffer.read(64 * 1024 + 1),
+        arguments.idempotency_key,
+    )
 
-        return forward
-    return None
+
+def _dispatch_parsed(
+    arguments: argparse.Namespace, capability: cli_capabilities.CliCapability
+) -> int:
+    family = cli_capabilities.command_family(capability)
+    if family == cli_capabilities.FAMILY_PATH_TOOL:
+        return _dispatch_path_tool(arguments)
+    if family == cli_capabilities.FAMILY_AGENT_ENVELOPE:
+        return _dispatch_agent_envelope(arguments)
+    if family == cli_capabilities.FAMILY_PROCESS_OWNER:
+        return _dispatch_process_owner(arguments)
+    if family == cli_capabilities.FAMILY_OWNER_REQUIRED:
+        return _dispatch_owner_required(arguments)
+    if family == cli_capabilities.FAMILY_AGENT_APPLY:
+        return agent_apply_admission.dispatch_admitted_apply(
+            arguments,
+            sys.stdin.buffer.read(AGENT_APPLY_LIMIT + 1),
+            arguments.intent_id,
+            apply=apply_agent_update,
+        )
+    if family == cli_capabilities.FAMILY_ADMITTED:
+        return cli_routing.dispatch_ordinary(
+            arguments,
+            capability,
+            run_local=_execute_stack,
+            owner_writer_for=_owner_forwarded_write,
+            emit=emit,
+        )
+    raise OSError("unsupported Work Stack command")
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
-    if arguments.domain == "storage":
-        return _run_storage(arguments)
-    if arguments.domain == "agent" and arguments.action in {"status", "context", "checkpoint"}:
-        if arguments.action == "checkpoint":
-            arguments.checkpoint_raw = sys.stdin.buffer.read(AGENT_APPLY_LIMIT + 1)
-        return agent_runtime.run_agent_command(
-            args=arguments,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            dependencies=agent_runtime._default_runtime_dependencies(),
-        )
-    store = Store(arguments.data_dir) if arguments.data_dir else Store()
     try:
-        if arguments.domain == "worklog" and arguments.action == "checkpoint-state":
-            return forward_checkpoint_state(
-                store, sys.stdin.buffer.read(checkpoint_state_cli.STDIN_LIMIT + 1),
-                arguments.checkpoint, arguments.idempotency_key,
-            )
-        if arguments.domain == "capture":
-            return forward_capture(store, sys.stdin.buffer.read(64 * 1024 + 1), arguments.idempotency_key)
-        if arguments.domain == "agent":
-            return apply_agent_update(
-                store,
-                sys.stdin.buffer.read(AGENT_APPLY_LIMIT + 1),
-                arguments.intent_id,
-            )
-        if arguments.domain == "maintenance":
-            _run_maintenance(arguments, store)
-            return 0
-        # Owner metadata selects the running-owner route before WorkStack
-        # initialization would take the exclusive local Store lease.
-        # Only a genuinely missing entry keeps the exclusive-local path:
-        # an entry that exists but is not a readable regular file, or one
-        # that disappears after being observed, refuses inside the forwarder
-        # instead of falling through to a local write. Every domain and action
-        # not named in _OWNER_FORWARDED_WRITES is untouched, including the rest
-        # of okr and every backlog action.
-        forward = _owner_forwarded_write(arguments)
-        if forward is not None:
-            owner_state = cli_writer.owner_metadata_state(store)
-            if owner_state != cli_writer.OWNER_ABSENT:
-                emit(forward(store, owner_state))
-                return 0
-        stack = WorkStack(store, initialize=arguments.domain != "snapshot")
-        STACK_COMMANDS[arguments.domain](arguments, stack)
-        return 0
+        capability = cli_capabilities.require_capability(
+            cli_capabilities.command_key_from_parsed(arguments)
+        )
+        return _dispatch_parsed(arguments, capability)
+    except cli_capabilities.CapabilityRegistryError as error:
+        print("error: {}".format(error), file=sys.stderr)
+        return 2
     except DomainError as error:
         print("error: {}: {}".format(error.code, error), file=sys.stderr)
         return 2

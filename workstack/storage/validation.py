@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..store import DEFAULTS, Store
+from ..store import Store
+from ..store_rosters import V3_LEGACY_MARKER_NAMES, V3_SORTED_DOCUMENT_NAMES
 from .canonical import CanonicalJsonError, canonical_json_bytes, canonical_sha256
 from .contracts import StorageContractError, validate_instance
 
@@ -117,8 +118,7 @@ def _symlink_issues(root: Path) -> list[StorageValidationIssue]:
 
 def _detect_format(root: Path) -> tuple[int | None, list[StorageValidationIssue]]:
     has_v4 = (root / "store.json").exists()
-    legacy_markers = set(DEFAULTS) - {"workspace.json"}
-    has_v3 = any((root / name).exists() for name in legacy_markers)
+    has_v3 = any((root / name).exists() for name in V3_LEGACY_MARKER_NAMES)
     if has_v4 and has_v3:
         return None, [StorageValidationIssue("AMBIGUOUS_FORMAT")]
     if has_v4:
@@ -131,7 +131,7 @@ def _detect_format(root: Path) -> tuple[int | None, list[StorageValidationIssue]
 def _v3_source_digests(root: Path) -> dict[str, str]:
     return {
         name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-        for name in sorted(DEFAULTS)
+        for name in V3_SORTED_DOCUMENT_NAMES
         if (root / name).exists()
     }
 

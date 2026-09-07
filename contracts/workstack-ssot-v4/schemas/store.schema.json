@@ -10,6 +10,11 @@
     "schema_version": { "const": 4 },
     "schema_set": { "const": "workstack.ssot.v4" },
     "workspace_uid": { "$ref": "common.schema.json#/$defs/uuid" },
-    "created_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+    "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "task_display_id_high_water": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
   }
 }

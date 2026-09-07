@@ -1,18 +1,24 @@
 """Source, AST and recording controls for the same-process desktop host.
 
-Nothing here compiles, launches or installs anything. The C# host is inspected as
-source only. The PowerShell contracts are checked through the PowerShell parser's
-own AST, and the ownership rules are exercised by executing the *real* pure helper
-functions extracted from the owned scripts by extent offsets — never a behavioural
-copy maintained in this file, and never a script's top level.
+The C# host is inspected as source only. The PowerShell contracts are checked
+through the PowerShell parser's own AST, and the ownership rules are exercised
+by executing the *real* pure helper functions extracted from the owned scripts
+by extent offsets — never a behavioural copy maintained in this file, and never
+a script's top level.
+
+Bounded compiler-process smoke (success, nonzero, short injected timeout) runs
+disposable fixture commands through the owned wait helper on Windows PowerShell
+5.1 and pwsh. It does not build the installer or launch WorkStack.exe.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +27,11 @@ ROOT = Path(__file__).resolve().parents[1]
 WINDOWS = ROOT / "scripts" / "windows"
 HOST_SOURCE = ROOT / "desktop" / "python-webview-shell" / "WorkStackHost.cs"
 PWSH = shutil.which("pwsh") or shutil.which("powershell")
+WINDOWS_POWERSHELL = Path(
+    os.environ.get("SystemRoot", r"C:\Windows")
+) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+PINNED_CSC = Path(r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe")
+OWNED_WAIT_HELPER = WINDOWS / "Wait-WorkStackOwnedProcess.ps1"
 
 FIXTURE_ROOT = Path(
     os.environ.get("WORKSTACK_TEST_FIXTURE_ROOT") or (Path(tempfile.gettempdir()) / "workstack-host-contract")
@@ -48,25 +59,204 @@ def _fixture_environment() -> dict:
     return environment
 
 
-def _run_pwsh(body: str, arguments: list) -> str:
+# pwsh 7.6.5 on Windows (resolved: WindowsApps Microsoft.PowerShell 7.6.5 x64):
+# redirected Write-Output follows inherited [Console]::OutputEncoding, not
+# $OutputEncoding. python -B inherits the ANSI code page (cp949 here);
+# python -X utf8 inherits UTF-8. Forcing UTF-8 no BOM on both encodings makes
+# stdout/stderr independent of the machine ANSI page and of Python UTF-8 mode.
+_PWSH_UTF8_STDIO = (
+    "$null = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+    "$OutputEncoding = [Console]::OutputEncoding\n"
+)
+
+
+def _with_pwsh_utf8_stdio(body: str) -> str:
+    text = body.lstrip("\ufeff")
+    if not text.lstrip().lower().startswith("param"):
+        return _PWSH_UTF8_STDIO + text
+    start = text.lower().find("param")
+    paren = text.find("(", start)
+    if paren < 0:
+        return _PWSH_UTF8_STDIO + text
+    depth = 0
+    in_single = False
+    in_double = False
+    for index, char in enumerate(text[paren:], start=paren):
+        if in_single:
+            in_single = char != "'"
+            continue
+        if in_double:
+            in_double = char != '"'
+            continue
+        if char == "'":
+            in_single = True
+        elif char == '"':
+            in_double = True
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[: index + 1] + "\n" + _PWSH_UTF8_STDIO + text[index + 1 :]
+    return _PWSH_UTF8_STDIO + text
+
+
+def _decode_pwsh_utf8(raw: bytes | None) -> str:
+    data = b"" if raw is None else raw
+    if not data:
+        return ""
+    # Universal newlines match Path.read_text() and the former text=True helper.
+    # Code points stay exact; only CR/LF pairs are normalized.
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _diagnostic_pwsh_text(raw: bytes | None) -> str:
+    data = b"" if raw is None else raw
+    if not data:
+        return ""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
+def _invoke_pwsh(
+    body: str,
+    *,
+    arguments: list | None = None,
+    environment: dict | None = None,
+    name: str = "probe.ps1",
+    timeout: int = 180,
+) -> tuple[int, str, str]:
     FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
+    argv = list(arguments or [])
     with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
-        script = Path(directory) / "probe.ps1"
-        script.write_text(body, encoding="utf-8")
+        script = Path(directory) / name
+        script.write_text(_with_pwsh_utf8_stdio(body), encoding="utf-8")
         completed = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-File", str(script), *arguments],
+            [PWSH, "-NoProfile", "-NonInteractive", "-File", str(script), *argv],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=180,
+            timeout=timeout,
             cwd=directory,
-            env=_fixture_environment(),
+            env=environment or _fixture_environment(),
         )
-    if completed.returncode != 0:
-        raise AssertionError("pwsh failed: " + (completed.stdout or "") + " | " + (completed.stderr or ""))
-    return completed.stdout
+    try:
+        stdout = _decode_pwsh_utf8(completed.stdout)
+        stderr = _decode_pwsh_utf8(completed.stderr)
+    except UnicodeDecodeError:
+        raise AssertionError(
+            "pwsh output was not UTF-8 after stdio pinning: stdout="
+            + _diagnostic_pwsh_text(completed.stdout)
+            + " | stderr="
+            + _diagnostic_pwsh_text(completed.stderr)
+        ) from None
+    return completed.returncode, stdout, stderr
+
+
+def _run_pwsh(body: str, arguments: list) -> str:
+    code, stdout, stderr = _invoke_pwsh(body, arguments=arguments)
+    if code != 0:
+        raise AssertionError("pwsh failed: " + stdout + " | " + stderr)
+    return stdout
+
+
+def _windows_shell_hosts() -> list[tuple[str, str]]:
+    hosts: list[tuple[str, str]] = []
+    if WINDOWS_POWERSHELL.is_file():
+        hosts.append(("windows-powershell-5.1", str(WINDOWS_POWERSHELL)))
+    pwsh = shutil.which("pwsh")
+    if pwsh:
+        hosts.append(("pwsh", pwsh))
+    return hosts
+
+
+def _invoke_named_shell(
+    executable: str,
+    body: str,
+    *,
+    environment: dict | None = None,
+    name: str = "probe.ps1",
+    timeout: int = 180,
+) -> tuple[int, str, str]:
+    FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
+        script = Path(directory) / name
+        script.write_text(body.lstrip("\ufeff"), encoding="utf-8-sig")
+        completed = subprocess.run(
+            [
+                executable,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            cwd=directory,
+            env=environment or _fixture_environment(),
+        )
+    stdout = completed.stdout.decode("utf-8", errors="replace").replace("\r\n", "\n")
+    stderr = completed.stderr.decode("utf-8", errors="replace").replace("\r\n", "\n")
+    return completed.returncode, stdout, stderr
+
+
+_OWNED_PROCESS_SMOKE = r"""
+$ErrorActionPreference = 'Stop'
+. $env:WS_HELPER
+$argumentList = @()
+if ($env:WS_ARGS) {
+    $parsed = ConvertFrom-Json -InputObject $env:WS_ARGS
+    if ($null -ne $parsed) { $argumentList = @($parsed) }
+}
+$start = @{
+    FilePath = $env:WS_FILE
+    PassThru = $true
+    WindowStyle = 'Hidden'
+}
+if ($argumentList.Count -gt 0) { $start.ArgumentList = $argumentList }
+$owned = Start-Process @start
+if (-not $owned) { throw 'Start-Process did not return an owned process instance.' }
+$result = Wait-WorkStackOwnedProcess -Process $owned -TimeoutMilliseconds ([int]$env:WS_TIMEOUT_MS) -KillConfirmMilliseconds ([int]$env:WS_CONFIRM_MS)
+$hostPresent = $false
+if ($env:WS_HOST) {
+    $hostPresent = [bool](Test-Path -LiteralPath $env:WS_HOST -PathType Leaf)
+}
+$exitPresent = '0'
+$exitValue = ''
+if ($null -ne $result.ExitCode) {
+    $exitPresent = '1'
+    $exitValue = [string][int]$result.ExitCode
+}
+@(
+    ('state=' + [string]$result.State)
+    ('exitPresent=' + $exitPresent)
+    ('exitCode=' + $exitValue)
+    ('timedOut=' + $(if ($result.TimedOut) { 'true' } else { 'false' }))
+    ('confirmed=' + $(if ($result.Confirmed) { 'true' } else { 'false' }))
+    ('hostFile=' + $(if ($hostPresent) { 'true' } else { 'false' }))
+) | Set-Content -LiteralPath $env:WS_RESULT -Encoding ASCII
+"""
+
+
+def _parse_owned_process_result(path: Path) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for line in path.read_text(encoding="ascii").splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            parsed[key] = value
+    return parsed
+
+
+def _windows_command_line_argument(value: str) -> str:
+    if value and re.search(r'[\s"]', value) is None:
+        return value
+    escaped = re.sub(r'(\\*)"', lambda match: match.group(1) + match.group(1) + '\\"', value)
+    escaped = re.sub(r"(\\+)$", lambda match: match.group(1) + match.group(1), escaped)
+    return '"' + escaped + '"'
 
 
 _EXTRACT = """param([string]$Path, [string]$Names)
@@ -262,7 +452,7 @@ NEW_OBJECT_FAKE = (
     "return $shell"
 )
 OWNED_COMPILER_FAKE = r"""
-$ownedCompiler = [pscustomobject]@{ ExitCode = [int]$env:WS_EXIT }
+$ownedCompiler = [pscustomobject]@{ ExitCode = $(if ($env:WS_EXIT_NULL -eq '1') { $null } else { [int]$env:WS_EXIT }); Handle = 1 }
 $ownedCompiler | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {
     param($milliseconds)
     $script:calls += ('wait:' + $milliseconds)
@@ -918,33 +1108,19 @@ class DesktopOwnershipRecordingTest(unittest.TestCase):
         )
         selected = extents + chr(10) + tail
         body = guarded_probe(selected, required_extents=self.STOP_HELPERS)
-        FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
-            script = Path(directory) / "probe.ps1"
-            script.write_text(body, encoding="utf-8")
-            environment = _fixture_environment()
-            environment["WS_SELECTED"] = selected
-            environment.update(
-                WS_COMMAND_LINE=command_line,
-                WS_IMAGE=image,
-                WS_ENTRY=self.ENTRY,
-                WS_ROOT=self.INSTALL,
-                WS_SCRIPT_REQUIRED="true" if script_required else "false",
-            )
-            completed = subprocess.run(
-                [PWSH, "-NoProfile", "-NonInteractive", "-File", str(script)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=180,
-                cwd=directory,
-                env=environment,
-            )
-        if completed.returncode != 0:
-            raise AssertionError("pwsh failed: " + (completed.stdout or "") + " | " + (completed.stderr or ""))
-        return completed.stdout.strip() == "true"
+        environment = _fixture_environment()
+        environment["WS_SELECTED"] = selected
+        environment.update(
+            WS_COMMAND_LINE=command_line,
+            WS_IMAGE=image,
+            WS_ENTRY=self.ENTRY,
+            WS_ROOT=self.INSTALL,
+            WS_SCRIPT_REQUIRED="true" if script_required else "false",
+        )
+        code, stdout, stderr = _invoke_pwsh(body, environment=environment)
+        if code != 0:
+            raise AssertionError("pwsh failed: " + stdout + " | " + stderr)
+        return stdout.strip() == "true"
 
     def test_genuine_host_and_legacy_invocations_are_owned(self) -> None:
         host_line = '"{0}" "{1}" --install-root "{2}"'.format(self.HOST, self.ENTRY, self.INSTALL)
@@ -993,31 +1169,17 @@ class DesktopOwnershipRecordingTest(unittest.TestCase):
         )
         selected = extents + chr(10) + tail
         body = guarded_probe(selected, required_extents=self.STOP_HELPERS)
-        FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
-            script = Path(directory) / "probe.ps1"
-            script.write_text(body, encoding="utf-8")
-            environment = _fixture_environment()
-            environment["WS_SELECTED"] = selected
-            environment.update(
-                WS_COMMAND_LINE='"{0}\WorkStack.exe" "{1}"'.format(install, entry),
-                WS_IMAGE=install + r"\WorkStack.exe",
-                WS_ENTRY=entry,
-                WS_ROOT=install,
-            )
-            completed = subprocess.run(
-                [PWSH, "-NoProfile", "-NonInteractive", "-File", str(script)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=180,
-                cwd=directory,
-                env=environment,
-            )
-        self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual("true", completed.stdout.strip())
+        environment = _fixture_environment()
+        environment["WS_SELECTED"] = selected
+        environment.update(
+            WS_COMMAND_LINE='"{0}\WorkStack.exe" "{1}"'.format(install, entry),
+            WS_IMAGE=install + r"\WorkStack.exe",
+            WS_ENTRY=entry,
+            WS_ROOT=install,
+        )
+        code, stdout, stderr = _invoke_pwsh(body, environment=environment)
+        self.assertEqual(0, code, stderr)
+        self.assertEqual("true", stdout.strip())
 
     def test_a_missing_required_function_fails_the_harness_closed(self) -> None:
         with self.assertRaises(AssertionError):
@@ -1084,14 +1246,15 @@ $body=@($owner.Body.Statements)
 $start=@($body | Where-Object {$_.Extent.Text -like '$compile = Start-Process *'})
 $initialStatement=@($body | Where-Object {$_.Extent.StartOffset -le $initial[0].Extent.StartOffset -and $_.Extent.EndOffset -ge $initial[0].Extent.EndOffset})
 $timeoutStatement=@($body | Where-Object {$_.Extent.StartOffset -le $confirm[0].Extent.StartOffset -and $_.Extent.EndOffset -ge $confirm[0].Extent.EndOffset})
+$unknownStatement=@($body | Where-Object {$_.Extent.Text -like 'if ($null -eq $compile.ExitCode)*'})
 $exitStatement=@($body | Where-Object {$_.Extent.Text -like 'if ($compile.ExitCode -ne 0)*'})
-if($start.Count -ne 1 -or $initialStatement.Count -ne 1 -or $timeoutStatement.Count -ne 1 -or $exitStatement.Count -ne 1){throw 'REJECT: finally is not owned by the original compiler lifetime'}
+if($start.Count -ne 1 -or $initialStatement.Count -ne 1 -or $timeoutStatement.Count -ne 1 -or $unknownStatement.Count -ne 1 -or $exitStatement.Count -ne 1){throw 'REJECT: finally is not owned by the original compiler lifetime'}
 foreach($variable in $owner.FindAll({param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and ($n.VariablePath.UserPath -split ':')[-1] -ieq 'compile'},$true)){
  if($variable -eq $start[0].Left){continue}
  if($variable.VariablePath.UserPath -cne 'compile' -or $variable.Parent -isnot [System.Management.Automation.Language.MemberExpressionAst] -or $variable.Parent.Expression -ne $variable -or $variable.Parent.Parent -is [System.Management.Automation.Language.AssignmentStatementAst]){throw 'REJECT: original compiler provenance changed'}
 }
-if($start[0].Extent.StartOffset -ge $initialStatement[0].Extent.StartOffset -or $initialStatement[0].Extent.EndOffset -gt $timeoutStatement[0].Extent.StartOffset -or $timeoutStatement[0].Extent.EndOffset -gt $exitStatement[0].Extent.StartOffset){throw 'REJECT: compiler source ordering'}
-$keep=@($initialStatement[0],$timeoutStatement[0],$exitStatement[0])
+if($start[0].Extent.StartOffset -ge $initialStatement[0].Extent.StartOffset -or $initialStatement[0].Extent.EndOffset -gt $timeoutStatement[0].Extent.StartOffset -or $timeoutStatement[0].Extent.EndOffset -gt $unknownStatement[0].Extent.StartOffset -or $unknownStatement[0].Extent.EndOffset -gt $exitStatement[0].Extent.StartOffset){throw 'REJECT: compiler source ordering'}
+$keep=@($initialStatement[0],$timeoutStatement[0],$unknownStatement[0],$exitStatement[0])
 $source=$owner.Extent.Text
 foreach($statement in ($body | Sort-Object {$_.Extent.StartOffset} -Descending)){
  if($keep -contains $statement){continue}
@@ -1221,26 +1384,12 @@ class PythonIntegerDomainTest(unittest.TestCase):
         body = guarded_probe(selected, required_extents=("Test-WorkStackIntegerValue",))
         for value, expected in [(v, True) for v in self.ACCEPTED] + [(v, False) for v in self.REFUSED]:
             with self.subTest(value=value):
-                FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
-                with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
-                    script = Path(directory) / "probe.ps1"
-                    script.write_text(body, encoding="utf-8")
-                    environment = _fixture_environment()
-                    environment["WS_SELECTED"] = selected
-                    environment["WS_VALUE"] = value
-                    completed = subprocess.run(
-                        [PWSH, "-NoProfile", "-NonInteractive", "-File", str(script)],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        timeout=180,
-                        cwd=directory,
-                        env=environment,
-                    )
-                self.assertEqual(0, completed.returncode, completed.stderr)
-                self.assertEqual(str(expected).lower(), completed.stdout.strip())
+                environment = _fixture_environment()
+                environment["WS_SELECTED"] = selected
+                environment["WS_VALUE"] = value
+                code, stdout, stderr = _invoke_pwsh(body, environment=environment)
+                self.assertEqual(0, code, stderr)
+                self.assertEqual(str(expected).lower(), stdout.strip())
 
     def test_the_host_table_records_its_pinned_derivation(self) -> None:
         source = HOST_SOURCE.read_text(encoding="utf-8")
@@ -1277,6 +1426,21 @@ class DesktopPackagingContractTest(unittest.TestCase):
         self.assertIn("WorkStack.exe", source)
         self.assertIn("WaitForExit(30000)", source)
         self.assertIn("timed out after 30 seconds", source)
+        self.assertIn("$compile.Handle", source)
+        self.assertIn("$null -eq $compile.ExitCode", source)
+        self.assertIn("exit code is unknown", source)
+        self.assertNotRegex(source, r"WaitForExit\(\s*\)")
+        start = source.index("$compile = Start-Process")
+        handle = source.index("$compile.Handle")
+        wait = source.index("$compile.WaitForExit(30000)")
+        unknown = source.index("$null -eq $compile.ExitCode")
+        nonzero = source.index("$compile.ExitCode -ne 0")
+        self.assertLess(start, handle)
+        self.assertLess(handle, wait)
+        self.assertLess(wait, unknown)
+        self.assertLess(unknown, nonzero)
+        self.assertNotRegex(source, r"(?i)Get-Command\s+csc")
+        self.assertEqual(1, source.count("Start-Process -FilePath $compiler"))
         # One version truth, validated numerically before it is emitted.
         self.assertIn("'^(\\d{1,5})\\.(\\d{1,5})\\.(\\d{1,5})$'", source)
         self.assertIn("AssemblyFileVersion", source)
@@ -1325,27 +1489,13 @@ class DesktopPackagingContractTest(unittest.TestCase):
         )
 
         def evaluate(arguments: str) -> str:
-            FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
-            with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
-                script = Path(directory) / "probe.ps1"
-                script.write_text(body, encoding="utf-8")
-                environment = _fixture_environment()
-                environment["WS_SELECTED"] = selected
-                environment["WS_ARGUMENTS"] = arguments
-                completed = subprocess.run(
-                    [PWSH, "-NoProfile", "-NonInteractive", "-File", str(script)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=180,
-                    cwd=directory,
-                    env=environment,
-                )
-            if completed.returncode != 0:
-                raise AssertionError("pwsh failed: " + (completed.stdout or "") + " | " + (completed.stderr or ""))
-            return completed.stdout.strip()
+            environment = _fixture_environment()
+            environment["WS_SELECTED"] = selected
+            environment["WS_ARGUMENTS"] = arguments
+            code, stdout, stderr = _invoke_pwsh(body, environment=environment)
+            if code != 0:
+                raise AssertionError("pwsh failed: " + stdout + " | " + stderr)
+            return stdout.strip()
 
         entry = "C:\\i\\desktop\\python-webview-shell\\workstack_desktop.py"
         good = evaluate('"' + entry + '" --install-root "C:\\i"')
@@ -1396,7 +1546,11 @@ class FinallyBindingAuditTest(unittest.TestCase):
             self.assertEqual(healthy, unbound)
             with self.assertRaises(AssertionError) as refused:
                 extract_statement(mutant, self.NEEDLE, "IfStatementAst", enclosing="Finally")
-        self.assertIn("not inside a real finally block", str(refused.exception))
+        # PowerShell can wrap redirected diagnostics and insert its display gutter.
+        self.assertRegex(
+            str(refused.exception),
+            r"not(?:\s*\r?\n\s*\|\s*)?\s+inside a real finally block",
+        )
 
     def test_the_complete_finally_belongs_to_the_same_original_compiler(self) -> None:
         builder = WINDOWS / "Build-WindowsInstaller.ps1"
@@ -1405,6 +1559,7 @@ class FinallyBindingAuditTest(unittest.TestCase):
         self.assertIn("WaitForExit(30000)", healthy)
         self.assertIn("WaitForExit(5000)", healthy)
         self.assertIn("ExitCode", healthy)
+        self.assertIn("$null -eq $compile.ExitCode", healthy)
         cleanup = extract_statement(builder, self.NEEDLE, "IfStatementAst", enclosing="Finally")
         self.assertIn(cleanup, healthy)
         for suffix in (cleanup, "try {} finally {\n" + cleanup + "\n}"):
@@ -1447,24 +1602,10 @@ class PreflightAuditTest(unittest.TestCase):
         tail = "'the selected source was executed'\n"
         selected = source + chr(10) + tail
         body = guarded_probe(selected, required_extents=required, parse_only=True)
-        FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
-            script = Path(directory) / "audit.ps1"
-            script.write_text(body, encoding="utf-8")
-            environment = _fixture_environment()
-            environment["WS_SELECTED"] = selected
-            completed = subprocess.run(
-                [PWSH, "-NoProfile", "-NonInteractive", "-File", str(script)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=180,
-                cwd=directory,
-                env=environment,
-            )
-        return (completed.stdout or "") + (completed.stderr or "")
+        environment = _fixture_environment()
+        environment["WS_SELECTED"] = selected
+        _code, stdout, stderr = _invoke_pwsh(body, environment=environment, name="audit.ps1")
+        return stdout + stderr
 
     def test_every_hostile_shape_is_refused_before_execution(self) -> None:
         for label, source in self.HOSTILE.items():
@@ -1483,13 +1624,11 @@ class PreflightAuditTest(unittest.TestCase):
     def test_healthy_construction_and_owned_receiver_are_parsed_without_execution(self) -> None:
         selected = "$x=New-Object System.Text.StringBuilder; $y=New-Object -TypeName psobject; $s=New-Object -ComObject WScript.Shell; $compile.WaitForExit(30000); $compile.Kill(); $compile.ExitCode"
         body = guarded_probe(selected, owned_compile=True, parse_only=True)
-        with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
-            script=Path(directory)/'healthy-parse.ps1'
-            script.write_text(body,encoding='utf-8')
-            environment=_fixture_environment();environment['WS_SELECTED']=selected;environment['WS_EXIT']='0'
-            result=subprocess.run([PWSH,'-NoProfile','-NonInteractive','-File',str(script)],cwd=directory,env=environment,capture_output=True,text=True)
-        self.assertEqual(0,result.returncode,result.stderr)
-        self.assertIn('PARSE_ACCEPTED',result.stdout)
+        environment = _fixture_environment()
+        environment.update(WS_SELECTED=selected, WS_EXIT="0")
+        code, stdout, stderr = _invoke_pwsh(body, environment=environment, name="healthy-parse.ps1")
+        self.assertEqual(0, code, stderr)
+        self.assertIn("PARSE_ACCEPTED", stdout)
 
     def test_the_trusted_constructor_fake_itself_rejects_unknown_values(self) -> None:
         # Only our audited fake is called. No real constructor/COM sentinel.
@@ -1506,18 +1645,12 @@ class PreflightAuditTest(unittest.TestCase):
             "if($errors){throw 'WITNESS_SYNTAX_INVALID'}\n"
         )
         body = syntax + guarded_probe(source, owned_compile=True, parse_only=True)
-        with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
-            script = Path(directory) / "owned-parse.ps1"
-            script.write_text(body, encoding="utf-8")
-            environment = _fixture_environment()
-            environment.update(WS_SELECTED=source, WS_EXIT="0")
-            result = subprocess.run(
-                [PWSH, "-NoProfile", "-NonInteractive", "-File", str(script)],
-                cwd=directory, env=environment, capture_output=True, text=True,
-            )
-        output = result.stdout + result.stderr
+        environment = _fixture_environment()
+        environment.update(WS_SELECTED=source, WS_EXIT="0")
+        code, stdout, stderr = _invoke_pwsh(body, environment=environment, name="owned-parse.ps1")
+        output = stdout + stderr
         self.assertNotIn("WITNESS_SYNTAX_INVALID", output)
-        return result.returncode, output
+        return code, output
 
     def test_every_writable_form_protects_providers_and_owned_receivers(self) -> None:
         cases = (
@@ -1621,34 +1754,20 @@ NEWLINE = chr(10)
 def _run_probe(body: str, selected: str, environment_extra: dict, name: str) -> dict:
     """Run one guarded probe and return its JSON summary."""
 
-    FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
-        script = Path(directory) / name
-        script.write_text(body, encoding="utf-8")
-        environment = _fixture_environment()
-        environment["WS_SELECTED"] = selected
-        environment.update(environment_extra)
-        completed = subprocess.run(
-            [PWSH, "-NoProfile", "-NonInteractive", "-File", str(script)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=180,
-            cwd=directory,
-            env=environment,
-        )
-    if completed.returncode != 0:
-        raise AssertionError("pwsh failed: " + (completed.stdout or "") + " | " + (completed.stderr or ""))
-    return json.loads(completed.stdout.strip())
+    environment = _fixture_environment()
+    environment["WS_SELECTED"] = selected
+    environment.update(environment_extra)
+    code, stdout, stderr = _invoke_pwsh(body, environment=environment, name=name)
+    if code != 0:
+        raise AssertionError("pwsh failed: " + stdout + " | " + stderr)
+    return json.loads(stdout.strip())
 
 
 @unittest.skipIf(PWSH is None, "PowerShell is required for AST extraction")
 class CompilerCleanupRecordingTest(unittest.TestCase):
     """All seven lifetime cases reach the REAL cleanup branch taken from the finally."""
 
-    def run_case(self, initial: str, kill: str, confirm: str, exit_code: int) -> dict:
+    def run_case(self, initial: str, kill: str, confirm: str, exit_code: int, *, exit_null: bool = False) -> dict:
         builder = WINDOWS / "Build-WindowsInstaller.ps1"
         lifetime = _run_pwsh(_EXTRACT_COMPILER, [str(builder)])
         fake = (
@@ -1673,10 +1792,18 @@ class CompilerCleanupRecordingTest(unittest.TestCase):
                 "Write-Warning": "param($Message) $script:calls += 'warn'",
             },
         )
+        extra = {
+            "WS_INITIAL": initial,
+            "WS_KILL": kill,
+            "WS_CONFIRM": confirm,
+            "WS_EXIT": str(exit_code),
+        }
+        if exit_null:
+            extra["WS_EXIT_NULL"] = "1"
         return _run_probe(
             body,
             selected,
-            {"WS_INITIAL": initial, "WS_KILL": kill, "WS_CONFIRM": confirm, "WS_EXIT": str(exit_code)},
+            extra,
             "cleanup.ps1",
         )
 
@@ -1717,6 +1844,16 @@ class CompilerCleanupRecordingTest(unittest.TestCase):
                 self.assertLessEqual(calls.count("kill"), 1)
                 self.assertEqual(1, calls.count("wait:30000"))
                 self.assertLessEqual(calls.count("wait:5000"), 1)
+
+    def test_a_missing_exit_code_after_a_finished_wait_preserves_and_never_succeeds(self) -> None:
+        result = self.run_case("true", "ok", "true", 0, exit_null=True)
+        calls = result["calls"].split(",")
+        self.assertEqual("wait:30000", calls[0])
+        self.assertNotIn("kill", calls)
+        self.assertNotIn("remove", calls)
+        self.assertTrue(result["preserved"], result)
+        self.assertIn("exit code is unknown", result["thrown"])
+        self.assertIn("preserved", result["thrown"])
 
 
 @unittest.skipIf(PWSH is None, "PowerShell is required for AST extraction")
@@ -2104,6 +2241,151 @@ class ShortcutDescriptorSaveRecordingTest(unittest.TestCase):
                     self.assertEqual(install.rstrip('\\')+SEP+'WorkStack.exe',entry['TargetPath'])
                     self.assertEqual([expected_entry,'--install-root',install,'--state-root',install+SEP+'state'],entry['Argv'])
                 self.assertEqual(['-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',install.rstrip('\\')+SEP+'scripts'+SEP+'windows'+SEP+'Maintain-WorkStack.ps1','-InstallRoot',install,'-StateRoot',install+SEP+'state'],argv)
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows compiler host smoke")
+class OwnedCompilerProcessSmokeTest(unittest.TestCase):
+    """Bounded process smoke on Windows PowerShell 5.1 and pwsh; no installer build."""
+
+    def test_the_wait_helper_is_functions_only_and_does_not_select_a_compiler(self) -> None:
+        source = OWNED_WAIT_HELPER.read_text(encoding="utf-8")
+        self.assertIn("FUNCTIONS ONLY", source)
+        self.assertIn("TimeoutMilliseconds = 30000", source)
+        self.assertIn("KillConfirmMilliseconds = 5000", source)
+        self.assertNotRegex(source, r"WaitForExit\(\s*\)")
+        self.assertNotIn("csc.exe", source)
+        self.assertNotRegex(source, r"(?m)^\s*Start-Process\b")
+        body = r"""
+$ErrorActionPreference = 'Stop'
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:WS_HELPER, [ref]$null, [ref]$errors)
+if ($errors) { throw 'helper parse failed' }
+$top = @($ast.EndBlock.Statements | ForEach-Object { $_.GetType().Name })
+if ($top.Count -ne 1 -or $top[0] -cne 'FunctionDefinitionAst') {
+    throw ('not functions only: ' + ($top -join ','))
+}
+'functions-only'
+"""
+        environment = _fixture_environment()
+        environment["WS_HELPER"] = str(OWNED_WAIT_HELPER)
+        code, stdout, stderr = _invoke_pwsh(body, environment=environment, name="helper-ast.ps1")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual("functions-only", stdout.strip())
+
+    def _hosts(self) -> list[tuple[str, str]]:
+        hosts = _windows_shell_hosts()
+        names = {name for name, _ in hosts}
+        if "windows-powershell-5.1" not in names or "pwsh" not in names:
+            self.skipTest("both Windows PowerShell 5.1 and pwsh are required")
+        return hosts
+
+    def _run_owned(self, executable: str, environment: dict, *, timeout: int = 60) -> dict[str, str]:
+        code, stdout, stderr = _invoke_named_shell(
+            executable,
+            _OWNED_PROCESS_SMOKE,
+            environment=environment,
+            name="owned-process.ps1",
+            timeout=timeout,
+        )
+        result_path = Path(environment["WS_RESULT"])
+        detail = stdout + " | " + stderr
+        self.assertEqual(0, code, detail)
+        self.assertTrue(result_path.is_file(), detail)
+        return _parse_owned_process_result(result_path)
+
+    def test_disposable_csc_success_and_nonzero_under_both_hosts(self) -> None:
+        if not PINNED_CSC.is_file():
+            self.skipTest("pinned csc.exe is required")
+        hosts = self._hosts()
+        for label, executable in hosts:
+            with self.subTest(host=label, case="success"):
+                FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT), prefix="csc-fixture-") as directory:
+                    root = Path(directory)
+                    source = root / "T.cs"
+                    host = root / "Work Stack Host.exe"
+                    result_path = root / "result.txt"
+                    source.write_text("class T { static void Main() {} }\n", encoding="utf-8")
+                    arguments = " ".join(
+                        [
+                            "/nologo",
+                            "/out:" + _windows_command_line_argument(str(host)),
+                            _windows_command_line_argument(str(source)),
+                        ]
+                    )
+                    environment = _fixture_environment()
+                    environment.update(
+                        WS_HELPER=str(OWNED_WAIT_HELPER),
+                        WS_FILE=str(PINNED_CSC),
+                        WS_ARGS=json.dumps(arguments),
+                        WS_HOST=str(host),
+                        WS_RESULT=str(result_path),
+                        WS_TIMEOUT_MS="30000",
+                        WS_CONFIRM_MS="5000",
+                    )
+                    parsed = self._run_owned(executable, environment)
+                    self.assertEqual("exited", parsed.get("state"), parsed)
+                    self.assertEqual("1", parsed.get("exitPresent"), parsed)
+                    self.assertEqual("0", parsed.get("exitCode"), parsed)
+                    self.assertEqual("true", parsed.get("hostFile"), parsed)
+                    self.assertEqual("false", parsed.get("timedOut"), parsed)
+            with self.subTest(host=label, case="nonzero"):
+                FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT), prefix="csc-fixture-") as directory:
+                    root = Path(directory)
+                    source = root / "bad.cs"
+                    host = root / "Work Stack Host.exe"
+                    result_path = root / "result.txt"
+                    source.write_text("not csharp\n", encoding="utf-8")
+                    arguments = " ".join(
+                        [
+                            "/nologo",
+                            "/out:" + _windows_command_line_argument(str(host)),
+                            _windows_command_line_argument(str(source)),
+                        ]
+                    )
+                    environment = _fixture_environment()
+                    environment.update(
+                        WS_HELPER=str(OWNED_WAIT_HELPER),
+                        WS_FILE=str(PINNED_CSC),
+                        WS_ARGS=json.dumps(arguments),
+                        WS_HOST=str(host),
+                        WS_RESULT=str(result_path),
+                        WS_TIMEOUT_MS="30000",
+                        WS_CONFIRM_MS="5000",
+                    )
+                    parsed = self._run_owned(executable, environment)
+                    self.assertEqual("failed", parsed.get("state"), parsed)
+                    self.assertEqual("1", parsed.get("exitPresent"), parsed)
+                    self.assertNotEqual("0", parsed.get("exitCode"), parsed)
+                    self.assertEqual("false", parsed.get("hostFile"), parsed)
+                    self.assertEqual("false", parsed.get("timedOut"), parsed)
+                    self.assertFalse(host.exists())
+
+    def test_injected_short_timeout_kills_only_the_owned_instance_under_both_hosts(self) -> None:
+        hosts = self._hosts()
+        for label, executable in hosts:
+            with self.subTest(host=label):
+                FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=str(FIXTURE_ROOT)) as directory:
+                    root = Path(directory)
+                    result_path = root / "result.txt"
+                    environment = _fixture_environment()
+                    ping = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "ping.exe"
+                    environment.update(
+                        WS_HELPER=str(OWNED_WAIT_HELPER),
+                        WS_FILE=str(ping),
+                        WS_ARGS=json.dumps(["127.0.0.1", "-n", "30"]),
+                        WS_HOST="",
+                        WS_RESULT=str(result_path),
+                        WS_TIMEOUT_MS="300",
+                        WS_CONFIRM_MS="5000",
+                    )
+                    parsed = self._run_owned(executable, environment, timeout=30)
+                    self.assertEqual("timeout", parsed.get("state"), parsed)
+                    self.assertEqual("true", parsed.get("timedOut"), parsed)
+                    self.assertEqual("true", parsed.get("confirmed"), parsed)
+                    self.assertEqual("0", parsed.get("exitPresent"), parsed)
 
 
 if __name__ == "__main__":

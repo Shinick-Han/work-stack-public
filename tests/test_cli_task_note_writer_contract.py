@@ -440,6 +440,25 @@ class _IsolatedRuntimeCase(unittest.TestCase):
         self.store = Store(self.root)
         self.stack = WorkStack(self.store)
         self.workspace_uid = self.store.load("workspace.json")["id"]
+        self._advertised_owner_lease = None
+
+    def hold_advertised_owner_lock(self) -> None:
+        """A1: leftover server_info without a held lock is exclusive-local."""
+
+        if self._advertised_owner_lease is not None:
+            return
+        lease = self.store.try_acquire_writer_lease()
+        self.assertIsNotNone(
+            lease, "advertising a running owner requires a real writer lock"
+        )
+        self._advertised_owner_lease = lease
+        self.addCleanup(self._release_advertised_owner_lock)
+
+    def _release_advertised_owner_lock(self) -> None:
+        lease = self._advertised_owner_lease
+        self._advertised_owner_lease = None
+        if lease is not None:
+            self.store.release_writer_lease(lease)
 
     def _restore_environment(self) -> None:
         for name, value in self._saved_environment.items():
@@ -682,6 +701,7 @@ class TaskNoteAbsentOwnerParity(_IsolatedRuntimeCase):
         idle = self.start_idle_endpoint()
         path = self.store.server_info_path
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.hold_advertised_owner_lock()
 
         cases = {
             "malformed": b"{not json",
@@ -715,6 +735,7 @@ class TaskNoteAbsentOwnerParity(_IsolatedRuntimeCase):
         task_id = self.seed_task("Directory owner")
         path = self.store.server_info_path
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.hold_advertised_owner_lock()
         path.mkdir()
 
         code, out, err = self.run_cli(task_id, "must not be written")
@@ -864,6 +885,7 @@ class TaskNoteScriptedOwnerContract(_IsolatedRuntimeCase):
         self._owned_threads.append(owner.thread)
         self.addCleanup(owner.thread.join, 10)
         self.addCleanup(owner.close)
+        self.hold_advertised_owner_lock()
         self.write_advertisement(owner.port)
         return owner
 

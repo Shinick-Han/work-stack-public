@@ -7,6 +7,7 @@ import {
   connectionProfileIdSchema,
   connectionRegistrySchema,
   localDataPathSchema,
+  remotePythonExecutableSchema,
   sshHostAliasSchema,
   type ConnectionRegistry,
 } from '../domain/connectionRegistrySchemas'
@@ -58,7 +59,15 @@ export const connectionRegistryHostRequestSchema = z.discriminatedUnion('operati
     operation: z.literal('test-profile'),
     profile: connectionProfileDraftSchema,
     base_registry_digest: connectionRegistryDigestSchema,
-  }).strict(),
+  }).strict().superRefine((request, context) => {
+    if (request.profile.kind === 'ssh' && !remotePythonExecutableSchema.safeParse(request.profile.remote_python).success) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'SSH tests require an explicit Remote Python executable path',
+        path: ['profile', 'remote_python'],
+      })
+    }
+  }),
   z.object({
     ...requestEnvelope,
     operation: z.literal('activate-profile'),
@@ -204,6 +213,9 @@ const registryErrorSchema = z.object({
   error: z.object({
     code: z.string().min(1).max(64).refine((value) => !/[\0-\x1f]/.test(value)),
     message: z.string().min(1).max(256).refine((value) => !/[\0-\x1f]/.test(value)),
+    details: z.object({
+      pid: z.number().int().positive().max(4_294_967_295).optional(),
+    }).strict().optional(),
   }).strict().readonly(),
 }).strict().superRefine((response, context) => {
   if ((response.request_id === null) !== (response.operation === null)) {

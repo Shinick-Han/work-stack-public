@@ -191,6 +191,21 @@ class StatusHandlerContractTests(unittest.TestCase):
         self.assertEqual(outcome.workspace_uid, EXPECTED_UID)
         assert_no_output(self, stdout, stderr)
 
+    def test_ready_v5_exclusive_local_mapping(self) -> None:
+        raw = status_data(
+            running_server_available=False,
+            exclusive_local_available=True,
+            storage_format="v5",
+        )
+        outcome, stdout, stderr = invoke(backend=RecordingBackend(result=raw))
+        self.assertEqual(outcome.data, raw)
+        self.assertEqual(outcome.data["storage_format"], "v5")
+        self.assertEqual(outcome.transport, "exclusive-local")
+        self.assertEqual(outcome.workspace_uid, EXPECTED_UID)
+        rendered = render_outcome(outcome=outcome)
+        self.assertEqual(json.loads(rendered)["data"]["storage_format"], "v5")
+        assert_no_output(self, stdout, stderr)
+
     def test_running_server_wins_when_both_transports_are_available(self) -> None:
         raw = status_data(exclusive_local_available=True)
         outcome, _, _ = invoke(backend=RecordingBackend(result=raw))
@@ -288,7 +303,7 @@ class StatusHandlerContractTests(unittest.TestCase):
             "bad expected uid": {"expected_workspace_uid": OTHER_UID},
             "bad actual uid": {"actual_workspace_uid": "not-a-uuid"},
             "bad contract": {"contract": "another.contract"},
-            "bad storage": {"storage_format": "v5"},
+            "bad storage": {"storage_format": "v6"},
             "bad reason": {"capability_reason": []},
             "bad data availability": {"data_dir_available": 1},
             "bad capability": {"capability_supported": "yes"},

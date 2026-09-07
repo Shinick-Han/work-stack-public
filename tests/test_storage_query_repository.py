@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from workstack.store import Store
 from workstack.service import WorkStack
@@ -58,6 +60,11 @@ class StorageQueryRepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        self.runtime_environment = mock.patch.dict(
+            os.environ,
+            {"WORK_STACK_RUNTIME": str(self.root / "runtime")},
+        )
+        self.runtime_environment.start()
         self.v3_root = self.root / "v3"
         shutil.copytree(FIXTURE, self.v3_root)
         self.v3 = V3WorkspaceRepository(Store(self.v3_root))
@@ -74,6 +81,7 @@ class StorageQueryRepositoryTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.runtime_environment.stop()
         self.temporary.cleanup()
 
     def assert_backend_equivalence(self, repository, projection_root: Path) -> None:
@@ -110,9 +118,16 @@ class StorageQueryRepositoryTests(unittest.TestCase):
         self.assertEqual(v3_query.graph().edges, v4_query.graph().edges)
 
     def test_query_contract_reproduces_released_v3_search_and_graph(self) -> None:
-        """Freeze the full public search item and relationship shapes."""
+        """Freeze the full public search item and relationship shapes.
 
-        stack = WorkStack(Store(self.v3_root))
+        ``WorkStack.initialize`` on this schema-5 build upgrades a v3 directory
+        by adding ``reports.json``. The V3 repository must keep reading the
+        genuine nine-file source, so the released comparison uses a copy.
+        """
+
+        released_root = self.root / "released-v3"
+        shutil.copytree(self.v3_root, released_root)
+        stack = WorkStack(Store(released_root))
         projection_root = self.root / "released-mapping"
         query = WorkspaceQueryRepository(self.v3, projection_root)
         for needle in ("rollback", "T-0001", "outlook"):

@@ -13,19 +13,21 @@ if (!globalThis.ResizeObserver) {
 }
 
 afterEach(() => {
-  cleanup()
+  if (typeof document !== 'undefined') cleanup()
   vi.restoreAllMocks()
-  window.history.replaceState(null, '', '/')
+  if (typeof window !== 'undefined') window.history.replaceState(null, '', '/')
 })
 
-if (!HTMLDialogElement.prototype.showModal) {
-  HTMLDialogElement.prototype.showModal = function showModal() {
-    this.setAttribute('open', '')
+if (typeof HTMLDialogElement !== 'undefined') {
+  if (!HTMLDialogElement.prototype.showModal) {
+    HTMLDialogElement.prototype.showModal = function showModal() {
+      this.setAttribute('open', '')
+    }
   }
-}
 
-if (!HTMLDialogElement.prototype.close) {
-  HTMLDialogElement.prototype.close = function close() {
-    this.removeAttribute('open')
+  if (!HTMLDialogElement.prototype.close) {
+    HTMLDialogElement.prototype.close = function close() {
+      this.removeAttribute('open')
+    }
   }
 }

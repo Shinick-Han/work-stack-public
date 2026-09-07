@@ -1,39 +1,44 @@
 # Work Stack 1.0.7 설치·사용 안내서
 
-> **문서 상태.** Work Stack **1.0.7** 제품 기준입니다. 공개 GitHub 릴리스는 [v1.0.7](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.7)입니다. 설치 파일은 그 릴리스 자산과 [`installer/`](../installer/)에 있고, 옆의 `.sha256` 사이드카로 검증하세요.
+1.0.8 소스의 변경·업그레이드·복구 안내는 [1.0.8 설치 후보 안내](WORKSTACK-1.0.8-RELEASE.ko.md)를 참조하세요. 아래 설치본 관찰은 1.0.7의 역사 기록으로 유지합니다.
+
+> **문서 상태.** Work Stack **1.0.7** 제품 기준입니다. 명령·경로·화면 이름은 현재 소스와 1.0.7 설치본에서 확인했습니다. 공개 GitHub 릴리스 채널(`Shinick-Han/work-stack-public`)에는 아직 v1.0.7 설치 파일이 없습니다. 그 채널의 태그·URL·SHA-256은 게시된 뒤에만 적습니다. 지금은 같은 파일명 `WorkStack-Setup-1.0.7.ps1`과 옆의 `.sha256` 사이드카를 신뢰하는 배포 경로에서 받아 검증한 뒤 설치합니다.
+>
+> | 표기 | 뜻 |
+> | --- | --- |
+> | `[SOURCE_VERIFIED]` | 현재 1.0.7 소스에서 확인한 사실. |
+> | `[INSTALLED_WITNESS]` | 1.0.7 설치본에서 관찰한 사실. |
+> | `[RECEIPT_VERIFIED]` | 별도 공개 영수증으로 확인한 사실. 예: 이전 버전 1.0.6의 공개 자산. |
 
 ---
-
 
 ## 1. 설치 전에 알아둘 것
 
 Work Stack은 목표(Objective)·핵심 결과(Key Result)·작업(Task)·일일 작업 기록(Worklog)·노트를 하나의 워크스페이스에 두는 로컬 우선(local-first) 도구입니다. **프로그램 설치 폴더와 작업 데이터 폴더는 다릅니다.** 프로그램을 다시 설치하거나 지우는 일과 워크스페이스 데이터를 지우는 일은 별개의 작업입니다.
 
-- Windows 배포판(`WorkStack-Setup-1.0.7.ps1`)에는 64비트 Python 3.12.10 임베디드 런타임과 잠금된(hash-locked) 의존성이 포함됩니다. 대상 PC에 Python이나 Node.js를 따로 설치하지 않으며, 설치 중 네트워크에 접속하지 않습니다.
-- 데스크톱 창은 Microsoft Edge WebView2 Runtime이 있어야 열립니다. 최신 Windows 10/11에는 대개 포함되어 있습니다. 이 1.0.7 설치본은 64비트 Windows 11에서 WebView2와 함께 창이 열리는 것을 확인했습니다. 그 밖의 OS/WebView2 조합 목록은 이 문서에 없습니다.
-- 설치 파일은 코드 서명되어 있지 않습니다. 체크섬은 "받은 바이트가 사이드카와 같은가"를 확인할 뿐, 게시자 신원을 증명하지 않습니다.
+- Windows 배포판(`WorkStack-Setup-1.0.7.ps1`)에는 64비트 Python 3.12.10 임베디드 런타임과 잠금된(hash-locked) 의존성이 포함됩니다. 대상 PC에 Python이나 Node.js를 따로 설치하지 않으며, 설치 중 네트워크에 접속하지 않습니다. `[SOURCE_VERIFIED]`
+- 데스크톱 창은 Microsoft Edge WebView2 Runtime이 있어야 열립니다. 최신 Windows 10/11에는 대개 포함되어 있습니다. `[SOURCE_VERIFIED]` 이 1.0.7 설치본은 64비트 Windows 11에서 WebView2와 함께 창이 열리는 것을 확인했습니다. `[INSTALLED_WITNESS]` 그 밖의 OS/WebView2 조합 목록은 이 문서에 없습니다.
+- 설치 파일은 코드 서명되어 있지 않습니다. 체크섬은 "받은 바이트가 사이드카와 같은가"를 확인할 뿐, 게시자 신원을 증명하지 않습니다. `[SOURCE_VERIFIED]`
 - 이 안내서는 Linux 데스크톱 GUI를 약속하지 않습니다. Linux는 SSH로 연결되는 원격 SSOT 서버와 명령행(CLI)·에이전트 실행 환경으로만 다룹니다.
-- 소스 버전 리터럴은 `1.0.7`입니다(`workstack/__init__.py`). 설치 파일 이름은 `WorkStack-Setup-1.0.7.ps1`, 사이드카는 `WorkStack-Setup-1.0.7.ps1.sha256`입니다. 설치된 호스트의 파일 버전은 `1.0.7.0`, 제품 버전은 `1.0.7`입니다. 이 게시본 설치 파일 SHA-256은 `c626ad88209585038ca6eca8d94a465cbf548573e01a3a354de652a86bd27edd`입니다. 받은 파일은 항상 같은 배포의 사이드카와 맞춰 검증하세요.
+- 소스 버전 리터럴은 `1.0.7`입니다(`workstack/__init__.py`). 설치 파일 이름은 `WorkStack-Setup-1.0.7.ps1`, 사이드카는 `WorkStack-Setup-1.0.7.ps1.sha256`입니다. `[SOURCE_VERIFIED]` 설치된 호스트의 파일 버전은 `1.0.7.0`, 제품 버전은 `1.0.7`입니다. `[INSTALLED_WITNESS]` **특정 빌드 SHA-256은 이 문서에 적지 않습니다.** 권위는 항상 같은 배포의 사이드카입니다.
 
-이전 공개 버전은 1.0.6입니다. 참고로 1.0.6의 게시 자산은 `WorkStack-Setup-1.0.6.ps1`(26,402,269바이트, SHA-256 `5a41a4d542ce40662d73d1a769f1c6f5b311da5008a9da7296ed6795008420da`)과 사이드카 `WorkStack-Setup-1.0.6.ps1.sha256`(92바이트)이었고, 공개 저장소 `Shinick-Han/work-stack-public`에는 v1.0.0부터 v1.0.6까지의 릴리스가 있습니다. 1.0.7 자산도 같은 이름 규칙을 따릅니다.
+이전 공개 버전은 1.0.6입니다. 참고로 1.0.6의 게시 자산은 `WorkStack-Setup-1.0.6.ps1`(26,402,269바이트, SHA-256 `5a41a4d542ce40662d73d1a769f1c6f5b311da5008a9da7296ed6795008420da`)과 사이드카 `WorkStack-Setup-1.0.6.ps1.sha256`(92바이트)이었고, 공개 저장소 `Shinick-Han/work-stack-public`에는 v1.0.0부터 v1.0.6까지의 릴리스가 있습니다. `[RECEIPT_VERIFIED: B4, A5]` 1.0.7 자산도 같은 이름 규칙을 따릅니다.
 
 ## 2. 설치 파일을 받고 체크섬을 검증하기
 
 같은 버전의 **두 파일**을 함께 받습니다: `WorkStack-Setup-1.0.7.ps1`와 `WorkStack-Setup-1.0.7.ps1.sha256`.
 
-공개 릴리스에서 받습니다.
+지금은 다음 중 하나입니다.
 
-- 설치 파일: `https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/WorkStack-Setup-1.0.7.ps1`
-- 사이드카: `https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/WorkStack-Setup-1.0.7.ps1.sha256`
-- 업데이트 매니페스트: `https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/workstack-update.json`
+- **소스에서 빌드한 배포 묶음**: 체크아웃에서 `npm --prefix frontend run build` 뒤 `scripts\windows\Build-WindowsInstaller.ps1`을 실행하면 `.artifacts\WorkStack-Setup-1.0.7.ps1`과 사이드카가 생깁니다. `[SOURCE_VERIFIED]`
+- **이미 받은 1.0.7 설치 파일**: 파일명과 사이드카가 위와 같으면 같은 절차로 검증합니다.
+- **이후 공개 릴리스**: 자동 업데이트 검사기가 받아들이는 주소 형식은 `https://github.com/Shinick-Han/work-stack-public/releases/download/v1.0.7/WorkStack-Setup-1.0.7.ps1` 입니다. `[SOURCE_VERIFIED]` 공개 저장소의 릴리스 목록은 `https://github.com/Shinick-Han/work-stack-public/releases` 입니다. **v1.0.7 태그와 그 자산은 아직 없습니다.** 게시되기 전에는 이 URL을 열어 설치하지 마세요.
 
-같은 파일이 저장소 [`installer/`](../installer/)에도 있습니다. 소스에서 다시 빌드하면 `.artifacts\WorkStack-Setup-1.0.7.ps1`이 생기지만, 그 바이트는 이 게시본과 다를 수 있습니다. 설치할 때는 릴리스 자산 또는 `installer/` 복사본과 그 사이드카를 쓰세요.
-
-사이드카의 내용은 정확히 한 줄입니다: `<소문자 64자리 SHA-256>` + 공백 두 개 + `WorkStack-Setup-1.0.7.ps1` + 줄바꿈. (1.0.6 사이드카도 이 형식이었습니다.)
+사이드카의 내용은 정확히 한 줄입니다: `<소문자 64자리 SHA-256>` + 공백 두 개 + `WorkStack-Setup-1.0.7.ps1` + 줄바꿈. `[SOURCE_VERIFIED]` (1.0.6 사이드카도 이 형식이었습니다. `[RECEIPT_VERIFIED: B4]`)
 
 ### 2.1 PowerShell로 검증 (사이드카 기준, 대소문자 무시)
 
-다운로드한 두 파일이 있는 폴더에서 실행합니다. 아래 비교는 설치본의 검증기 `Test-WorkStackSetup.ps1`과 같은 규칙(파일명은 대소문자 무시, 다이제스트는 소문자로 맞춰 비교)입니다.
+다운로드한 두 파일이 있는 폴더에서 실행합니다. 아래 비교는 설치본의 검증기 `Test-WorkStackSetup.ps1`과 같은 규칙(파일명은 대소문자 무시, 다이제스트는 소문자로 맞춰 비교)입니다. `[SOURCE_VERIFIED]`
 
 ```powershell
 $Setup = Join-Path $PWD 'WorkStack-Setup-1.0.7.ps1'
@@ -50,7 +55,7 @@ if ($Actual -ne $Expected) { throw "Setup hash mismatch. Expected $Expected, got
 
 ### 2.2 사이드카 다이제스트만 직접 비교
 
-릴리스 페이지의 해시와 사이드카 한 줄의 64자리는 같아야 합니다. 둘 중 하나만 있어도 사이드카가 권위입니다.
+릴리스 페이지에 적힌 해시가 아직 없을 때는 사이드카 한 줄의 64자리만 비교합니다.
 
 ```powershell
 $Expected = ((Get-Content -Raw .\WorkStack-Setup-1.0.7.ps1.sha256).Split(' ', 2)[0]).ToLowerInvariant()
@@ -64,17 +69,17 @@ if ($Actual -ne $Expected) { throw "Setup hash mismatch. Expected $Expected, got
 sha256sum -c WorkStack-Setup-1.0.7.ps1.sha256
 ```
 
-성공하면 `WorkStack-Setup-1.0.7.ps1: OK`가 출력됩니다. 공개된 1.0.6 사이드카도 같은 형식입니다.
+성공하면 `WorkStack-Setup-1.0.7.ps1: OK`가 출력됩니다. (1.0.6 사이드카로 같은 명령이 `OK`를 반환한 영수증이 있습니다. `[RECEIPT_VERIFIED: B4]`)
 
 ### 2.4 이미 설치된 Work Stack의 검증기 사용
 
-이미 설치된 PC에서는 설치본의 엄격 검증기를 쓸 수 있습니다. 사이드카가 옆에 없으면 `-ChecksumPath`로 지정합니다.
+이미 설치된 PC에서는 설치본의 엄격 검증기를 쓸 수 있습니다. 사이드카가 옆에 없으면 `-ChecksumPath`로 지정합니다. `[SOURCE_VERIFIED]`
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\WorkStack\scripts\windows\Test-WorkStackSetup.ps1" -SetupPath .\WorkStack-Setup-1.0.7.ps1
 ```
 
-성공 출력은 `VERIFIED SHA-256 <digest>  WorkStack-Setup-1.0.7.ps1` 한 줄입니다. 실패 메시지는 다음 중 하나입니다: `Setup artifact does not exist: ...`, `Checksum sidecar does not exist: ...`, `Checksum sidecar must contain exactly one SHA-256 line with two spaces before the setup filename.`, `Setup filename mismatch. Sidecar names '...' but selected artifact is '...'.`, `Setup hash mismatch. Expected ..., got ....`
+성공 출력은 `VERIFIED SHA-256 <digest>  WorkStack-Setup-1.0.7.ps1` 한 줄입니다. 실패 메시지는 다음 중 하나입니다: `Setup artifact does not exist: ...`, `Checksum sidecar does not exist: ...`, `Checksum sidecar must contain exactly one SHA-256 line with two spaces before the setup filename.`, `Setup filename mismatch. Sidecar names '...' but selected artifact is '...'.`, `Setup hash mismatch. Expected ..., got ....` `[SOURCE_VERIFIED]`
 
 검증이 실패하면 **설치하지 말고** 공식 릴리스 페이지에서 다시 받습니다.
 
@@ -86,7 +91,7 @@ sha256sum -c WorkStack-Setup-1.0.7.ps1.sha256
 powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 ```
 
-설치 파일은 다음 매개변수를 받습니다. 지정하지 않으면 기본값을 씁니다.
+설치 파일은 다음 매개변수를 받습니다. 지정하지 않으면 기본값을 씁니다. `[SOURCE_VERIFIED]`
 
 | 매개변수 | 기본값 | 뜻 |
 | --- | --- | --- |
@@ -98,7 +103,7 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 | `-BackupRetention` | `14` | 보관할 최신 백업 개수 |
 | `-NoShortcut` | 없음 | 바로가기 생성 생략 |
 
-설치 중 동작:
+설치 중 동작 `[SOURCE_VERIFIED]`:
 
 - 설치 폴더·상태 폴더·데이터 폴더·백업 폴더는 서로 겹칠 수 없습니다. 겹치면 `Unsafe path overlap (...)` 오류로 중단합니다. 데이터는 절대 설치 폴더 안에 두지 않습니다.
 - `-NoShortcut` 없이 실행하는 대화형 설치는 `%LOCALAPPDATA%\Programs` 아래에만 설치합니다. 다른 위치를 지정하면 `The default interactive installer only writes under LOCALAPPDATA\Programs.` 오류로 중단합니다.
@@ -107,7 +112,7 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 - 상태 폴더에 `config.json`을 씁니다. 필드는 `version`, `install_dir`, `data_dir`, `backup_dir`, `backup_retention`, `port`입니다. 같은 내용을 설치 폴더의 `runtime-config.json`에도 복사합니다.
 - 성공하면 다음 세 줄을 출력합니다: `Work Stack installed at <InstallRoot>`, `Planning data remains at <DataDir>`, `Local endpoint: http://127.0.0.1:<포트>/`.
 
-바로가기:
+바로가기 `[SOURCE_VERIFIED]`:
 
 | 링크 | 위치 | 대상 |
 | --- | --- | --- |
@@ -116,13 +121,13 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 
 아이콘은 `<InstallRoot>\desktop\python-webview-shell\assets\WorkStack-Mark-Lime-v2.ico`입니다. 설치 후 시작 메뉴의 **Work Stack**을 열어 창이 뜨고 원하는 워크스페이스가 보이는지 확인하세요. 창이 잠깐 유지되었다는 사실만으로 데이터 상태가 검증된 것은 아닙니다.
 
-### 3.1 첫 실행
+### 3.1 첫 실행 `[SOURCE_VERIFIED]`
 
 완전히 비어 있는 데이터 폴더의 첫 실행에서 데스크톱은 연결 레지스트리를 준비하기 **전에** 번들 런타임으로 `maintenance initialize`를 한 번 실행합니다. 비어 있지 않은 폴더는 초기화하지 않습니다. 실패하면 `Work Stack could not create its first workspace: ...`로 중단되며, 상세는 `%LOCALAPPDATA%\WorkStack\logs\initialize.err.log`에 남습니다.
 
 ### 3.2 데스크톱 사용
 
-입력란·대화상자가 아닌 곳에서 숫자 키는 다음 화면으로 이동합니다.
+입력란·대화상자가 아닌 곳에서 숫자 키는 다음 화면으로 이동합니다. `[SOURCE_VERIFIED]`
 
 | 키 | 화면 | 하는 일 |
 | --- | --- | --- |
@@ -139,7 +144,7 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 - 사이드바 **Configure SSOT connections**가 연결 설정입니다(6절).
 - **Work Stack updates**에서 설치 버전을 봅니다. 명령행에 `--version`은 없습니다.
 
-**핵심 결과(Key Result)를 어디에 보여 주는가.** Graph/Board/Treemap/Table **위**에 Outcomes 텍스트 카탈로그를 반복하지 않습니다.
+**핵심 결과(Key Result)를 어디에 보여 주는가.** Graph/Board/Treemap/Table **위**에 Outcomes 텍스트 카탈로그를 반복하지 않습니다. `[SOURCE_VERIFIED]`
 
 - **Graph**: 핵심 결과는 노드입니다. 대상(Target)·상태(Status)·기록된 진척(Recorded progress)·연결된 작업 수가 노드에 있고, 목표·작업과 선으로 이어집니다.
 - **Board / Table**: 각 작업에 outcome 칩이 있습니다. 칩을 누르면 그 쌍으로 걸러집니다(`Filter by outcome …`). 연결이 없으면 `Unassigned outcome`.
@@ -150,9 +155,9 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 
 ## 4. 실행 방식과 프로세스 식별
 
-1.0.7의 데스크톱 실행 파일은 설치 폴더 루트의 **`WorkStack.exe`** 입니다. 이 실행 파일은 별도 런처가 아니라 **같은 프로세스 안에서** 번들 `runtime\python312.dll`을 불러 데스크톱 엔트리(`desktop\python-webview-shell\workstack_desktop.py`)를 실행합니다. `pythonw.exe`를 자식으로 띄우지 않고, 이름이 바뀐 복사본으로는 실행을 거부합니다.
+1.0.7의 데스크톱 실행 파일은 설치 폴더 루트의 **`WorkStack.exe`** 입니다. 이 실행 파일은 별도 런처가 아니라 **같은 프로세스 안에서** 번들 `runtime\python312.dll`을 불러 데스크톱 엔트리(`desktop\python-webview-shell\workstack_desktop.py`)를 실행합니다. `pythonw.exe`를 자식으로 띄우지 않고, 이름이 바뀐 복사본으로는 실행을 거부합니다. `[SOURCE_VERIFIED]`
 
-소스가 보장하는 프로세스 구성은 다음과 같습니다.
+소스가 보장하는 프로세스 구성은 다음과 같습니다. `[SOURCE_VERIFIED]`
 
 | 역할 | 이미지 | 근거 |
 | --- | --- | --- |
@@ -160,11 +165,11 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 | 로컬 서버(자식) | `<InstallRoot>\runtime\python.exe` + `run_work_stack.py --data-dir <데이터> graph serve --host 127.0.0.1 --port <포트>` | 데스크톱이 서버를 직접 띄움 |
 | WebView2 렌더러 | `msedgewebview2.exe` (여러 개) | WebView2 런타임이 생성 |
 
-`Stop-WorkStack.ps1`은 정확히 이 설치본의 `WorkStack.exe`(새 방식) 또는 `runtime\pythonw.exe`(이전 버전 방식) 데스크톱 프로세스와, 이 설치본의 `run_work_stack.py`를 실행 중인 `runtime\python.exe` 서버만 종료합니다. 다른 Python 프로세스는 건드리지 않습니다.
+`Stop-WorkStack.ps1`은 정확히 이 설치본의 `WorkStack.exe`(새 방식) 또는 `runtime\pythonw.exe`(이전 버전 방식) 데스크톱 프로세스와, 이 설치본의 `run_work_stack.py`를 실행 중인 `runtime\python.exe` 서버만 종료합니다. 다른 Python 프로세스는 건드리지 않습니다. `[SOURCE_VERIFIED]`
 
-> **작업 관리자/`Get-Process`에서 보이는 이름.** 1.0.7 설치본에서 데스크톱 호스트는 `WorkStack.exe`입니다. `Get-Process WorkStack`이 그 이미지를 반환하고, 파일 버전은 `1.0.7.0`, 제품 버전은 `1.0.7`입니다. 같은 관찰에서 데스크톱 `pythonw.exe`는 없었습니다. 1.0.7 이전 설치본에서는 데스크톱이 `pythonw.exe`로 보였습니다. 번들 `runtime\pythonw.exe`는 예전 바로가기를 깨지 않으려고만 남아 있고, 새로 쓰는 바로가기는 `WorkStack.exe`만 가리킵니다.
+> **작업 관리자/`Get-Process`에서 보이는 이름.** 1.0.7 설치본에서 데스크톱 호스트는 `WorkStack.exe`입니다. `Get-Process WorkStack`이 그 이미지를 반환하고, 파일 버전은 `1.0.7.0`, 제품 버전은 `1.0.7`입니다. 같은 관찰에서 데스크톱 `pythonw.exe`는 없었습니다. `[INSTALLED_WITNESS]` 1.0.7 이전 설치본에서는 데스크톱이 `pythonw.exe`로 보였습니다. `[RECEIPT_VERIFIED: B11]` 번들 `runtime\pythonw.exe`는 예전 바로가기를 깨지 않으려고만 남아 있고, 새로 쓰는 바로가기는 `WorkStack.exe`만 가리킵니다. `[SOURCE_VERIFIED]`
 
-데스크톱 창을 열 때의 동작:
+데스크톱 창을 열 때의 동작 `[SOURCE_VERIFIED]`:
 
 - 로컬 모드에서는 데이터 폴더에 `workspace.json`이 있으면 서버를 띄우기 **전에** 자동 백업(`maintenance backup`)을 만들고, 백업 폴더의 `workstack-backup-*.zip` 중 최신 `backup_retention`개만 남깁니다. 백업이 실패하면 서버를 시작하지 않고 `Automatic pre-launch backup failed: ...`를 표시합니다.
 - 창을 닫으면 그 창이 띄운 로컬 서버(또는 SSH 세션)를 종료합니다.
@@ -172,7 +177,7 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 
 ## 5. 데이터 위치, 워크스페이스 식별, 로그 위치
 
-### 5.1 기본 경로
+### 5.1 기본 경로 `[SOURCE_VERIFIED]`
 
 | 항목 | Windows 기본값 | `LOCALAPPDATA`가 없을 때 |
 | --- | --- | --- |
@@ -184,9 +189,9 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 - 실행 시 메타데이터 폴더에는 실행 중 서버가 `.workstack-server.json`(소유자 광고)과 `.workstack-capture-token`을 둡니다. CLI는 이 파일로 "GUI 서버가 실행 중인가"를 판단합니다(8.2절).
 - 워크스페이스에는 고유 UID(`workspace.json`의 `id`)가 있습니다. 이름이나 경로가 같아도 UID가 다르면 다른 워크스페이스입니다. UID나 내부 JSON을 손으로 고쳐 검사를 통과시키지 않습니다.
 
-> **주의 — 없는 경로를 지정하면 새 워크스페이스가 생깁니다.** `--data-dir`에 오타가 있어도 오류가 나지 않고, 폴더가 만들어진 뒤 비어 있으면 **새 UID의 빈 워크스페이스로 초기화**됩니다. 빈 목록이 나오면 먼저 경로를 의심하세요.
+> **주의 — 없는 경로를 지정하면 새 워크스페이스가 생깁니다.** `--data-dir`에 오타가 있어도 오류가 나지 않고, 폴더가 만들어진 뒤 비어 있으면 **새 UID의 빈 워크스페이스로 초기화**됩니다. 빈 목록이 나오면 먼저 경로를 의심하세요. `[SOURCE_VERIFIED]`
 
-### 5.2 상태 폴더(`%LOCALAPPDATA%\WorkStack`)의 파일
+### 5.2 상태 폴더(`%LOCALAPPDATA%\WorkStack`)의 파일 `[SOURCE_VERIFIED]`
 
 | 경로 | 내용 |
 | --- | --- |
@@ -208,13 +213,13 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 
 ## 6. 연결 설정: 로컬 SSOT와 Remote SSH SSOT
 
-### 6.1 연결 레지스트리가 설정의 권위입니다
+### 6.1 연결 레지스트리가 설정의 권위입니다 `[SOURCE_VERIFIED]`
 
 1.0.7 데스크톱은 시작할 때 연결 레지스트리(`connection-registry.json`)를 준비하고 그중 **활성 프로필**을 골라 로컬 서버를 띄우거나 SSH 터널을 엽니다. 레지스트리 시작은 기본으로 켜져 있고, 환경 변수 `WORKSTACK_CONNECTION_REGISTRY_V1=0`일 때만 꺼집니다. 활성 프로필이 정해지면 그 내용을 `remote-connection.json`에 **한 방향으로** 내보냅니다. 이 미러 파일은 읽히거나 병합되지 않습니다.
 
 레지스트리를 지우거나 손으로 편집해서 연결을 강제로 바꾸지 않습니다. 시작 시 레지스트리가 변하면 `Connection registry changed while the active workspace was verified` 오류로 중단됩니다.
 
-### 6.2 연결 설정 화면 순서
+### 6.2 연결 설정 화면 순서 `[SOURCE_VERIFIED]`
 
 데스크톱 사이드바의 **Configure SSOT connections** 버튼이 **SSOT connections** 대화상자를 엽니다(이 화면은 데스크톱 호스트 안에서 기본 활성이며 일반 브라우저에서는 보이지 않습니다).
 
@@ -226,14 +231,14 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1
 
 이 화면은 SSOT 디렉터리를 삭제·복사·병합하지 않습니다(대화상자 설명 그대로).
 
-### 6.3 Remote SSH SSOT의 전제 조건
+### 6.3 Remote SSH SSOT의 전제 조건 `[SOURCE_VERIFIED]`
 
 SSH 연결은 Linux에 Work Stack이나 Python을 설치해 주지 않습니다. 관리자가 먼저 준비합니다.
 
 - **Windows**: OpenSSH 클라이언트(`ssh.exe`)가 PATH에 있어야 합니다. 없으면 `OpenSSH client was not found. Enable the Windows OpenSSH Client feature first.` 오류입니다. SSH 별칭은 `%USERPROFILE%\.ssh\config`에 둡니다. 비밀번호 입력 없이 접속되는 인증(에이전트/키)과 검증된 호스트 키가 필요합니다. Work Stack은 비밀번호·개인 키·토큰·호스트 키 우회를 저장하지 않습니다.
 - **Linux**: 원격 앱 폴더(예: `/srv/workstack/app`)에 릴리스와 같은 버전의 Work Stack 소스와 빌드된 `frontend/dist`, 잠금된 의존성(`python3 -m pip install --require-hashes -r requirements.txt`)이 있어야 합니다. 원격 데이터 폴더(예: `/srv/workstack/ssot`)는 이미 초기화된 워크스페이스여야 하며 `store-meta.json`과 `workspace.json`이 존재해야 합니다. 비대화형 SSH 명령에서 `python3`가 올바른 환경을 가리켜야 합니다(데스크톱은 가상환경 활성화 스크립트를 대신 실행하지 않습니다).
 
-데스크톱이 실제로 실행하는 SSH 명령의 형태는 다음과 같습니다(옵션은 고정이며 사용자가 바꿀 수 없습니다).
+데스크톱이 실제로 실행하는 SSH 명령의 형태는 다음과 같습니다(옵션은 고정이며 사용자가 바꿀 수 없습니다). `[SOURCE_VERIFIED]`
 
 ```text
 ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -L 127.0.0.1:<로컬포트>:127.0.0.1:<원격포트> -- <별칭> "test -f <원격데이터>/store-meta.json && test -f <원격데이터>/workspace.json && cd -- <원격앱> && exec python3 <원격앱>/run_work_stack.py --data-dir <원격데이터> graph serve --host 127.0.0.1 --port <원격포트> --public-port <로컬포트> --exit-with-parent"
@@ -250,17 +255,17 @@ ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=yes
 ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -- <별칭> "command -v python3"
 ```
 
-### 6.4 이전 방식 스크립트에 대한 주의
+### 6.4 이전 방식 스크립트에 대한 주의 (KG-R1)
 
-`scripts\windows\Configure-WorkStackRemote.ps1`(`-SshHostAlias`, `-RemoteAppDir`, `-RemoteDataDir`, `-WorkspaceId`, `-LocalForwardPort`, `-RemotePort`, `-UseLocal`, `-StateRoot`, `-Check`)은 **`remote-connection.json`만** 쓰는 이전 방식 도구입니다. 1.0.7 데스크톱에서 이 파일은 활성 레지스트리 프로필에서 다시 생성되는 미러이므로, 이 스크립트를 실행해도 **활성 프로필은 바뀌지 않습니다.** `-Check`는 방금 쓴 미러 파일을 대상으로 `--check-remote-connection`을 실행하는 점검이지, 현재 활성 프로필의 확인도 읽기 전용 명령도 아닙니다. 현재 프로필을 바꾸려면 6.2절의 화면을 쓰세요.
+`scripts\windows\Configure-WorkStackRemote.ps1`(`-SshHostAlias`, `-RemoteAppDir`, `-RemoteDataDir`, `-WorkspaceId`, `-LocalForwardPort`, `-RemotePort`, `-UseLocal`, `-StateRoot`, `-Check`)은 **`remote-connection.json`만** 쓰는 이전 방식 도구입니다. 1.0.7 데스크톱에서 이 파일은 활성 레지스트리 프로필에서 다시 생성되는 미러이므로, 이 스크립트를 실행해도 **활성 프로필은 바뀌지 않습니다.** `-Check`는 방금 쓴 미러 파일을 대상으로 `--check-remote-connection`을 실행하는 점검이지, 현재 활성 프로필의 확인도 읽기 전용 명령도 아닙니다. 현재 프로필을 바꾸려면 6.2절의 화면을 쓰세요. `[SOURCE_VERIFIED]`
 
-같은 이유로 `Test-WorkStackRemoteNetwork.ps1`(`-StateRoot`, `-Samples`, `-OutFile`)도 `remote-connection.json`을 읽습니다. 데스크톱이 한 번 정상 시작한 뒤라면 이 파일은 활성 프로필의 미러이므로 진단에 쓸 수 있고, 결과는 `diagnostics\ssh-network-<시각>.json`에 남습니다.
+같은 이유로 `Test-WorkStackRemoteNetwork.ps1`(`-StateRoot`, `-Samples`, `-OutFile`)도 `remote-connection.json`을 읽습니다. 데스크톱이 한 번 정상 시작한 뒤라면 이 파일은 활성 프로필의 미러이므로 진단에 쓸 수 있고, 결과는 `diagnostics\ssh-network-<시각>.json`에 남습니다. `[SOURCE_VERIFIED]`
 
 ## 7. 각 SSH 에이전트 호스트에 CLI와 Skill 설치
 
 에이전트 Skill은 **에이전트가 실행되는 쪽**에 설치합니다. Windows에서 에이전트가 돌면 Windows 사용자 영역에, SSH로 접속한 Linux에서 돌면 **그 Linux 사용자**의 영역에 설치합니다. Windows GUI의 SSH 연결 설정은 원격 Skill 설치를 대신하지 않습니다.
 
-### 7.1 Skill 파일과 설치 위치
+### 7.1 Skill 파일과 설치 위치 `[SOURCE_VERIFIED]`
 
 1.0.7 소스 트리의 `integrations/agent-skill/work-stack`에는 정확히 세 파일이 있습니다: `SKILL.md`, `references/commands.md`, `references/journal-policy.md`. 스크립트나 실행 파일은 없습니다. 저장소가 안내하는 Codex 사용자 범위 설치 위치는 다음입니다.
 
@@ -287,7 +292,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $SkillDest) | Out-
 Copy-Item -LiteralPath '<checkout-root>\integrations\agent-skill\work-stack' -Destination $SkillDest -Recurse
 ```
 
-### 7.2 무해한 사후 검증
+### 7.2 무해한 사후 검증 `[SOURCE_VERIFIED]`
 
 체크아웃 루트에서 저장소가 고정한 검증기를 실행합니다. 네트워크·시계·프로필 상태를 쓰지 않는 결정적 검사입니다.
 
@@ -298,7 +303,7 @@ python -I quality/agent-p0-oracle/validate_skill.py "%USERPROFILE%\.agents\skill
 
 성공은 종료 코드 0과 정확히 `{"skill":"work-stack","valid":true,"violations":[]}` 출력입니다. 종료 코드 2는 위반, 3은 사용법·IO 오류입니다. 이 검사는 복사된 트리의 유효성만 증명하며, 에이전트 호스트가 Skill을 발견·로드했는지는 증명하지 않습니다.
 
-### 7.3 CLI 접두사와 세 가지 명시 입력
+### 7.3 CLI 접두사와 세 가지 명시 입력 `[SOURCE_VERIFIED]`
 
 Skill은 파일을 탐색하거나 권위(authority)를 만들지 않습니다. 에이전트의 실행 정책에 다음 세 값을 **명시적으로** 둡니다. 공유 Skill 본문에 개인 경로나 인증 정보를 넣지 않습니다.
 
@@ -310,7 +315,7 @@ expected workspace UID: <ws-uid>
 
 Linux 소스 실행의 접두사 `python3 -I <checkout-root>/run_work_stack.py`는 런처가 자기 체크아웃 폴더를 `sys.path` 앞에 넣기 때문에 격리 모드(`-I`)에서도 동작합니다. 먼저 `--help`로 읽기 전용 확인을 합니다.
 
-### 7.4 지원 범위
+### 7.4 지원 범위 `[SOURCE_VERIFIED]`
 
 Skill의 권한은 **명시적으로 선택한 Task 하나의 읽기**와 **제한된 Daily Review 체크포인트 추가**뿐입니다. Task 상태 변경, Objective 편집, 관계 편집, 동기화 채택·복원·마이그레이션·리바인드, 메시지 전송, JSON/NDJSON/DB/SSOT 파일 직접 편집, SSH 자격 증명·브라우저 프로필·토큰 접근은 금지입니다. 소스 문서의 P0 경계는 다음과 같습니다.
 
@@ -326,7 +331,7 @@ Skill의 권한은 **명시적으로 선택한 Task 하나의 읽기**와 **제�
 
 ## 8. CLI
 
-### 8.1 접두사, 도움말, 읽기 명령
+### 8.1 접두사, 도움말, 읽기 명령 `[SOURCE_VERIFIED]`
 
 Windows 설치본의 접두사입니다. `$DataDir`은 `config.json`의 `data_dir`(또는 활성 로컬 프로필의 경로)로 바꿉니다.
 
@@ -377,7 +382,7 @@ Linux에서는 `python3 -I /srv/workstack/app/run_work_stack.py --data-dir /srv/
 | `maintenance backup --out <dir>` / `verify <archive>` / `restore <archive> --to <dir> [--replace] [--safety-backups <dir>]` / `relocate --to <dir>` / `initialize` | `initialize`는 비어 있거나 없는 데이터 폴더에만 새 워크스페이스를 만듦 |
 | `graph export [--out <file>]` / `graph serve [--host] [--port] [--public-port] [--exit-with-parent] [--seed-demo]` | |
 
-### 8.2 GUI가 실행 중일 때와 아닐 때
+### 8.2 GUI가 실행 중일 때와 아닐 때 (KG-R2) `[SOURCE_VERIFIED]`
 
 CLI는 명령을 실행하기 전에 그 데이터 폴더의 실행 시 메타데이터 폴더에 `.workstack-server.json`(소유자 광고)이 있는지 봅니다.
 
@@ -402,9 +407,9 @@ CLI는 명령을 실행하기 전에 그 데이터 폴더의 실행 시 메타�
 
 서버가 확정적인 HTTP 오류를 돌려주면 `the running Work Stack server refused the <작업> (HTTP <코드>)`로 종료하며 재시도하지 않습니다.
 
-> **로컬 경로 명령과 실행 중 GUI.** 전달되지 않는 명령은 초기화 단계에서 데이터 폴더의 `.workstack.lock` lease를 잠시 잡습니다. GUI가 띄운 서버가 그 lease를 쥐고 있는 동안에는 `the Work Stack data directory is already owned by another writer` 오류(종료 코드 2)로 거절합니다. 백업·복원·이동은 서버를 먼저 멈춰야 합니다(10절).
+> **로컬 경로 명령과 실행 중 GUI.** 전달되지 않는 명령은 초기화 단계에서 데이터 폴더의 `.workstack.lock` lease를 잠시 잡습니다. GUI가 띄운 서버가 그 lease를 쥐고 있는 동안에는 `the Work Stack data directory is already owned by another writer` 오류(종료 코드 2)로 거절합니다. `[SOURCE_VERIFIED]` 백업·복원·이동은 서버를 먼저 멈춰야 합니다(10절).
 
-### 8.3 명령 예시
+### 8.3 명령 예시 `[SOURCE_VERIFIED]`
 
 플래그와 위치 인수는 소스 파서와 같습니다. **운영 중인 워크스페이스에 붙여 넣지 마세요.** 연습은 비어 있는 별도 `--data-dir`에서만 합니다. ID는 명령이 돌려준 값을 쓰고 다음 ID를 추측하지 않습니다.
 
@@ -468,7 +473,7 @@ $Uid = 'REPLACE_WITH_VERIFIED_WORKSPACE_UID'
 
 ## 9. 체크포인트·충돌·재시도 원칙
 
-### 9.1 Agent 체크포인트
+### 9.1 Agent 체크포인트 `[SOURCE_VERIFIED]`
 
 ```text
 <pfx> --data-dir <data-dir> agent --workspace-uid <ws-uid> checkpoint --intent-id <STABLE_INTENT_ID> --stdin
@@ -485,7 +490,7 @@ $Uid = 'REPLACE_WITH_VERIFIED_WORKSPACE_UID'
 - 같은 intent ID + 같은 본문은 같은 논리적 체크포인트이며 `meta.replayed: true`로 멱등 재생될 수 있습니다. 같은 ID에 다른 내용을 쓰지 않습니다.
 - `commit_unknown`(`error.retryable: false`, `meta.commit_state: "unknown"`)이 오면 **중단하고 같은 intent ID를 보존**합니다. 새 ID로 다시 쓰거나, `worklog list`의 문장이 같다는 이유로 기록되었다고 추정하지 않습니다.
 
-### 9.2 체크포인트 상태 전환 명령
+### 9.2 체크포인트 상태 전환 명령 (KG-R6) `[SOURCE_VERIFIED]`
 
 ```text
 worklog checkpoint-state <CHECKPOINT_ID> --stdin --idempotency-key <KEY>
@@ -497,22 +502,22 @@ worklog checkpoint-state <CHECKPOINT_ID> --stdin --idempotency-key <KEY>
 - 실행 중 서버가 반드시 필요합니다. 재시도는 **같은 본문과 같은 키**를 그대로 보내는 명시적 재시도뿐이며, 키를 바꾸거나 리비전을 자동으로 올려 보내는 것은 재시도가 아니라 새 요청입니다.
 - 이 명령을 운영 자동화에 넣기 전에 그 설치본의 `worklog --help`와 서버 정책을 확인하세요. 허용 `state`·`reason.code` 값은 이 문서에 나열하지 않습니다.
 
-### 9.3 리비전 충돌과 외부 변경
+### 9.3 리비전 충돌과 외부 변경 `[SOURCE_VERIFIED]`
 
 - 리비전 충돌은 다른 변경이 있었다는 뜻입니다. 최신 상태를 다시 읽고 사용자가 새 의도를 결정합니다. 오래된 리비전을 강제로 적용하거나 리비전만 바꿔 재전송하지 않습니다.
 - 외부에서 SSOT 파일을 직접 고치면 앱은 쓰기를 멈추고 검토를 요구합니다. 자동 병합·복제 기능이 아닙니다. 잠금 파일이나 소유자 광고를 지워 쓰기를 강행하지 않습니다.
 
 ## 10. 백업·검증·복원·이동
 
-### 10.1 시작 메뉴의 Work Stack Maintenance
+### 10.1 시작 메뉴의 Work Stack Maintenance `[SOURCE_VERIFIED]`
 
 **Work Stack Maintenance**는 Backup / Verify / Restore / Relocate를 안내 창으로 제공합니다. Backup·Restore·Relocate는 Work Stack이 꺼져 있어야 하며, 실행 중이면 이 설치본의 프로세스만 종료할지 묻습니다. Restore와 Relocate는 명시적 확인이 필요합니다.
 
-> **대상 범위.** 이 도구는 **`config.json`에 적힌 `data_dir`·`backup_dir`** 만 다룹니다. 연결 설정 화면에서 선택한 다른 로컬 프로필이나 SSH 원격 워크스페이스를 자동으로 백업하지 않습니다. 원격 데이터의 백업은 원격 관리자가 그 환경에서 명시적인 데이터 경로로 수행합니다. Windows의 로컬 백업을 원격 데이터 백업으로 간주하지 않습니다.
+> **대상 범위(KG-R1 관련).** 이 도구는 **`config.json`에 적힌 `data_dir`·`backup_dir`** 만 다룹니다. 연결 설정 화면에서 선택한 다른 로컬 프로필이나 SSH 원격 워크스페이스를 자동으로 백업하지 않습니다. 원격 데이터의 백업은 원격 관리자가 그 환경에서 명시적인 데이터 경로로 수행합니다. Windows의 로컬 백업을 원격 데이터 백업으로 간주하지 않습니다.
 
 비대화형 형식: `Maintain-WorkStack.ps1 -Action <Backup|Verify|Restore|Relocate> [-BackupPath <zip>] [-Destination <dir>] [-Confirm]`.
 
-### 10.2 명령행
+### 10.2 명령행 `[SOURCE_VERIFIED]`
 
 서버를 멈춘 뒤, 실제 데이터 경로를 `--data-dir`로 명시합니다. 아래 경로는 자리표시자입니다.
 
@@ -546,7 +551,7 @@ $Archive = 'REPLACE_WITH_ACTUAL_BACKUP_ZIP'
 
 ## 11. 업데이트
 
-### 11.1 자동 업데이트(앱 내)
+### 11.1 자동 업데이트(앱 내) `[SOURCE_VERIFIED]`
 
 데스크톱은 시작할 때 한 번 `https://github.com/Shinick-Han/work-stack-public/releases/latest/download/workstack-update.json`을 읽습니다. 매니페스트는 `schema_version` 1, `channel` `stable`이어야 하고, 설치 파일과 사이드카의 **이름·URL·SHA-256·크기**가 정확히 맞아야만 받아들입니다(설치 파일 100 MiB, 사이드카 1 KiB 상한, 설치 버전보다 오래된 버전은 거부). 내려받은 파일은 `%LOCALAPPDATA%\WorkStack\updates`에 두고 다이제스트를 다시 확인합니다.
 
@@ -564,7 +569,7 @@ $Archive = 'REPLACE_WITH_ACTUAL_BACKUP_ZIP'
 
 > 영문 `docs/WORKSTACK_WINDOWS_INSTALL_BACKUP_USER_GUIDE_2026-08-30.md`는 같은 설치기의 짧은 영문 짝입니다. 1.0.7의 연결 레지스트리·프로세스 이름·수동 업그레이드 주의는 **이 한국어 안내서**가 더 깁니다.
 
-### 11.2 수동 업데이트(데이터 보존)
+### 11.2 수동 업데이트(데이터 보존) `[SOURCE_VERIFIED]`
 
 검증된 새 설치 파일과 사이드카를 같은 폴더에 둡니다.
 
@@ -605,7 +610,7 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1 `
 & "$env:LOCALAPPDATA\Programs\WorkStack\scripts\windows\Uninstall-WorkStack.ps1"
 ```
 
-매개변수: `-InstallRoot`(기본 `%LOCALAPPDATA%\Programs\WorkStack`), `-StateRoot`(기본 `%LOCALAPPDATA%\WorkStack`), `-RemoveData`.
+`[SOURCE_VERIFIED]` 매개변수: `-InstallRoot`(기본 `%LOCALAPPDATA%\Programs\WorkStack`), `-StateRoot`(기본 `%LOCALAPPDATA%\WorkStack`), `-RemoveData`.
 
 - 설치 폴더가 `%LOCALAPPDATA%\Programs` 아래가 아니면 `Refusing to uninstall outside LOCALAPPDATA\Programs.`로 중단합니다.
 - 이 설치본의 프로세스를 종료하고, **소유가 확인된** 세 바로가기(`Work Stack.lnk` 시작 메뉴·바탕 화면, `Work Stack Maintenance.lnk`)만 지웁니다. 소유를 확인할 수 없는 링크는 `Preserving shortcut whose Work Stack ownership could not be verified: ...` 경고와 함께 남깁니다.
@@ -615,9 +620,9 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1 `
 
 제거 전 순서: (1) 앱·CLI·에이전트 종료 → (2) `maintenance backup`과 `maintenance verify` → (3) 실제 데이터 폴더 경로 기록 → (4) 제거. 제거 후 남은 폴더가 보여도 경로를 확인하기 전에는 재귀 삭제하지 않습니다.
 
-## 13. 롤백: 자동 실패 복구와 의도적 다운그레이드는 다릅니다
+## 13. 롤백: 자동 실패 복구와 의도적 다운그레이드는 다릅니다 (KG-R3)
 
-**자동 실패 복구**: 설치기는 설치 중 예외가 나면 이전 프로그램 폴더와 `config.json`을 되돌립니다. 종료 후 적용기(`Apply-WorkStackUpdate.ps1`)는 새 런타임이 즉시 종료하는 등 커밋 전 실패에서 스냅샷을 되돌리고 `rolled-back` 영수증을 남기며, 되돌리기까지 실패하면 `recovery-required`와 함께 `recovery_path`를 기록합니다. 릴리스 게이트의 `Test-WorkStackUpgrade.ps1`은 **주입된 설치 실패**와 **새 런처 시작 실패**에서 이전 버전 페이로드·설정 바이트·SSOT 바이트·사용자 지정 백업 폴더가 보존되는지를 검사합니다.
+**자동 실패 복구** `[SOURCE_VERIFIED]`: 설치기는 설치 중 예외가 나면 이전 프로그램 폴더와 `config.json`을 되돌립니다. 종료 후 적용기(`Apply-WorkStackUpdate.ps1`)는 새 런타임이 즉시 종료하는 등 커밋 전 실패에서 스냅샷을 되돌리고 `rolled-back` 영수증을 남기며, 되돌리기까지 실패하면 `recovery-required`와 함께 `recovery_path`를 기록합니다. 릴리스 게이트의 `Test-WorkStackUpgrade.ps1`은 **주입된 설치 실패**와 **새 런처 시작 실패**에서 이전 버전 페이로드·설정 바이트·SSOT 바이트·사용자 지정 백업 폴더가 보존되는지를 검사합니다.
 
 **의도적 다운그레이드**: 정상 설치된 새 버전 위에 이전 설치 파일을 실행하는 절차는 위 검사가 증명하지 않으며 릴리스 정책에도 없습니다. 자동 업데이트 검사기는 설치본보다 오래된 버전을 `update version must not be older than the installed version`으로 거부합니다. 이전 설치 파일의 체크섬이 맞다는 사실은 새 버전 데이터와의 호환성을 증명하지 않습니다. **이 문서는 다운그레이드 명령을 제공하지 않습니다.** 릴리스가 정확한 이전 버전·지원 절차·검증 결과를 명시할 때만 그 절차를 따르세요.
 
@@ -625,7 +630,7 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1 `
 
 ## 14. 알려진 한계와 증상별 확인 순서
 
-### 14.1 알려진 한계
+### 14.1 알려진 한계 `[SOURCE_VERIFIED]`
 
 - 설치 파일은 코드 서명이 없습니다. 체크섬은 전송 무결성 증거일 뿐입니다.
 - Remote SSH 모드에는 오프라인 Windows 복제본, 필드 단위 자동 병합, 채택 이전 바이트 백업으로부터의 복원이 없습니다. Linux가 유일한 계획 상태 권위입니다.
@@ -663,14 +668,18 @@ powershell -ExecutionPolicy Bypass -File .\WorkStack-Setup-1.0.7.ps1 `
 
 릴리스 버전, 사용한 데이터 위치의 식별 정보(UID), 종료 코드, 오류 시각, 관련 로그 파일 이름. 개인 경로·원격 주소·작업 내용·인증 정보·원시 요청은 필요한 범위 밖으로 노출하지 마세요. 먼저 검증된 백업과 원본을 보존하고, 데이터 삭제·잠금 우회·전체 프로세스 종료로 증상을 숨기지 않습니다.
 
-## 15. 이 안내서가 다루지 않는 것
+## 15. 이 문서가 아직 묶지 않는 것
 
-- 이 저장소의 GitHub Release로 게시된 v1.0.7 설치 파일·사이드카·SHA-256. 지금은 사이드카가 체크섬의 권위입니다.
-- Windows 10을 포함한 더 넓은 OS/WebView2 조합. 확인한 환경은 64비트 Windows 11과 WebView2입니다.
-- Task 상태 변경의 Undo는 방금 바꾼 사용자 의도에만 적용되며, 리비전을 자동으로 맞추지 않습니다.
+| 항목 | 상태 |
+| --- | --- |
+| 공개 v1.0.7 태그, 설치 파일 URL, 게시 SHA-256 | 공개 채널에 자산이 올라간 뒤에 채움. 지금은 사이드카가 권위 |
+| 이 설치본 밖의 Windows/WebView2 조합 | 64비트 Windows 11 + WebView2만 관찰 |
+| Task 상태 **Undo** GUI | 소스에 있음(`useTaskStatusIntent.ts`). 방금 바꾼 사용자 의도에만 적용되고 리비전을 자동으로 맞추지 않음 |
+| 8.3절 예시를 폐기 가능한 워크스페이스에서 한 줄씩 실행한 기록 | 없음. 운영 SSOT에 실행하지 말 것 |
+| Remote SSH SSOT를 이 안내서 작성 중에 연결한 기록 | 없음. 명령 형태는 소스 기준(6.3절) |
 
-같은 `docs/` 폴더의 영문 기능 안내서는 참고용입니다. Workspace 단축키는 이 문서 3.2절(`1`–`8`)이 1.0.7 기준입니다.
+관련 영문 기능 안내(단축키는 3.2절이 우선): `docs/WORKSTACK_OBJECTIVE_HUB_USER_GUIDE_2026-08-30.md`, `docs/WORKSTACK_DAILY_REVIEW_USER_GUIDE_2026-08-30.md`, `docs/WORKSTACK_UNIFIED_SEARCH_TABLE_USER_GUIDE_2026-08-30.md`, `docs/WORKSTACK_WINDOWS_INSTALL_BACKUP_USER_GUIDE_2026-08-30.md`.
 
 ---
 
-이 문서는 Work Stack **1.0.7** 기준입니다. 이 저장소의 GitHub Releases에 v1.0.7이 게시된 것은 아닙니다.
+이 문서는 Work Stack **1.0.7** 소스와 1.0.7 Windows 설치본을 기준으로 합니다. 공개 GitHub 릴리스 채널에 v1.0.7이 게시된 것은 아닙니다.

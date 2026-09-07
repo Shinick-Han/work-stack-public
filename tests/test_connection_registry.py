@@ -12,6 +12,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "desktop" / "python-webview-shell" / "connection_registry.py"
+SHELL = ROOT / "desktop" / "python-webview-shell"
+if str(SHELL) not in sys.path:
+    sys.path.insert(0, str(SHELL))
 SPEC = importlib.util.spec_from_file_location("connection_registry_test", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -74,6 +77,18 @@ class ConnectionRegistryTest(unittest.TestCase):
         self.assertIsInstance(parsed.profiles[0], MODULE.SshConnectionProfile)
         self.assertIsInstance(parsed.profiles[1], MODULE.LocalConnectionProfile)
         self.assertEqual(parsed.active_profile_id, PROFILE_A)
+
+    def test_legacy_ssh_profile_omits_remote_python_and_new_value_is_byte_stable(self) -> None:
+        legacy = registry(ssh_profile())
+        parsed = MODULE.registry_from_document(legacy)
+        self.assertIsNone(parsed.profiles[0].remote_python)
+        self.assertEqual(MODULE.registry_to_document(parsed), legacy)
+
+        python_path = "/srv/workstack/venv/bin/python"
+        with_python = registry(ssh_profile(remote_python=python_path))
+        parsed_python = MODULE.registry_from_document(with_python)
+        self.assertEqual(parsed_python.profiles[0].remote_python, python_path)
+        self.assertEqual(MODULE.registry_to_document(parsed_python), with_python)
 
     def test_rejects_unknown_fields_at_every_schema_level(self) -> None:
         cases = (
@@ -138,12 +153,12 @@ class ConnectionRegistryTest(unittest.TestCase):
         )
         self.assertEqual(parsed.duplicate_authorities, ())
 
-    def test_singleton_ssh_migration_is_lossless_after_legacy_normalization(self) -> None:
+    def test_singleton_ssh_migration_is_lossless_for_canonical_paths(self) -> None:
         legacy = {
             "storage_mode": "ssh-remote",
             "ssh_host_alias": "work-linux",
-            "remote_app_dir": "/srv/workstack/app/",
-            "remote_data_dir": "/srv/workstack/engineering/",
+            "remote_app_dir": "/srv/workstack/app",
+            "remote_data_dir": "/srv/workstack/engineering",
             "local_forward_port": 18765,
             "workspace_id": WORKSPACE_A,
         }
@@ -155,14 +170,28 @@ class ConnectionRegistryTest(unittest.TestCase):
             MODULE.singleton_draft_from_registry(migrated),
             {
                 **legacy,
-                "remote_app_dir": "/srv/workstack/app",
-                "remote_data_dir": "/srv/workstack/engineering",
                 "remote_port": 8765,
             },
         )
         profile = migrated.profiles[0]
         self.assertEqual(profile.expected_workspace_id, WORKSPACE_A)
         self.assertEqual(profile.preferred_forward_port, 18765)
+        self.assertIsNone(profile.remote_python)
+
+    def test_singleton_ssh_migration_rejects_trailing_slash_instead_of_normalizing(self) -> None:
+        with self.assertRaises(RuntimeError):
+            MODULE.migrate_singleton_draft(
+                {
+                    "storage_mode": "ssh-remote",
+                    "ssh_host_alias": "work-linux",
+                    "remote_app_dir": "/srv/workstack/app/",
+                    "remote_data_dir": "/srv/workstack/engineering/",
+                    "local_forward_port": 18765,
+                    "workspace_id": WORKSPACE_A,
+                },
+                profile_id=PROFILE_A,
+                label="Company engineering",
+            )
 
     def test_singleton_local_migration_requires_explicit_existing_authority(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "requires local_data_dir"):
@@ -248,6 +277,9 @@ class ConnectionRegistryTest(unittest.TestCase):
             ssh_profile(enabled=1),
             ssh_profile(preferred_forward_port=True),
             ssh_profile(remote_data_dir="/srv/../private"),
+            ssh_profile(remote_data_dir="/srv/workstack/engineering/"),
+            ssh_profile(remote_app_dir="/srv/work stack/app"),
+            ssh_profile(remote_data_dir="/srv/workstack/ssot;x"),
             ssh_profile(ssh_host_alias="work; calc"),
             ssh_profile(ssh_host_alias="-V"),
             ssh_profile(label="   "),

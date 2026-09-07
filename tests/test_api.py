@@ -1272,8 +1272,11 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(len(tasks), before + 1)
         self.assertIn(created["id"], {task["id"] for task in tasks})
 
-        # Without owner metadata the legacy direct path is taken and is still
-        # refused by the server-held writer lease; nothing is written locally.
+        # Without owner metadata the running owner still holds the writer lease.
+        # A1 acquire_owner_authority classifies that as OWNER_UNAVAILABLE
+        # (test_owner_authority.test_lease_held_without_metadata_is_owner_unavailable);
+        # dispatch_ordinary refuses once with no second local acquire or write.
+        # The pre-A1 StoreLockedError wording "already owned" is not on this path.
         self.store.server_info_path.unlink()
         blocked = subprocess.run(
             ordinary,
@@ -1282,7 +1285,10 @@ class ApiTest(unittest.TestCase):
             timeout=15,
         )
         self.assertNotEqual(blocked.returncode, 0)
-        self.assertIn("already owned", blocked.stderr.decode("utf-8", errors="replace"))
+        self.assertIn(
+            "Work Stack writer authority is unavailable",
+            blocked.stderr.decode("utf-8", errors="replace"),
+        )
         self.assertEqual(len(self.stack.list_tasks(status="all")), before + 1)
 
 

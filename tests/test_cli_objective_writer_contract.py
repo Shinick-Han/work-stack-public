@@ -260,6 +260,25 @@ class _Case(unittest.TestCase):
         self.root = self.paths["data"]
         self.uid = self.store.load("workspace.json")["id"]
         self.before = self.objectives()
+        self._advertised_owner_lease = None
+
+    def hold_advertised_owner_lock(self):
+        """A1: leftover server_info without a held lock is exclusive-local."""
+
+        if self._advertised_owner_lease is not None:
+            return
+        lease = self.store.try_acquire_writer_lease()
+        self.assertIsNotNone(
+            lease, "advertising a running owner requires a real writer lock"
+        )
+        self._advertised_owner_lease = lease
+        self.addCleanup(self._release_advertised_owner_lock)
+
+    def _release_advertised_owner_lock(self):
+        lease = self._advertised_owner_lease
+        self._advertised_owner_lease = None
+        if lease is not None:
+            self.store.release_writer_lease(lease)
 
     def objectives(self):
         return json.loads((self.root / "okr.json").read_bytes())["objectives"]
@@ -289,6 +308,7 @@ class _Case(unittest.TestCase):
     def wire_owner(self):
         owner = _WireOwner(self.uid)
         self.context.callback(owner.close)
+        self.hold_advertised_owner_lock()
         self.store.write_server_info("127.0.0.1", owner.port)
         return owner
 
@@ -552,6 +572,7 @@ class ObjectiveWireContract(_Case):
 class ObjectiveInvalidOwnerContract(_Case):
     def test_directory_advertisement_refuses_without_cleanup(self):
         info = self.store.server_info_path
+        self.hold_advertised_owner_lock()
         info.mkdir()
         before = self.planning_bytes()
         result = self.cli("Directory")
@@ -607,6 +628,7 @@ class ObjectiveInvalidOwnerContract(_Case):
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
+        self.hold_advertised_owner_lock()
         self.store.write_server_info("127.0.0.1", port)
         raw = self.store.server_info_path.read_bytes()
         before = self.planning_bytes()

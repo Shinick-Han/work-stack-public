@@ -15,6 +15,13 @@ from typing import Any, Mapping, Sequence
 
 from .canonical import CanonicalJsonError, canonical_sha256
 from .contracts import StorageContractError, require_valid_by_format
+from ..task_display_id import (
+    FIELD as TASK_DISPLAY_ID_HIGH_WATER,
+    TaskDisplayIdError,
+    admitted_high_water,
+    read_optional_high_water,
+    task_ids_from_records,
+)
 from .migration_idempotency import convert_v3_idempotency_ledger
 from .semantic import (
     SemanticProjectionError,
@@ -203,6 +210,12 @@ def _semantic_ordered_documents(
     ):
         ordered[document][field].sort(key=lambda item: item["id"])
     return ordered
+
+
+def _workspace_without_high_water(workspace: Mapping[str, Any]) -> dict[str, Any]:
+    detached = dict(workspace)
+    detached.pop(TASK_DISPLAY_ID_HIGH_WATER, None)
+    return detached
 
 
 def _generated_id(
@@ -578,6 +591,32 @@ def _validate_artifacts(workspace: Mapping[str, Any], records: Mapping[str, Sequ
             require_valid_by_format(event)
 
 
+def _v4_store_metadata(
+    workspace_source: Mapping[str, Any],
+    documents: Mapping[str, Mapping[str, Any]],
+    candidate_created_at: str,
+) -> dict[str, Any]:
+    store = {
+        "format": "workstack.ssot",
+        "schema_version": 4,
+        "schema_set": "workstack.ssot.v4",
+        "workspace_uid": workspace_source["id"],
+        "created_at": candidate_created_at,
+    }
+    try:
+        water = read_optional_high_water(workspace_source)
+    except TaskDisplayIdError as error:
+        raise V3ConversionError("INVALID_V3_SOURCE") from error
+    if water is None:
+        return store
+    try:
+        admitted_high_water(water, task_ids_from_records(documents["backlog.json"]["tasks"]))
+    except TaskDisplayIdError as error:
+        raise V3ConversionError("INVALID_V3_SOURCE") from error
+    store[TASK_DISPLAY_ID_HIGH_WATER] = water
+    return store
+
+
 def convert_v3_documents(
     documents: Mapping[str, Mapping[str, Any]], *, candidate_created_at: str
 ) -> V4Conversion:
@@ -591,6 +630,9 @@ def convert_v3_documents(
     try:
         source_documents = copy.deepcopy(dict(documents))
         semantic_documents = _semantic_ordered_documents(source_documents)
+        semantic_documents["workspace.json"] = _workspace_without_high_water(
+            semantic_documents["workspace.json"]
+        )
         v3_snapshot = snapshot_from_v3_documents(semantic_documents)
         workspace_source = source_documents["workspace.json"]
         workspace_uid = workspace_source["id"]
@@ -619,11 +661,7 @@ def convert_v3_documents(
             "activity": _convert_activity_events(source_documents, workspace_uid, indexes),
             "worklog": _convert_worklog_events(source_documents, workspace_uid, indexes),
         })
-        store = {
-            "format": "workstack.ssot", "schema_version": 4,
-            "schema_set": "workstack.ssot.v4", "workspace_uid": workspace_uid,
-            "created_at": candidate_created_at,
-        }
+        store = _v4_store_metadata(workspace_source, source_documents, candidate_created_at)
         require_valid_by_format(store)
         _validate_artifacts(workspace, records, streams)
         idempotency_ledger = convert_v3_idempotency_ledger(

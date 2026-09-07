@@ -1,4 +1,4 @@
-"""Bounded, read-only LOCAL-v3 authority selection for the bundled installer."""
+"""Bounded, read-only local v3/v5 collection authority selection for the bundled installer."""
 from __future__ import annotations
 
 import argparse
@@ -21,11 +21,13 @@ from connection_registry import (  # noqa: E402
 from local_workspace_rebind import derive_store_runtime_root  # noqa: E402
 import profile_inspection as inspection  # noqa: E402
 from workstack.store import (  # noqa: E402
-    STORE_MANIFEST_NAME, StoreCorruptError, _validate_store_manifest_header,
-    _validate_store_manifest_files, _validate_store_manifest_tasks,
+    STORE_MANIFEST_NAME, StoreCorruptError, _task_semantics,
+    _validate_store_manifest_header, _validate_store_manifest_files,
+    _validate_store_manifest_tasks, supported_roster,
 )
 
 MANIFEST_READ_LIMIT = 4 * 1024 * 1024
+COLLECTION_FORMATS = frozenset({"v3", "v5"})
 
 
 class AuthorityError(RuntimeError):
@@ -109,6 +111,85 @@ def record_binding(record: Evidence | None) -> dict:
     return {"state": "present", "sha256": digest(record.raw), "identity": record.identity}
 
 
+def selected_local_profile(registry):
+    matches = [profile for profile in registry.profiles if profile.profile_id == registry.active_profile_id]
+    if len(matches) != 1 or not matches[0].enabled:
+        raise AuthorityError("active_profile_invalid")
+    profile = matches[0]
+    if not isinstance(profile, LocalConnectionProfile):
+        raise AuthorityError("active_profile_not_local")
+    selected = next(item for item in registry_to_document(registry)["profiles"] if item["profile_id"] == profile.profile_id)
+    return profile, selected
+
+
+def inspect_selected(profile, selected):
+    try:
+        data = Path(inspection.validate_local_directory_path(profile.data_dir)).resolve()
+        safe_components(data)
+        if (data / "store.json").exists():
+            raise AuthorityError("unsupported_store_format")
+        candidate = inspection.profile_test_candidate_from_document(selected)
+        current = inspection.inspect_profile(candidate, enable_format_neutral=True)
+    except inspection.ProfileInspectionError as error:
+        raise AuthorityError(error.code) from error
+    if current.status != "ready" or current.actual_workspace_id != profile.expected_workspace_id or current.authority is None:
+        raise AuthorityError("current_authority_mismatch")
+    if current.authority.storage_format not in COLLECTION_FORMATS:
+        raise AuthorityError("unsupported_store_format")
+    return data, current
+
+
+def runtime_root(data: Path) -> Path:
+    runtime_base = os.environ.get("WORK_STACK_RUNTIME")
+    if runtime_base:
+        safe_components(Path(runtime_base).expanduser().absolute())
+    elif os.environ.get("LOCALAPPDATA"):
+        safe_components(Path(os.environ["LOCALAPPDATA"]).expanduser().absolute() / "WorkStack" / "runtime")
+    return derive_store_runtime_root(data)
+
+
+def admit_baseline(manifest: dict, expected_workspace_id: str, current) -> None:
+    try:
+        roster = _validate_store_manifest_header(manifest)
+        _validate_store_manifest_files(manifest.get("files"), roster)
+        _validate_store_manifest_tasks(manifest.get("tasks"))
+    except StoreCorruptError as error:
+        raise AuthorityError("baseline_invalid") from error
+    if manifest["store_schema_version"] != current.authority.schema_version:
+        raise AuthorityError("baseline_schema_mismatch")
+    if manifest["workspace_id"] != expected_workspace_id:
+        raise AuthorityError("baseline_identity_mismatch")
+
+
+def confirm_task_baseline(manifest: dict, values: dict) -> None:
+    try:
+        expected = _task_semantics(values["backlog.json"])
+    except StoreCorruptError:
+        expected = {}
+    if manifest["tasks"] != expected:
+        raise AuthorityError("baseline_tasks_mismatch")
+
+
+def confirm_current_matches_baseline(data: Path, current, expected_workspace_id: str, manifest: dict) -> None:
+    admit_baseline(manifest, expected_workspace_id, current)
+    physical = frozenset(supported_roster(current.authority.schema_version))
+    try:
+        values, snapshots = inspection._read_store_values(data, physical)
+    except inspection.ProfileInspectionError as error:
+        raise AuthorityError(error.code) from error
+    actual = inspection._collection_authority_inspection(
+        current.actual_workspace_id, snapshots,
+        storage_format=current.authority.storage_format,
+        schema_version=current.authority.schema_version,
+    )
+    if actual != current.authority:
+        raise AuthorityError("current_authority_changed")
+    files = manifest["files"]
+    if set(files) != set(snapshots) or any(files[name] != "sha256:" + snapshot[2] for name, snapshot in snapshots.items()):
+        raise AuthorityError("baseline_files_mismatch")
+    confirm_task_baseline(manifest, values)
+
+
 def resolve_authority(state_root: Path) -> dict:
     registry_path = state_root.absolute() / REGISTRY_FILE
     registry_record = read_optional(registry_path, MAX_REGISTRY_BYTES)
@@ -122,52 +203,13 @@ def resolve_authority(state_root: Path) -> dict:
         registry = registry_from_document(raw_registry)
     except RuntimeError as error:
         raise AuthorityError("registry_invalid") from error
-    matches = [profile for profile in registry.profiles if profile.profile_id == registry.active_profile_id]
-    if len(matches) != 1 or not matches[0].enabled:
-        raise AuthorityError("active_profile_invalid")
-    profile = matches[0]
-    if not isinstance(profile, LocalConnectionProfile):
-        raise AuthorityError("active_profile_not_local")
-    selected = next(item for item in registry_to_document(registry)["profiles"] if item["profile_id"] == profile.profile_id)
-    try:
-        data = Path(inspection.validate_local_directory_path(profile.data_dir)).resolve()
-        safe_components(data)
-        if (data / "store.json").exists():
-            raise AuthorityError("unsupported_store_format")
-        candidate = inspection.profile_test_candidate_from_document(selected)
-        current = inspection.inspect_profile(candidate, enable_format_neutral=True)
-    except inspection.ProfileInspectionError as error:
-        raise AuthorityError(error.code) from error
-    if current.status != "ready" or current.actual_workspace_id != profile.expected_workspace_id or current.authority is None:
-        raise AuthorityError("current_authority_mismatch")
-
-    runtime_base = os.environ.get("WORK_STACK_RUNTIME")
-    if runtime_base:
-        safe_components(Path(runtime_base).expanduser().absolute())
-    elif os.environ.get("LOCALAPPDATA"):
-        safe_components(Path(os.environ["LOCALAPPDATA"]).expanduser().absolute() / "WorkStack" / "runtime")
-    runtime = derive_store_runtime_root(data)
+    profile, selected = selected_local_profile(registry)
+    data, current = inspect_selected(profile, selected)
+    runtime = runtime_root(data)
     manifest_path = runtime / STORE_MANIFEST_NAME
     baseline = read_optional(manifest_path, MANIFEST_READ_LIMIT)
     if baseline is not None:
-        manifest = document(baseline)
-        try:
-            _validate_store_manifest_header(manifest)
-            _validate_store_manifest_files(manifest.get("files"))
-            _validate_store_manifest_tasks(manifest.get("tasks"))
-        except StoreCorruptError as error:
-            raise AuthorityError("baseline_invalid") from error
-        if manifest["workspace_id"] != profile.expected_workspace_id:
-            raise AuthorityError("baseline_identity_mismatch")
-        try:
-            _, snapshots = inspection._read_store_values(data)
-        except inspection.ProfileInspectionError as error:
-            raise AuthorityError(error.code) from error
-        actual = inspection._v3_authority_inspection(current.actual_workspace_id, snapshots)
-        if actual != current.authority:
-            raise AuthorityError("current_authority_changed")
-        if any(manifest["files"][name] != "sha256:" + snapshot[2] for name, snapshot in snapshots.items()):
-            raise AuthorityError("baseline_files_mismatch")
+        confirm_current_matches_baseline(data, current, profile.expected_workspace_id, document(baseline))
     if read_optional(manifest_path, MANIFEST_READ_LIMIT) != baseline:
         raise AuthorityError("baseline_changed")
     if read_optional(registry_path, MAX_REGISTRY_BYTES) != registry_record:

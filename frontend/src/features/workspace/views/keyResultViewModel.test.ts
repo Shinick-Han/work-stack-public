@@ -80,7 +80,7 @@ describe("derived edges", () => {
 
     const taskEdges = edges.filter((item) => item.kind === DERIVED_TASK_KEY_RESULT);
     expect(taskEdges).toHaveLength(1);
-    expect(taskEdges[0].source).toBe(taskEndpointKey("T-1"));
+    expect(taskEdges[0].target).toBe(taskEndpointKey("T-1"));
     expect(edges.every((item) => item.derived)).toBe(true);
     expect(edges.filter((item) => item.kind === DERIVED_KEY_RESULT_OBJECTIVE)).toHaveLength(3);
     expect(new Set(edges.map((item) => item.id)).size).toBe(edges.length);

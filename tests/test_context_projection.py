@@ -13,13 +13,41 @@ from unittest import mock
 
 from workstack.context_projection import group_context_by_task, project_context_items
 from workstack.service import WorkStack
-from workstack.store import Store
+from workstack.store import Store, _serialized_json_bytes
+from workstack.store_document_validation import validate_document_values
 from workstack.storage.migration_conversion import convert_v3_documents
+from workstack.storage.migration_source import V3_SOURCE_FILES
 from workstack.storage.query_repository import WorkspaceQueryRepository
 from workstack.storage.read_repository import V3WorkspaceRepository, V4WorkspaceRepository
 from workstack.storage.repository import V4ReadOnlyStoreAdapter
 from tests.test_storage_intent_dual_backend import _write_conversion
 from tests.test_storage_semantic_parity import FIXTURES, _load
+
+
+def _write_historical_v3(destination: Path, source_root: Path) -> None:
+    """Materialize schema-3 test data from this test's synthetic current store.
+
+    ``WorkStack(Store(...))`` upgrades the source to schema 5. The V3 reader
+    correctly refuses that roster, so the historical copy is a separate
+    directory: the nine v3 payloads plus stepped-back metadata. The source
+    tree is not relabeled.
+    """
+
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in V3_SOURCE_FILES:
+        body = (source_root / name).read_bytes()
+        if name == "store-meta.json":
+            metadata = json.loads(body.decode("utf-8"))
+            metadata["store_schema_version"] = 3
+            migrations = metadata.get("migrations")
+            if isinstance(migrations, dict):
+                migrations.pop("reports", None)
+            body = _serialized_json_bytes(metadata)
+        (destination / name).write_bytes(body)
+    validate_document_values(
+        {name: json.loads((destination / name).read_bytes()) for name in V3_SOURCE_FILES},
+        schema_version=3,
+    )
 
 
 def keys(items):
@@ -179,14 +207,19 @@ class ContextProjectionTest(unittest.TestCase):
 
 class ContextServiceProjectionTest(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
+        # The full-suite launcher admits the result root but points TEMP at a
+        # sibling directory, so the temporary authority is allocated inside the
+        # admitted root instead of inherited from TEMP. Standing alone, the
+        # process temporary directory is itself the admitted root.
+        admitted = Path(os.environ.get("WORK_STACK_TEST_RESULT_ROOT", tempfile.gettempdir())).resolve()
+        admitted.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=admitted, prefix="context-")
         self.addCleanup(self.temporary.cleanup)
         self.base = Path(self.temporary.name).resolve()
         data = (self.base / "data").resolve()
         runtime_base = (self.base / "runtime").resolve()
         root_key = hashlib.sha256(os.path.normcase(str(data)).encode("utf-8")).hexdigest()[:20]
         runtime = (runtime_base / root_key).resolve()
-        admitted = Path(os.environ.get("WORK_STACK_TEST_RESULT_ROOT", tempfile.gettempdir())).resolve()
         for destination in (self.base, data, runtime):
             self.assertTrue(destination.is_relative_to(admitted))
         environment = mock.patch.dict(os.environ, {
@@ -238,7 +271,13 @@ class ContextServiceProjectionTest(unittest.TestCase):
 
     def test_optional_query_backend_keeps_shared_context_counts(self):
         query_root = self.base / "query"
-        query = WorkspaceQueryRepository(V3WorkspaceRepository(self.store), query_root)
+        historical = self.base / "historical-v3"
+        _write_historical_v3(historical, self.store.root)
+        self.assertFalse((historical / "reports.json").exists())
+        self.assertTrue((self.store.root / "reports.json").exists())
+        query = WorkspaceQueryRepository(
+            V3WorkspaceRepository(Store(historical)), query_root
+        )
         queried = WorkStack(self.store, initialize=False, query_commands=query)
         self.assertEqual(queried.workspace_projection(), self.stack.workspace_projection())
         self.assertEqual(queried.task_detail(self.first["id"]), self.stack.task_detail(self.first["id"]))
@@ -246,11 +285,19 @@ class ContextServiceProjectionTest(unittest.TestCase):
     def test_v4_read_projection_preserves_nonempty_note_capture_counts_and_detail(self):
         # Reuse the established schema-valid v3/v4 parity fixture; this test
         # exercises the new read contract, not the migration of new fixture shapes.
+        # WorkStack upgrades a copy to schema 5; V3WorkspaceRepository reads a
+        # separate unupgraded nine-file tree, matching test_storage_query_repository.
         documents = _load("populated")
-        v3_root = self.base / "parity-v3"
-        shutil.copytree(FIXTURES / "populated", v3_root)
-        v3 = WorkStack(Store(v3_root))
-        v3.query_commands = WorkspaceQueryRepository(V3WorkspaceRepository(v3.store), self.base / "v3-query")
+        historical_root = self.base / "parity-v3-historical"
+        released_root = self.base / "parity-v3-released"
+        shutil.copytree(FIXTURES / "populated", historical_root)
+        shutil.copytree(FIXTURES / "populated", released_root)
+        v3 = WorkStack(Store(released_root))
+        self.assertFalse((historical_root / "reports.json").exists())
+        self.assertTrue((released_root / "reports.json").exists())
+        v3.query_commands = WorkspaceQueryRepository(
+            V3WorkspaceRepository(Store(historical_root)), self.base / "v3-query"
+        )
         conversion = convert_v3_documents(documents, candidate_created_at="2026-09-02T00:00:00Z")
         authority = self.base / "v4"
         authority.mkdir()

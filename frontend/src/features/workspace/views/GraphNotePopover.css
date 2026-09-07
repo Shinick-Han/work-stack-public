@@ -1,0 +1,48 @@
+.wsv-graph-note {
+  position: absolute;
+  z-index: 6;
+  top: 12px;
+  right: 12px;
+  box-sizing: border-box;
+  width: min(320px, calc(100% - 24px));
+  max-height: min(360px, calc(100% - 24px));
+  overflow: auto;
+  padding: 0;
+  border: 1px solid var(--ws-border-default);
+  border-radius: 12px;
+  background: var(--ws-surface-raised);
+  color: var(--ws-text-primary);
+  box-shadow: 0 12px 36px var(--ws-backdrop);
+}
+.wsv-graph-note__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ws-border-default);
+}
+.wsv-graph-note__header > div { flex: 1; min-width: 0; }
+.wsv-graph-note__header p { margin: 0 0 4px; color: var(--ws-text-muted); font-size: 11px; }
+.wsv-graph-note__header h2 {
+  margin: 0;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.wsv-graph-note__body { padding: 12px 14px 14px; overflow-wrap: anywhere; }
+.wsv-graph-note__created { margin: 0 0 8px; color: var(--ws-text-muted); font-size: 11px; }
+.wsv-graph-note__text { margin: 0 0 12px; font-size: 13px; white-space: pre-wrap; }
+.wsv-graph-note__body h3 { margin: 0 0 6px; font-size: 12px; }
+.wsv-graph-note__body ul { margin: 0; padding-left: 1.1rem; font-size: 12px; }
+.wsv-graph-note__body p { margin: 0; font-size: 13px; }
+.wsv-graph-note button {
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font: inherit;
+  border: 1px solid var(--ws-control-border);
+  border-radius: 8px;
+  background: var(--ws-control-bg);
+  color: var(--ws-text-primary);
+}
+.wsv-graph-note button:focus-visible { outline: 2px solid var(--ws-focus-ring); outline-offset: 3px; }

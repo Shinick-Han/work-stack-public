@@ -173,6 +173,30 @@ class RemoteConnectionMonitorTest(unittest.TestCase):
 
         self.assertFalse(monitor.is_running)
 
+    def test_stale_attempt_callbacks_do_not_reconnect_or_publish(self) -> None:
+        connection = MutableConnection(alive=False, healthy=False)
+        monitor = MODULE.RemoteConnectionMonitor(
+            is_healthy=connection.is_healthy,
+            is_process_alive=connection.is_process_alive,
+            reconnect_once=connection.reconnect_once,
+            publish_state=connection.publish_state,
+            reload_view=connection.reload_view,
+            initial_grace=0,
+            poll_interval=0.005,
+            failure_threshold=1,
+            reconnect_backoff=(0.01,),
+            reconnect_grace=0,
+            is_current_attempt=lambda: False,
+        )
+
+        self.assertTrue(monitor.start())
+        time.sleep(0.03)
+        monitor.stop()
+
+        self.assertEqual(connection.reconnects, 0)
+        self.assertEqual(connection.reloads, 0)
+        self.assertEqual(connection.states, [])
+
 
 if __name__ == "__main__":
     unittest.main()

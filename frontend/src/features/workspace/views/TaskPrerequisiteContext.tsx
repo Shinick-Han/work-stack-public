@@ -17,6 +17,11 @@ import type { WorkspaceTask } from "./types";
  * introducing a second owner. It never expands transitively or through parents,
  * never reveals other-filter or missing entries, and never changes status,
  * search or visibility.
+ *
+ * Without a canonical anchor it renders nothing at all rather than a standing
+ * placeholder: an empty invitation cost a large block of Workspace height in
+ * the far more common no-selection state without telling the reader anything
+ * the surrounding view does not already show.
  */
 
 const REASON_LABELS: Record<PrerequisiteReason, string> = {
@@ -53,26 +58,31 @@ function titleFor(
   return byId.get(id)?.title ?? null;
 }
 
-export function TaskPrerequisiteContext({
-  anchorTaskId,
-  projection,
-  onReveal,
-  onClearReveal,
-  onOpenTask,
-  className = "",
-}: TaskPrerequisiteContextProps) {
+/**
+ * Keyboard focus continuation for the two reveal toggles.
+ *
+ * Activating either one removes it from the tree, so focus would otherwise
+ * fall to the document body even though the panel and its modal are still
+ * live. The intent belongs to the anchor whose panel rendered the control, so
+ * a removed or replaced anchor discards it instead of letting an unrelated
+ * panel claim focus later.
+ */
+function useToggleFocusHandoff(anchorTaskId: string | null) {
   const revealRef = useRef<HTMLButtonElement>(null);
   const clearRef = useRef<HTMLButtonElement>(null);
-  // Which of the two toggles the user actually activated last. Activating one
-  // removes it from the tree, so focus would otherwise fall to the document
-  // body even though this panel and its modal are still live.
-  const activatedRef = useRef<
-    null | { kind: "reveal" | "clear"; element: HTMLButtonElement | null }
-  >(null);
+  const activatedRef = useRef<null | {
+    kind: "reveal" | "clear";
+    element: HTMLButtonElement | null;
+    anchorTaskId: string;
+  }>(null);
 
   useEffect(() => {
     const activated = activatedRef.current;
     if (!activated) return;
+    if (anchorTaskId !== activated.anchorTaskId) {
+      activatedRef.current = null;
+      return;
+    }
     const active = document.activeElement;
 
     // Removal is proven by the source element leaving the document, never by
@@ -101,26 +111,36 @@ export function TaskPrerequisiteContext({
     successor.focus();
   });
 
+  function activate(kind: "reveal" | "clear") {
+    if (!anchorTaskId) return;
+    const element = (kind === "reveal" ? revealRef : clearRef).current;
+    activatedRef.current = { kind, element, anchorTaskId };
+  }
+
+  return { activate, clearRef, revealRef };
+}
+
+export function TaskPrerequisiteContext({
+  anchorTaskId,
+  projection,
+  onReveal,
+  onClearReveal,
+  onOpenTask,
+  className = "",
+}: TaskPrerequisiteContextProps) {
   const canonicalById = new Map(
     projection.referenceTasks.map((task) => [task.id, task]),
   );
+  // The panel exists only for an anchor the canonical projection still carries.
+  const anchorId =
+    anchorTaskId && canonicalById.has(anchorTaskId) ? anchorTaskId : null;
+  const { activate, clearRef, revealRef } = useToggleFocusHandoff(anchorId);
 
-  if (!anchorTaskId || !canonicalById.has(anchorTaskId)) {
-    return (
-      <section
-        aria-label="Prerequisite context"
-        className={`wsv-prereq ${className}`.trim()}
-      >
-        <p className="wsv-prereq__empty">
-          Select a Task to see its prerequisites.
-        </p>
-      </section>
-    );
-  }
+  if (!anchorId) return null;
 
-  const anchorTitle = titleFor(anchorTaskId, canonicalById) ?? anchorTaskId;
+  const anchorTitle = titleFor(anchorId, canonicalById) ?? anchorId;
   const entries: readonly PrerequisiteClassification[] =
-    projection.prerequisitesByTaskId[anchorTaskId] ?? [];
+    projection.prerequisitesByTaskId[anchorId] ?? [];
 
   const counts = REASON_ORDER.map((reason) => ({
     reason,
@@ -130,7 +150,7 @@ export function TaskPrerequisiteContext({
   // Only completed-hidden entries are revealable, and only for this anchor.
   const revealable = entries.filter((entry) => entry.revealable);
   const activeReveal =
-    projection.reveal?.anchorTaskId === anchorTaskId
+    projection.reveal?.anchorTaskId === anchorId
       ? projection.reveal.taskIds
       : [];
   const revealCandidates = revealable
@@ -142,10 +162,10 @@ export function TaskPrerequisiteContext({
     <section
       aria-label="Prerequisite context"
       className={`wsv-prereq ${className}`.trim()}
-      data-anchor-task={anchorTaskId}
+      data-anchor-task={anchorId}
     >
       <header className="wsv-prereq__header">
-        <h3>Prerequisites for {anchorTaskId}</h3>
+        <h3>Prerequisites for {anchorId}</h3>
         <p className="wsv-prereq__anchor-title">{anchorTitle}</p>
       </header>
 
@@ -199,7 +219,7 @@ export function TaskPrerequisiteContext({
         <button
           className="wsv-prereq__reveal"
           onClick={() => {
-            activatedRef.current = { kind: "reveal", element: revealRef.current };
+            activate("reveal");
             onReveal([...activeReveal, ...revealCandidates]);
           }}
           ref={revealRef}
@@ -213,7 +233,7 @@ export function TaskPrerequisiteContext({
         <button
           className="wsv-prereq__clear"
           onClick={() => {
-            activatedRef.current = { kind: "clear", element: clearRef.current };
+            activate("clear");
             onClearReveal();
           }}
           ref={clearRef}

@@ -140,6 +140,57 @@ test('invalidates authoritative queries from a content-free SSE sync hint', asyn
   await waitFor(() => expect(reads.getWorkspaceReads()).toBeGreaterThan(initialWorkspaceReads))
 })
 
+test('an 18-frame SSE burst starts one workspace refresh and one trailing refresh of the latest name', async () => {
+  let workspaceReads = 0
+  let holdNextWorkspace = false
+  let release!: () => void
+  const held = new Promise<void>((resolve) => { release = resolve })
+  let workspaceName = 'Work Stack'
+  vi.stubGlobal('EventSource', AppEventSource)
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.includes('/api/v1/sync/status')) {
+      return jsonResponse({ data: {
+        state: 'in-sync',
+        workspace_id: 'workspace-test',
+        candidate_workspace_id: 'workspace-test',
+        generation: 4,
+        manifest_digest: `sha256:${'a'.repeat(64)}`,
+        changed_files: [],
+        reason: null,
+        rebind_available: false,
+      } })
+    }
+    if (url.includes('/api/v1/workspace')) {
+      workspaceReads += 1
+      const data = { ...workspace, workspace: { ...workspace.workspace, name: workspaceName } }
+      if (holdNextWorkspace) {
+        holdNextWorkspace = false
+        const snapshot = data
+        return held.then(() => jsonResponse({ data: snapshot }))
+      }
+      return jsonResponse({ data })
+    }
+    if (url.includes('/api/v1/captures')) return jsonResponse({ data: { captures: [] } })
+    throw new Error(`Unexpected request: ${url}`)
+  }))
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={client}><App /></QueryClientProvider>)
+  expect(await screen.findByRole('button', { name: 'SSOT in sync' })).toBeDisabled()
+  await waitFor(() => expect(AppEventSource.instance).not.toBeNull())
+  const initialWorkspaceReads = workspaceReads
+  holdNextWorkspace = true
+  for (let generation = 1; generation <= 18; generation += 1) {
+    if (generation === 18) workspaceName = 'Latest synced workspace'
+    AppEventSource.instance?.emitSync(generation)
+  }
+  expect(workspaceReads).toBe(initialWorkspaceReads + 1)
+  expect(screen.queryByText('Latest synced workspace')).not.toBeInTheDocument()
+  release()
+  await waitFor(() => expect(workspaceReads).toBe(initialWorkspaceReads + 2))
+  expect(await screen.findByText('Latest synced workspace')).toBeVisible()
+})
+
 test('reuses one adoption operation key across an explicit unchanged retry', async () => {
   const digest = `sha256:${'b'.repeat(64)}`
   let adoptionAttempts = 0

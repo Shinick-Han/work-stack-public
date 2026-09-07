@@ -12,8 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from workstack.store import Store
-
 from .canonical import canonical_json_bytes, canonical_sha256
 from .contracts import require_valid_by_format
 from .manifest import V4Manifest, build_v4_manifest
@@ -29,6 +27,7 @@ from .migration_source import (
     verify_v3_backup,
     verify_v3_source_unchanged,
 )
+from .migration_v3_lease import HeldV3Source, V3SourceLeaseError, hold_v3_source
 from .reader import V4ReadResult, read_v4
 from .semantic import semantic_source_from_v4_read, snapshot_from_v4
 from .validation import validate_storage_path
@@ -131,6 +130,45 @@ def plan_v3_migration(
     return MigrationPlan(frozen=frozen, paths=paths)
 
 
+def _admitted_preview(
+    source_root: Path | str,
+    *,
+    candidate_created_at: str,
+    candidate_override: Path | str | None,
+    backup_override: Path | str | None,
+    limits: V3SourceLimits | None,
+    held: HeldV3Source | None,
+) -> MigrationPreview:
+    """Freeze a source, admit it as schema 3, then convert what was admitted.
+
+    ``held`` is the writer lease the leased entry points hold over the source.
+    When it is present the frozen documents are judged as exactly version 3
+    before any conversion runs, so the bytes that are admitted are the bytes
+    that are converted. ``preview_v3_migration`` passes ``None``: it holds
+    nothing and writes nothing, so it can project a conversion but cannot
+    honestly claim the directory was admitted.
+    """
+
+    plan = plan_v3_migration(
+        source_root,
+        candidate_override=candidate_override,
+        backup_override=backup_override,
+        limits=limits,
+    )
+    documents = _decode_documents(plan.frozen)
+    if held is not None:
+        held.admit(documents)
+    conversion = convert_v3_documents(
+        documents, candidate_created_at=candidate_created_at
+    )
+    return MigrationPreview(
+        frozen=plan.frozen,
+        paths=plan.paths,
+        conversion=conversion,
+        candidate_created_at=candidate_created_at,
+    )
+
+
 def preview_v3_migration(
     source_root: Path | str,
     *,
@@ -141,21 +179,31 @@ def preview_v3_migration(
 ) -> MigrationPreview:
     """Build a deterministic conversion preview without writing any artifact."""
 
-    plan = plan_v3_migration(
+    return _admitted_preview(
         source_root,
+        candidate_created_at=candidate_created_at,
         candidate_override=candidate_override,
         backup_override=backup_override,
         limits=limits,
+        held=None,
     )
-    conversion = convert_v3_documents(
-        _decode_documents(plan.frozen), candidate_created_at=candidate_created_at
-    )
-    return MigrationPreview(
-        frozen=plan.frozen,
-        paths=plan.paths,
-        conversion=conversion,
-        candidate_created_at=candidate_created_at,
-    )
+
+
+@contextmanager
+def _held_v3_source(source: Path):
+    """Hold the source's writer lease, in this module's refusal vocabulary.
+
+    Every refusal the historical admission raises -- entering the lease and
+    admitting the documents inside it -- becomes one `StorageMigrationError`
+    with the same stable code, so a caller of the migration never has to know
+    the lower layer's exception type.
+    """
+
+    try:
+        with hold_v3_source(source) as held:
+            yield held
+    except V3SourceLeaseError as error:
+        raise StorageMigrationError(error.code) from error
 
 
 def _write_file(path: Path, body: bytes) -> None:
@@ -382,17 +430,17 @@ def execute_v3_migration(
     _refuse_unsupported_task_fields(source)
     staging: Path | None = None
     staging_owned = [False]
-    store = Store(source)
-    with store.consistent_read(), _candidate_cleanup(
+    with _held_v3_source(source) as held, _candidate_cleanup(
         source.parent, lambda: staging if staging_owned[0] else None
     ):
         _signal(fault_hook, "lease_acquired")
-        preview = preview_v3_migration(
+        preview = _admitted_preview(
             source,
             candidate_created_at=candidate_created_at,
             candidate_override=candidate_override,
             backup_override=backup_override,
             limits=limits,
+            held=held,
         )
         _signal(fault_hook, "source_frozen")
         if (
@@ -481,11 +529,12 @@ def resume_v3_migration(
 
     source = Path(source_root).expanduser().resolve(strict=True)
     _refuse_unsupported_task_fields(source)
-    store = Store(source)
-    with store.consistent_read():
+    with _held_v3_source(source) as held:
         frozen = freeze_v3_source(source, limits=limits)
+        documents = _decode_documents(frozen)
+        held.admit(documents)
         conversion = convert_v3_documents(
-            _decode_documents(frozen), candidate_created_at=candidate_created_at
+            documents, candidate_created_at=candidate_created_at
         )
         if frozen.aggregate_digest != expected_source_digest:
             raise StorageMigrationError("EXPECTED_SOURCE_DIGEST_MISMATCH")

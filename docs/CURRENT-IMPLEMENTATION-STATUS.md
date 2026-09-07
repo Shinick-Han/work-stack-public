@@ -1,6 +1,11 @@
 # Work Stack 현재 구현 상태
 
-기준 시점: **2026-08-30**
+정정 기준 시점(as-of): **2026-09-06** — 이 시점의 코드를 감사해 **다시 쓴 항목만** 그 날짜의
+사실이다. 대상은 Graph note 활성화, Objective 포커스와 Objective Hub 진입점, sidebar의 두 목록,
+완료 Task 노출과 수동 정렬, Daily Review checkpoint history, 숫자 단축키 매핑이다. §2의 나머지
+서술은 이번에 재감사하지 않았고 아래 증거 시점에 쓰인 그대로다.
+증거 기준 시점: **2026-08-30** — §4의 frontend/backend/build/Playwright/audit 수치와 remote CI run은
+그 시점의 실행 결과이며 이후 재측정하지 않았다. 두 날짜를 같은 것으로 읽지 않는다.
 체크포인트: **Docking v1 WS1–WS4 + Daily Review + Objective/KR 편집 + local continuity UI 구현·검증 완료**
 제품 단계: **실사용 가능한 local-first prototype, Microsoft 365 경로는 fixture-backed 수동 OOB handoff**
 
@@ -18,8 +23,13 @@ Context Inbox에서 Task의 근거로 연결하며, Task 생성·상태 변경·
 
 - 동일한 Task 모델을 **Graph / Board / Treemap / Table** 네 화면으로 탐색한다.
 - Graph에는 objective, task, note와 alignment/dependency/parent/reference 연결선이 보인다.
-- Graph의 Task·Objective node는 pointer뿐 아니라 명시적 포커스와 Enter/Space로 같은 Drawer·Hub를 연다.
-  Note node는 실행 가능한 척하지 않고 정보로 남는다.
+- Graph의 Task node는 pointer뿐 아니라 명시적 포커스와 Enter/Space로 Task Drawer를 연다.
+  Objective node는 Hub로 이동하지 않고 현재 Workspace의 Objective 포커스를 토글한다
+  (`frontend/src/features/workspace/views/graphPresentation.tsx`의 `Focus objective …` 라벨).
+- Graph의 Note node도 활성화 가능한 항목이다. `Show note <ID>`로 열리는 읽기 전용 popover가
+  note 본문과 기존 링크만 보여주고, 조회·쓰기·이동을 하지 않는다
+  (`frontend/src/features/workspace/views/GraphNotePopover.tsx`,
+  `frontend/src/features/workspace/views/GraphSurface.tsx`).
 - status, priority, objective, 검색어를 URL 상태로 유지하며 deep link와 뒤로가기를 지원한다.
 - 30건 synthetic demo fixture와 5개 objective를 안전하게 seed할 수 있다.
 - 실제 빈 workspace는 filter-empty 문구 대신 Objective 정의와 첫 Task 생성으로 이어지는
@@ -43,8 +53,18 @@ Context Inbox에서 Task의 근거로 연결하며, Task 생성·상태 변경·
   같은 카드의 보조 신호로 유지한다.
 - subtask가 있는 Task는 Board 카드와 Table Steps 열에서 `완료/전체` 진행을 표시한다. 이 값은
   기존 planning subtask의 read projection이며 status를 자동 변경하지 않는다.
-- Board와 Table의 Objective ID, Graph의 Objective 노드, Treemap의 Objective navigator는 같은
-  Objective Hub로 바로 이동한다. 이 탐색은 Task 선택과 충돌하지 않고 planning state를 변경하지 않는다.
+- Board와 Table의 Objective ID, Graph의 Objective 노드, Treemap의 Objective navigator는 **Objective
+  Hub로 이동하지 않는다.** 셋 다 같은 `onSelectObjective`를 호출해 현재 Workspace의 `objectiveId`
+  필터를 토글하고, 같은 Objective를 다시 누르면 `all`로 돌아온다
+  (`frontend/src/features/workspace/WorkspacePage.tsx`의 `onSelectObjective`). 선택은 URL에 남아
+  deep link로 복구되며 planning state는 바뀌지 않는다.
+- Objective Hub로의 실제 이동은 별도 경로다. Task Drawer 상단의 Objective 배지
+  (`frontend/src/features/tasks/TaskDrawer.tsx`의 `onOpenObjective`), sidebar의 surface 버튼과
+  단축키 `8` (`frontend/src/app/AppSidebar.tsx`), command palette의 `Open Objective Hub`
+  (`frontend/src/features/commands/CommandPalette.tsx`의 `surface-objectives`), 그리고 빈
+  Workspace의 onboarding·first-run 진입점 (`frontend/src/features/workspace/WorkspacePage.tsx`의
+  `onOpenObjectives`가 `WorkspaceOnboardingBanner`와 `WorkspaceFirstRunStage`로 전달됨)이 모두
+  Hub를 연다.
 - Board와 Table의 active Task due는 Focus와 같은 local-calendar 계산으로 연체·오늘·7일 이내를
   상대 문구로 표시한다. 완료·드롭된 Task의 과거 날짜를 현재 연체로 오인하지 않는다.
 - `Overdue`·`Due today`·`Due soon`·`No due date`로 active Task를 필터링하고 URL deep link 및
@@ -52,7 +72,28 @@ Context Inbox에서 Task의 근거로 연결하며, Task 생성·상태 변경·
 - 현재 view와 검색·상태·우선순위·readiness·due timing·Objective 조합을 이름이 있는 최대 12개의
   local saved view로 보존한다. 적용한 view는 조건 변경분 갱신, 이름 변경, 삭제까지 같은 ID에서 수행한다.
 - 활성 검색·상태·우선순위·readiness·Objective 칩을 각각 눌러 다른 조건은 유지한 채 하나만 해제한다.
+- 완료 Task 노출은 `default` / `hide` / `show` 세 좌표를 갖는다. 이는 **표시 전용 projection**이며
+  canonical Task·status·revision을 바꾸지 않는다. 필터는 전체 canonical 배열 위에서 먼저 돌기 때문에
+  숨겨진 완료 Task도 dependency readiness를 계속 충족시킨다. 선택·context popup·focus pin이 걸린
+  완료 Task는 숨김 상태에서도 근거와 함께 남고, 감춰진 나머지는 잘라내지 않고 수를 보고한다
+  (`frontend/src/domain/workspaceFilterTypes.ts`의 `DONE_VISIBILITIES`,
+  `frontend/src/features/workspace/views/completedTaskVisibility.ts`).
+- Table 행과 Treemap 노드는 명시적 drag로 수동 정렬할 수 있다. 이 순서는 서버 계획 데이터가 아니라
+  workspace별 bounded local-view 레코드에 저장되고, 삭제된 Task ID는 정리되며 저장 실패는 조용히
+  넘어가지 않고 사용자에게 알린다
+  (`frontend/src/features/workspace/views/tableOrdering.ts`,
+  `frontend/src/features/workspace/views/treemapOrdering.ts`,
+  `frontend/src/features/workspace/views/localViewState.ts`).
 - Objective와 Task에 연결되는 Graph note를 production UI에서 추가할 수 있다.
+- sidebar에는 성격이 다른 두 목록이 있다. 이를 섞지 않는다.
+  - **Objective 중첩 그룹**: Objective 아래에 Task를 접고 펼치는 2단 구조이며 **상한이 없다.**
+    주어진 Task를 전부 배치한다. 여러 Objective에 연결된 Task는 각 Objective 밑에 의도적으로
+    한 번씩 반복 표시하고 `N Objectives`로 그 사실을 밝히며, 어떤 Objective로도 해석되지 않는
+    Task는 사라지지 않고 `Unassigned` 그룹에 남는다
+    (`frontend/src/app/appSidebarModel.ts`의 `groupSidebarTasks`,
+    `frontend/src/app/AppSidebar.tsx`).
+  - **검색어 기반 평면 Task navigator**: 여기만 최대 **50건**을 렌더링하고 전체 일치 수를 함께
+    보고한다 (`frontend/src/app/appSidebarModel.ts`의 `projectSidebarTaskResults`).
 
 ### Focus
 
@@ -138,20 +179,31 @@ Context Inbox에서 Task의 근거로 연결하며, Task 생성·상태 변경·
 - search index는 process-local allowlisted projection만 보유하며 store generation이 증가할 때 폐기한다.
   10,000 Task synthetic gate에서 warm search 중앙값 약 5ms를 기록했고 Command palette DOM은
   초기 30개 이하, 검색 중 최대 50개 결과로 제한한다.
-- `1/2/3/8`은 Graph/Board/Treemap/Table, `4/5/6/7`은 Focus/Inbox/Daily Review/Objective Hub,
-  `J/K`는 현재 필터의 다음/이전 Task다.
+- `1/2/3/4`는 Graph/Board/Treemap/Table, `5/6/7/8`은 Focus/Inbox/Daily Review/Objective Hub,
+  `J/K`는 현재 필터의 다음/이전 Task다
+  (`frontend/src/app/App.tsx`의 `numericShortcutTargets`).
 - 입력 control이나 열린 dialog에서는 전역 단축키를 실행하지 않는다.
 
 ### Daily Review
 
-- `6` 또는 sidebar에서 Daily Review를 열어 날짜별 check-in과 Task별 Done/Next/Blocker를 기록한다.
+- `7` 또는 sidebar에서 Daily Review를 열어 날짜별 check-in과 Task별 Done/Next/Blocker를 기록한다.
 - versioned API의 모든 writer는 intent idempotency와 atomic replay record를 사용한다.
 - 선택 날짜를 끝으로 하는 deterministic 7-day Task/Objective roll-up을 제공한다.
+- Checkpoint history는 기록된 payload를 JSON 덤프가 아니라 사람이 읽는 요약으로 보여준다. Task와
+  Active/Superseded 상태를 앞세우고 Done/Next/Blockers를 나열하며, 빈 목록은 사라지지 않고
+  `None recorded`로 남는다. 요약이 해석하지 못한 값(미지 필드, 리스트 안의 null·비문자열 슬롯)은
+  버려지지 않고 접힌 `Additional recorded data`에 원래 인덱스와 함께 보조로 표시된다
+  (`frontend/src/features/review/checkpointEntrySummary.ts`,
+  `frontend/src/features/review/CheckpointEntryCard.tsx`).
+- checkpoint id·ordinal·revision과 supersede/restore 동작은 같은 카드에 남되 크기·굵기·위치로
+  보조 정보임을 나타낸다. 정보성 텍스트는 WCAG AA normal-text 대비를 지키며, 이를
+  `frontend/src/features/review/checkpointContrast.test.ts`가 stylesheet와 theme token에서
+  회귀로 고정한다.
 - review evidence는 Task revision/status를 자동 변경하지 않고 Conduit 실행 상태를 추정하지 않는다.
 
 ### Objective/KR Hub
 
-- `7` 또는 sidebar에서 Objective Hub를 열어 목표, 평균 KR 진척도, 연결 Task를 함께 본다.
+- `8` 또는 sidebar에서 Objective Hub를 열어 목표, 평균 KR 진척도, 연결 Task를 함께 본다.
 - Objective status와 KR progress/status를 명시적으로 변경하며 objective revision으로 stale write를 막는다.
 - KR 생성은 intent idempotency와 restart-safe replay를 사용하고 변경은 append-only activity로 남는다.
 - 기존 revision 없는 Objective는 read projection에서 revision 0으로 호환하고 첫 변경부터 단조 증가시킨다.
@@ -221,6 +273,16 @@ Context Inbox에서 Task의 근거로 연결하며, Task 생성·상태 변경·
 - export audit가 source allowlist와 runtime tree에서 raw/credential/recipient leakage를 검사한다.
 - Activepieces, Conduit runtime, 외부 DB, background Microsoft worker는 아직 제품 안에 넣지 않았다.
 
+### Agent checkpoint Skill
+
+- agent가 기존 Task 하나를 읽고 checkpoint를 남기는 경로의 **정본은
+  `integrations/agent-skill/work-stack/SKILL.md`** 하나뿐이다. 명령 표면과 봉투 규칙은
+  `integrations/agent-skill/work-stack/references/commands.md`, checkpoint 내용 정책은
+  `integrations/agent-skill/work-stack/references/journal-policy.md`가 소유한다.
+- 최상위 `SKILL.md`는 대화형 사용을 다루며 그 정본을 가리키기만 한다. agent 명령을 복제하지 않는다.
+- `agent status` / `agent context` / `agent checkpoint`의 workspace 신원 preflight, 단일 intent ID
+  멱등성, `commit_unknown` 정지 조건은 그 Skill이 규정한다. 이 문서는 규칙을 다시 쓰지 않는다.
+
 ## 4. 현재 체크포인트의 검증 증거
 
 - frontend: **35 test files / 177 tests 통과**
@@ -239,6 +301,15 @@ Context Inbox에서 Task의 근거로 연결하며, Task 생성·상태 변경·
 - source export audit: **265 UTF-8 files 통과**
 - disposable runtime tree audit: **10 UTF-8 files 통과**
 - `git diff --check`: 통과
+- **U-03(Agent Continuity roundtrip)을 향한 좁은 checkpoint CLI 하위흐름 증거** (2026-09-06 실행):
+  합성 임시 v3 fixture에서 status → context → checkpoint → 동일 replay → fresh context를 실행해
+  `replayed: true`와 단일 `recent_worklog` 항목을 확인했다. **U-03 전체 인수가 아니다** —
+  이 왕복은 goal/source/relationships 맥락(응답에서 의도적으로 omitted), 실행(execution) 단계,
+  conflict/`commit_unknown` 처리를 다루지 않는다. 전송은 `exclusive-local`(owner/server metadata
+  부재)이었고 running-owner 경로와 human next-day acceptance는 미완이다. 실행 전문과 남은
+  항목은 `docs/WORKSTACK-LOCAL-CONTINUITY-ACCEPTANCE-2026-09-06.md`에 있다.
+- `python scripts/run_backend_tests.py --pattern "test_agent_*.py" --quiet` (2026-09-06):
+  **174 tests 통과**
 - historical remote CI run `33302786618` (commit `a98d9c9ef759f38398a03142a88da23be1396045`)은
   backend/frontend/build/source-audit와 첫 22개 Chromium scenario를 통과했지만 마지막 axe scan이
   30초 timeout으로 실패했다. M52는 이 aggregate timeout을 surface별 test로 분리했고 새 pushed
@@ -353,3 +424,7 @@ Context Inbox에서 Task의 근거로 연결하며, Task 생성·상태 변경·
 4. persisted FTS는 dogfood에서 process-start cold search가 실제 문제가 될 때만 다시 검토한다.
 5. Conduit 관련 작업은 consumer-side import/taskroom handoff로 제한하고 Work Stack의 단일 파일 export
    권한 경계를 변경하지 않는다.
+6. U-03은 좁은 checkpoint CLI 하위흐름만 검증됐다. 맥락 폭(goal/source/relationships/freshness),
+   실행(execution) 단계, conflict·`commit_unknown` 운영 판단, running-owner transport,
+   human next-day acceptance가 모두 남아 있으며 합성 테스트 통과가 이를 대신하지 않는다
+   (`docs/WORKSTACK-LOCAL-CONTINUITY-ACCEPTANCE-2026-09-06.md` §0, §6).

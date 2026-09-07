@@ -4,6 +4,7 @@ import contextlib
 import inspect
 import io
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from workstack.storage.experimental_application import (
 )
 from workstack.service import WorkStack
 from workstack.store import DEFAULTS, Store
+from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES
 from workstack.storage.domain_v4_composition import (
     V4DomainCompositionError,
     compose_experimental_v4_domain,
@@ -36,8 +38,27 @@ if str(SHELL) not in sys.path:
 import v4_activation_binding as V4_ACTIVATION
 
 
-def _authority_bytes(root: Path) -> dict[str, bytes]:
-    return {name: (root / name).read_bytes() for name in sorted(DEFAULTS)}
+# The released default this build ships, written out rather than read from the
+# store, so a change to the default has to be made here on purpose.
+RELEASED_DEFAULT_SCHEMA_VERSION = 5
+
+# The historical authority the explicit storage commands are aimed at. It is
+# the checked-in schema-3 fixture, not a store this build wrote: a current
+# store carrying a v3 label would not exercise the historical route at all.
+V3_FIXTURE = ROOT / "tests" / "fixtures" / "store-v3" / "populated"
+
+
+def _authority_bytes(root: Path, roster: frozenset[str] = frozenset()) -> dict[str, bytes]:
+    """Every authoritative document of one named roster, as it lies on disk.
+
+    The roster is passed in because this suite now inspects two versions: a
+    workspace the released default just created, and a historical v3 authority
+    the explicit commands operate on. Defaulting to this build's ``DEFAULTS``
+    keeps the released-startup callers reading exactly what the build writes.
+    """
+
+    names = roster or frozenset(DEFAULTS)
+    return {name: (root / name).read_bytes() for name in sorted(names)}
 
 
 def _unexpected_call(name: str):
@@ -55,8 +76,12 @@ class ReleasedStartupGuardTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_startup_and_restart_preserve_existing_v3_bytes_without_migration(self) -> None:
-        data = self.root / "existing-v3"
+    def test_startup_and_restart_preserve_existing_store_bytes_without_migration(
+        self,
+    ) -> None:
+        """A released restart must neither migrate to v4 nor rewrite a byte."""
+
+        data = self.root / "existing"
         WorkStack(Store(data))
         expected = _authority_bytes(data)
         forbidden = (
@@ -82,17 +107,26 @@ class ReleasedStartupGuardTests(unittest.TestCase):
             self.assertEqual(_authority_bytes(data), expected)
         self.assertFalse((data / "store.json").exists())
 
-    def test_new_released_workspace_is_v3_only(self) -> None:
+    def test_new_released_workspace_is_the_exact_current_collection_schema(self) -> None:
+        """A new released workspace is schema 5 collection storage, and only that.
+
+        The version is asserted as the literal 5 rather than read back from the
+        store, so a default that moves has to move this guard with it. The
+        admission mode stays the released collection route: schema 5 widened
+        the roster within that family and did not make v4 released.
+        """
+
         data = self.root / "new"
         WorkStack(Store(data))
-        self.assertEqual(set(_authority_bytes(data)), set(DEFAULTS))
+        self.assertEqual(set(_authority_bytes(data)), set(V5_DOCUMENT_NAMES))
         self.assertFalse((data / "store.json").exists())
         self.assertEqual(
             json.loads((data / "store-meta.json").read_text(encoding="utf-8"))[
                 "store_schema_version"
             ],
-            3,
+            RELEASED_DEFAULT_SCHEMA_VERSION,
         )
+        self.assertEqual(5, RELEASED_DEFAULT_SCHEMA_VERSION)
         admission = admit_released_repository(data)
         self.assertEqual((admission.format_version, admission.mode), (3, "released-v3"))
 
@@ -113,17 +147,32 @@ class ReleasedStartupGuardTests(unittest.TestCase):
 
 
 class ExplicitStorageCommandGuardTests(unittest.TestCase):
+    """The explicit storage commands, aimed at a real historical v3 authority.
+
+    The v3 migration route only ever accepts the nine-document schema-3 source,
+    so the fixture here is the checked-in historical one. Constructing the
+    workspace through the released Store would produce the current schema
+    instead, and the command would refuse for that reason rather than prove
+    anything about application startup.
+    """
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.data = self.root / "v3"
-        WorkStack(Store(self.data))
+        shutil.copytree(V3_FIXTURE, self.data)
+        self.assertEqual(
+            json.loads((self.data / "store-meta.json").read_text(encoding="utf-8"))[
+                "store_schema_version"
+            ],
+            3,
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
     def test_explicit_migration_and_backup_commands_bypass_application_startup(self) -> None:
-        expected = _authority_bytes(self.data)
+        expected = _authority_bytes(self.data, V3_DOCUMENT_NAMES)
         application_forbidden = (
             mock.patch.object(cli, "Store", side_effect=_unexpected_call("Store")),
             mock.patch.object(cli, "WorkStack", side_effect=_unexpected_call("WorkStack")),
@@ -139,7 +188,8 @@ class ExplicitStorageCommandGuardTests(unittest.TestCase):
                 ]),
                 2,
             )
-        self.assertEqual(_authority_bytes(self.data), expected)
+        self.assertEqual(_authority_bytes(self.data, V3_DOCUMENT_NAMES), expected)
+        self.assertEqual({path.name for path in self.data.iterdir()}, set(V3_DOCUMENT_NAMES))
         self.assertFalse(any(self.root.glob("*.workstack-v4-candidate-*")))
         self.assertFalse(any(self.root.glob("*.workstack-v3-backup-*")))
 

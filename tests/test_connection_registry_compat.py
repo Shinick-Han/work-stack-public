@@ -94,6 +94,7 @@ class ConnectionRegistryCompatibilityTest(unittest.TestCase):
                     "local_forward_port": 18765,
                     "workspace_id": WORKSPACE_A,
                     "remote_port": 8877,
+                    "remote_python": MODULE.LEGACY_MIRROR_REMOTE_PYTHON,
                 },
             )
             self.assertEqual(exported.profile_id, ACTIVE_PROFILE)

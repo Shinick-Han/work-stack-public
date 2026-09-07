@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import tempfile
 import unittest
@@ -286,10 +287,24 @@ class V3TaskContractTests(TaskContractCases, unittest.TestCase):
     def make_backend(self, root: Path) -> TaskContractBackend:
         return V3TaskBackend(root)
 
+    def test_v3_create_persists_workspace_high_water(self) -> None:
+        result = self.backend.create({"title": "High water"}, "task.hw.v3.0001")
+        self.assertEqual(result["body"]["data"]["id"], "T-0001")
+        self.assertEqual(
+            self.backend.store.load("workspace.json")["task_display_id_high_water"],  # type: ignore[attr-defined]
+            1,
+        )
+
 
 class V4TaskContractTests(TaskContractCases, unittest.TestCase):
     def make_backend(self, root: Path) -> TaskContractBackend:
         return V4TaskBackend(root)
+
+    def test_v4_create_persists_store_high_water(self) -> None:
+        result = self.backend.create({"title": "High water"}, "task.hw.v4.0001")
+        self.assertEqual(result["body"]["data"]["id"], "T-0001")
+        store = json.loads((self.backend.root / "store.json").read_text(encoding="utf-8"))  # type: ignore[attr-defined]
+        self.assertEqual(store["task_display_id_high_water"], 1)
 
     def test_v4_commands_are_default_off_without_filesystem_touch(self) -> None:
         before = sorted(path.relative_to(self.backend.root.parent) for path in self.backend.root.parent.rglob("*"))  # type: ignore[attr-defined]

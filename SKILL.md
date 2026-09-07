@@ -21,6 +21,20 @@ Never infer progress from source code or communication history. Record only
 information explicitly supplied by the user or by a separately approved,
 sanitizing adapter.
 
+## Agent checkpoints belong to the `work-stack` Skill
+
+This Skill covers interactive Work Stack use. When an agent has to read one
+already-selected Task and append a checkpoint on the user's behalf, use the
+separate `work-stack` Skill at
+`integrations/agent-skill/work-stack/SKILL.md` instead, and follow its
+`references/commands.md` and `references/journal-policy.md`.
+
+That Skill owns the whole `agent status` / `agent context` / `agent checkpoint`
+surface, including workspace-identity preflight, the one-intent-ID idempotency
+rule, and the `commit_unknown` stop condition. Those commands are deliberately
+not repeated here: the `worklog add` line in the CLI section below is the
+interactive surface and carries none of those guarantees.
+
 ## CLI
 
 ```bash
@@ -30,9 +44,11 @@ $WS okr add-objective "Objective text" --quarter YYYY-QN
 $WS okr add-key-result O-1 "Measurable result" --target "target"
 $WS okr progress O-1 KR-1 40
 $WS okr list --status all
+$WS okr rollup
 
 $WS backlog add "Task title" --priority P1 --due YYYY-MM-DD --objective O-1
 $WS backlog list --status active
+$WS backlog show T-0001
 $WS backlog start T-0001
 $WS backlog done T-0001
 $WS backlog note T-0001 "Decision or finding"
@@ -42,11 +58,22 @@ $WS worklog add T-0001 --done "Completed item" --next "Next item"
 $WS worklog checkin --time HH:MM
 $WS worklog list --date YYYY-MM-DD
 $WS weekly --days 7
+$WS snapshot preview T-0001
 
 $WS note "Cross-cutting observation" --link T-0001 --link O-1
 $WS graph export --out graph-data.json
 $WS graph serve --host 127.0.0.1 --port 8765
 ```
+
+Use the explicitly selected data directory with `--data-dir <data-dir>` before
+the command family. Task IDs are local to that workspace.
+
+`backlog show`, `okr rollup`, and `snapshot preview` are local-only reads. They
+may refuse while a running owner holds the workspace; preserve that refusal
+instead of stopping the owner or reading its files directly. For a selected
+Task's bounded context while the owner is running, use the canonical
+`work-stack` Skill linked above. Snapshot preview reviews data locally; it does
+not authorize snapshot export or external publication.
 
 ## Agent Rules
 

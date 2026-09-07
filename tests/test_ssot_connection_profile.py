@@ -13,7 +13,12 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
+REQUIRED_REMOTE_PYTHON = "/srv/workstack/venv/bin/python"
+RUNTIME_SESSION_TOKEN = "r5pending-token-not-enforced-01"
 MODULE_PATH = ROOT / "desktop" / "python-webview-shell" / "ssot_connection.py"
+SHELL = ROOT / "desktop" / "python-webview-shell"
+if str(SHELL) not in sys.path:
+    sys.path.insert(0, str(SHELL))
 SPEC = importlib.util.spec_from_file_location("ssot_connection_profile_test", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -29,6 +34,7 @@ def remote_draft(**overrides: object) -> dict[str, object]:
         "remote_data_dir": "/srv/workstack/ssot",
         "local_forward_port": 18765,
         "workspace_id": WORKSPACE_ID,
+        "remote_python": REQUIRED_REMOTE_PYTHON,
     }
     payload.update(overrides)
     return payload
@@ -52,6 +58,8 @@ class SsotConnectionProfileTest(unittest.TestCase):
         self.assertEqual(profile.local_forward_port, 18765)
         self.assertEqual(profile.workspace_id, WORKSPACE_ID)
         self.assertEqual(profile.remote_port, 8765)
+        self.assertEqual(profile.remote_python, REQUIRED_REMOTE_PYTHON)
+        self.assertEqual(normalized["remote_python"], REQUIRED_REMOTE_PYTHON)
 
     def test_profile_rejects_shell_alias_paths_ports_identity_and_extra_fields(self) -> None:
         cases = (
@@ -60,7 +68,14 @@ class SsotConnectionProfileTest(unittest.TestCase):
             {"ssh_host_alias": "-F"},
             {"remote_app_dir": "relative/path"},
             {"remote_data_dir": "/srv/workstack/../private"},
+            {"remote_data_dir": "/srv/workstack/ssot/"},
             {"remote_data_dir": "/"},
+            {"remote_app_dir": "/"},
+            {"remote_python": "/"},
+            {"remote_app_dir": "/srv/work stack/app"},
+            {"remote_data_dir": "/srv/workstack/ssot;literal"},
+            {"remote_python": "python3"},
+            {"remote_python": "/usr/bin/../bin/python"},
             {"local_forward_port": True},
             {"workspace_id": "not-a-uuid"},
             {"surprise": "field"},
@@ -77,6 +92,12 @@ class SsotConnectionProfileTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unsupported fields"):
             MODULE.validate_connection_draft({"storage_mode": "local", "ssh_host_alias": "x"})
 
+    def test_root_posix_paths_are_rejected(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "root"):
+            MODULE.validate_connection_draft(remote_draft(remote_app_dir="/", remote_data_dir="/"))
+        with self.assertRaisesRegex(RuntimeError, "root"):
+            MODULE.validate_connection_draft(remote_draft(remote_python="/"))
+
     def test_save_is_canonical_atomic_and_round_trips(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -91,10 +112,17 @@ class SsotConnectionProfileTest(unittest.TestCase):
 
     def test_tunnel_command_is_loopback_only_strict_and_fixed_shape(self) -> None:
         profile = MODULE.RemoteConnectionProfile(
-            "work-linux", "/srv/workstack/app files", "/srv/workstack/private ssot",
-            18765, WORKSPACE_ID, 9876,
+            "work-linux",
+            "/srv/workstack/app",
+            "/srv/workstack/ssot",
+            18765,
+            WORKSPACE_ID,
+            9876,
+            REQUIRED_REMOTE_PYTHON,
         )
-        command = MODULE.build_ssh_tunnel_command(profile, "ssh")
+        command = MODULE.build_ssh_tunnel_command(
+            profile, "ssh", session_token=RUNTIME_SESSION_TOKEN
+        )
 
         self.assertIn("127.0.0.1:18765:127.0.0.1:9876", command)
         self.assertIn("ExitOnForwardFailure=yes", command)
@@ -102,24 +130,40 @@ class SsotConnectionProfileTest(unittest.TestCase):
         self.assertNotIn("StrictHostKeyChecking=no", command)
         self.assertEqual(command[-3], "--")
         self.assertEqual(command[-2], "work-linux")
-        self.assertIn("exec python3", command[-1])
-        self.assertIn("--host 127.0.0.1", command[-1])
-        self.assertIn("--public-port 18765", command[-1])
-        self.assertIn("--exit-with-parent", command[-1])
-        self.assertIn("'/srv/workstack/private ssot'", command[-1])
+        remote = command[-1]
+        self.assertIn(REQUIRED_REMOTE_PYTHON, remote)
+        self.assertIn("desktop/python-webview-shell/remote_entry.py", remote)
+        self.assertIn(" serve ", f" {remote} ")
+        self.assertIn("--host 127.0.0.1", remote)
+        self.assertIn("--public-port 18765", remote)
+        self.assertIn("--exit-with-parent", remote)
+        self.assertNotIn("exec python3", remote)
+        self.assertNotIn("&&", remote)
+        self.assertNotIn("python3 -c", remote)
 
     def test_check_command_is_read_only(self) -> None:
-        profile = MODULE.RemoteConnectionProfile("work-linux", "/app", "/ssot", 18765, WORKSPACE_ID)
+        profile = MODULE.RemoteConnectionProfile(
+            "work-linux",
+            "/app",
+            "/ssot",
+            18765,
+            WORKSPACE_ID,
+            8765,
+            REQUIRED_REMOTE_PYTHON,
+        )
         command = MODULE.build_ssh_check_command(profile, "ssh")
 
         self.assertIn("BatchMode=yes", command)
         self.assertIn("StrictHostKeyChecking=yes", command)
         self.assertEqual(command[-3], "--")
-        self.assertIn("test -f /app/run_work_stack.py", command[-1])
-        self.assertIn("test -d /ssot", command[-1])
-        self.assertIn("python3 /app/run_work_stack.py --help", command[-1])
+        remote = command[-1]
+        self.assertIn(REQUIRED_REMOTE_PYTHON, remote)
+        self.assertIn("desktop/python-webview-shell/remote_entry.py", remote)
+        self.assertIn(" probe ", f" {remote} ")
+        self.assertNotIn("test -f", remote)
+        self.assertNotIn("python3 /app/run_work_stack.py --help", remote)
         for mutating_word in ("mkdir", " rm ", " mv ", " cp ", "chmod", "chown"):
-            self.assertNotIn(mutating_word, command[-1])
+            self.assertNotIn(mutating_word, remote)
 
     @mock.patch.object(MODULE, "find_ssh_executable", return_value="ssh")
     @mock.patch.object(MODULE.subprocess, "run")
@@ -149,9 +193,11 @@ class SsotConnectionProfileTest(unittest.TestCase):
         self.assertNotEqual(selected, occupied_port)
         self.assertGreater(selected, 0)
         profile = MODULE.RemoteConnectionProfile(
-            "work-linux", "/app", "/ssot", selected, WORKSPACE_ID
+            "work-linux", "/app", "/ssot", selected, WORKSPACE_ID, 8765, REQUIRED_REMOTE_PYTHON
         )
-        command = MODULE.build_ssh_tunnel_command(profile, "ssh")
+        command = MODULE.build_ssh_tunnel_command(
+            profile, "ssh", session_token=RUNTIME_SESSION_TOKEN
+        )
         self.assertIn("ExitOnForwardFailure=yes", command)
         self.assertIn(f"127.0.0.1:{selected}:127.0.0.1:8765", command)
 
@@ -161,7 +207,7 @@ class SsotConnectionProfileTest(unittest.TestCase):
             occupant.listen(1)
             occupied_port = int(occupant.getsockname()[1])
             original = MODULE.RemoteConnectionProfile(
-                "work-linux", "/app", "/ssot", occupied_port, WORKSPACE_ID
+                "work-linux", "/app", "/ssot", occupied_port, WORKSPACE_ID, 8765, REQUIRED_REMOTE_PYTHON
             )
             runtime = MODULE.profile_with_runtime_forward_port(original)
 

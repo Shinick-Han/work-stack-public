@@ -21,6 +21,7 @@ const profileId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const workspaceId = '11111111-1111-4111-8111-111111111111'
 const proofId = '22222222-2222-4222-8222-222222222222'
 const registryDigest = `sha256:${'a'.repeat(64)}`
+const remotePython = '/opt/workstack/venv/bin/python'
 const registry = {
   schema_version: 1 as const,
   active_profile_id: profileId,
@@ -36,6 +37,7 @@ const registry = {
     remote_data_dir: '/srv/workstack/ssot',
     preferred_forward_port: 24_567,
     remote_port: 8_765,
+    remote_python: remotePython,
   }],
 }
 
@@ -151,6 +153,24 @@ test('represents CAS-aware registry replies, conflicts, and restart-only activat
     request_id: profileId, operation: 'save-registry', ok: false,
     error: { code: 'registry_conflict', message: 'Registry changed', current_registry_digest: registryDigest },
   }).success).toBe(false)
+  expect(connectionRegistryHostMessageSchema.safeParse({
+    type: 'workstack-connection-registry-response', schema_version: 1,
+    request_id: profileId, operation: 'test-profile', ok: false,
+    error: {
+      code: 'remote_lock_owned',
+      message: 'The remote workspace is owned by another live session.',
+      details: { pid: 4242 },
+    },
+  }).success).toBe(true)
+  expect(connectionRegistryHostMessageSchema.safeParse({
+    type: 'workstack-connection-registry-response', schema_version: 1,
+    request_id: profileId, operation: 'test-profile', ok: false,
+    error: {
+      code: 'remote_lock_owned',
+      message: 'The remote workspace is owned by another live session.',
+      details: { pid: 4242, path: '/secret/id_rsa' },
+    },
+  }).success).toBe(false)
 })
 
 test('delivers only strict bounded native messages', () => {
@@ -243,4 +263,21 @@ test('accepts only sanitized correlated browse and profile-test results', () => 
   expect(connectionRegistryHostMessageSchema.safeParse({
     ...envelope, operation: 'test-profile', result: { ...testResult, command: 'ssh work-linux' },
   }).success).toBe(false)
+})
+
+test('refuses to test an SSH draft without an explicit Remote Python executable', () => {
+  const host = installHost()
+  const { remote_python: _ignored, ...legacy } = registry.profiles[0]
+  expect(() => requestConnectionProfileTest(
+    { ...legacy, expected_workspace_id: null, remote_python: '' },
+    registryDigest,
+    '77777777-7777-4777-8777-777777777777',
+  )).toThrow()
+  const omittedRemotePythonDraft: unknown = { ...legacy, expected_workspace_id: null }
+  expect(() => requestConnectionProfileTest(
+    omittedRemotePythonDraft as Parameters<typeof requestConnectionProfileTest>[0],
+    registryDigest,
+    '66666666-6666-4666-8666-666666666666',
+  )).toThrow()
+  expect(host.postMessage).not.toHaveBeenCalled()
 })

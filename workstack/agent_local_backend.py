@@ -19,6 +19,8 @@ __all__ = ["create_local_backend"]
 
 _SYNC_STATES = frozenset({"external-change-detected", "in-sync", "invalid"})
 _SYNC_REQUIRED_REASON = "store_sync_required"
+_PLANNING_VIEW = "planning-v1"
+_COLLECTION_FORMATS = {3: "v3", 5: "v5"}
 
 
 class _LocalBackend:
@@ -60,15 +62,17 @@ class _LocalBackend:
             if in_sync:
                 actual_uid = self._workspace_uid()
                 metadata = self._store.load("store-meta.json")
-                schema = metadata.get("store_schema_version")
-                if schema != 3:
+                storage_format = _COLLECTION_FORMATS.get(metadata.get("store_schema_version"))
+                if storage_format is None:
                     raise ValueError("local storage format is not supported")
             else:
-                # Authority admission already read the current canonical UID before
-                # Store construction.  A stale manifest makes Store.load fail closed,
-                # so status must not use it merely to report that synchronization is
-                # required.
+                # Authority admission already read the current canonical UID and
+                # label before Store construction. A stale manifest makes
+                # Store.load fail closed, so status must not use it merely to
+                # report that synchronization is required. After initialize or
+                # migration the readable metadata label takes precedence.
                 actual_uid = self._admission.workspace_uid
+                storage_format = self._admission.storage_format
             return {
                 "actual_workspace_uid": actual_uid,
                 "capability_reason": None if in_sync else _SYNC_REQUIRED_REASON,
@@ -79,8 +83,32 @@ class _LocalBackend:
                 "expected_workspace_uid": self._admission.workspace_uid,
                 "ready": in_sync,
                 "running_server_available": False,
-                "storage_format": "v3",
+                "storage_format": storage_format,
             }
+
+    def _planning_material(self, task_id: str) -> dict[str, object]:
+        """Extra planning read material, inside the transaction already held.
+
+        Both reads are the existing product projections. Store.transaction is
+        depth-counted, so they join the caller's transaction instead of taking a
+        second lease, and the Task, its Objectives and its relationships are read
+        from one consistent view.
+        """
+
+        detail = self._stack.task_detail(task_id)
+        workspace = self._stack.workspace_projection()
+        if type(detail) is not dict or type(workspace) is not dict:
+            raise ValueError("planning projection is invalid")
+        context = detail.get("context")
+        objectives = workspace.get("objectives")
+        tasks = workspace.get("tasks")
+        if (
+            type(context) is not list
+            or type(objectives) is not list
+            or type(tasks) is not list
+        ):
+            raise ValueError("planning projection is invalid")
+        return {"context": context, "objectives": objectives, "tasks": tasks}
 
     def context(self, *, request: ContextRequest, today: object) -> dict[str, object]:
         with self._store.transaction():
@@ -127,12 +155,15 @@ class _LocalBackend:
                             "task_id": request.task_id,
                         }
                     )
-            return {
+            result: dict[str, object] = {
                 "entries": entries,
                 "task": task,
                 "transport": "exclusive-local",
                 "workspace_uid": actual_uid,
             }
+            if request.view == _PLANNING_VIEW:
+                result["planning"] = self._planning_material(request.task_id)
+            return result
 
     def checkpoint(self, *, request: CheckpointRequest) -> dict[str, object]:
         with self._store.transaction():

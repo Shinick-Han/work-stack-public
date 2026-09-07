@@ -302,11 +302,16 @@ class TaskRelationshipContractTests(unittest.TestCase):
                     )
                     self.assertEqual(backend.snapshot(), before)
 
-                    self.assert_code(
-                        "task_hard_delete_unsupported",
-                        lambda: backend.hard_delete(target, 1),
-                    )
-                    self.assertEqual(backend.snapshot(), before)
+                    if isinstance(backend, V3RelationshipBackend):
+                        backend.hard_delete(target, 1)
+                        self.assertFalse(backend.task_exists(target))
+                    else:
+                        self.assert_code(
+                            "task_hard_delete_unsupported",
+                            lambda: backend.hard_delete(target, 1),
+                        )
+                        self.assertEqual(backend.snapshot(), before)
+                        self.assertTrue(backend.task_exists(target))
 
     def test_references_are_explicit_v4_capability_and_v3_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -1,7 +1,7 @@
 import React from 'react'
 import { readFileSync } from 'node:fs'
 import { projectKeyResults } from './keyResultModel'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { expect, test, vi } from 'vitest'
@@ -10,48 +10,87 @@ import { task } from '../../../test/fixtures'
 import type { TaskDetail } from '../../../domain/types'
 import { GraphView } from './GraphView'
 
+const { layoutPlanningGraphMock } = vi.hoisted(() => ({
+  layoutPlanningGraphMock: vi.fn(),
+}))
+
+vi.mock('./graphLayout', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./graphLayout')>()
+  return {
+    ...actual,
+    layoutPlanningGraph: layoutPlanningGraphMock,
+  }
+})
+
 // Keep the product node controls and GraphView coordination; replace only the
 // canvas engine, whose layout/virtualization is retained in the scale suite.
 let commitObserver: ((ids: string[]) => void) | null = null
 export function observeCommits(fn: ((ids: string[]) => void) | null) { commitObserver = fn }
+let lastFlowNodes: { id: string; position: { x: number; y: number }; data: { id: string } }[] = []
 
 vi.mock('@xyflow/react', async (importOriginal) => ({
   ...await importOriginal<typeof import('@xyflow/react')>(),
-  ReactFlow: ({ nodes, nodeTypes, onNodeClick }: { nodes: { id: string; data: { id: string } }[]; nodeTypes: { workspace: React.ComponentType<{ data: object }> }; onNodeClick: (event: React.MouseEvent, node: object) => void }) => {
+  ReactFlow: ({ nodes, nodeTypes, onNodeClick }: { nodes: { id: string; position: { x: number; y: number }; data: { id: string } }[]; nodeTypes: { workspace: React.ComponentType<{ data: object }> }; onNodeClick?: (event: React.MouseEvent, node: object) => void }) => {
     const Node = nodeTypes.workspace
+    lastFlowNodes = nodes
     // A layout effect records the node IDs of the COMMITTED tree, which is what
     // the F3 contract is about; a settled waitFor could not observe it.
     // Membership is the CANONICAL identity carried in node.data.id; the live
     // Flow id is a typed presentation value and is asserted separately.
     React.useLayoutEffect(() => { commitObserver?.(nodes.map((node) => node.data.id)) })
-    return <div>{nodes.map((node) => <div key={node.id} onClick={(event) => onNodeClick(event, node)}><Node data={node.data} /></div>)}</div>
+    return <div>{nodes.map((node) => <div key={node.id} onClick={(event) => onNodeClick?.(event, node)}><Node data={node.data} /></div>)}</div>
   },
   Handle: () => null,
 }))
 
-function setup() {
+function defaultLayoutMock(nodes: { id: string; position: { x: number; y: number } }[]) {
+  return {
+    nodes: nodes.map((node, index) => ({
+      ...node,
+      position: { x: 40 + index, y: 80 },
+    })),
+    edgeRoutes: {},
+  }
+}
+
+beforeEach(() => {
+  layoutPlanningGraphMock.mockReset()
+  layoutPlanningGraphMock.mockImplementation(async (nodes) => defaultLayoutMock(nodes))
+})
+
+async function settleMockedLayout() {
+  await act(async () => {
+    await Promise.all(layoutPlanningGraphMock.mock.results.map((result) => result.value))
+  })
+}
+
+async function setup(options: { settleLayout?: boolean } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   const props = { tasks: [{ ...task, context_count: 2 }, { ...task, id: 'T-0002', context_count: 0 }],
     objectives: [{ id: 'O-1', objective: 'Quality' }], notes: [], edges: [],
     onSelectTask: vi.fn(), onSelectObjective: vi.fn() }
   const view = render(<QueryClientProvider client={client}><GraphView {...props} referenceTasks={props.tasks} /></QueryClientProvider>)
-  const rerenderWith = (extra: Record<string, unknown>) => view.rerender(
-    <QueryClientProvider client={client}><GraphView {...props} referenceTasks={props.tasks} {...extra} /></QueryClientProvider>,
-  )
+  if (options.settleLayout !== false) await settleMockedLayout()
+  const rerenderWith = async (extra: Record<string, unknown>) => {
+    view.rerender(
+      <QueryClientProvider client={client}><GraphView {...props} referenceTasks={props.tasks} {...extra} /></QueryClientProvider>,
+    )
+    if (options.settleLayout !== false) await settleMockedLayout()
+  }
   return {
     ...view,
     props,
     rerenderWith,
     /** Canonical deletion: the Task leaves BOTH the projected and canonical arrays. */
-    removeTasks() { rerenderWith({ tasks: [], referenceTasks: [] }) },
+    async removeTasks() { await rerenderWith({ tasks: [], referenceTasks: [] }) },
     /** Visibility filtering only: the Task leaves the projected array but stays canonical. */
-    hideTasks() { rerenderWith({ tasks: [], emptyKind: 'all-complete' }) },
+    async hideTasks() { await rerenderWith({ tasks: [], emptyKind: 'all-complete' }) },
   }
 }
 
 test('badge click, Enter and Space open context without selecting the task; node activation stays separate', async () => {
   const request = vi.spyOn(api, 'getTask').mockResolvedValue({ task, context: [], activity: [], replies: [] })
-  const view = setup()
+  const view = await setup()
   expect(request).not.toHaveBeenCalled()
   expect(screen.queryByRole('button', { name: /Open context for task T-0002/ })).not.toBeInTheDocument()
   const badge = await screen.findByRole('button', { name: /Open context for task T-0001/ })
@@ -78,7 +117,7 @@ test('badge click, Enter and Space open context without selecting the task; node
 
 test('Open task closes the panel and selects its exact task', async () => {
   vi.spyOn(api, 'getTask').mockResolvedValue({ task, context: [], activity: [], replies: [] })
-  const view = setup()
+  const view = await setup()
   await userEvent.click(await screen.findByRole('button', { name: /Open context for task T-0001/ }))
   await userEvent.click(await screen.findByRole('button', { name: 'Open task' }))
   expect(view.props.onSelectTask).toHaveBeenCalledExactlyOnceWith(task.id)
@@ -88,10 +127,10 @@ test('Open task closes the panel and selects its exact task', async () => {
 test('canonical removal closes the popup and ignores its late response', async () => {
   let resolve!: (value: TaskDetail) => void
   vi.spyOn(api, 'getTask').mockReturnValue(new Promise((done) => { resolve = done }))
-  const view = setup()
+  const view = await setup()
   await userEvent.click(await screen.findByRole('button', { name: /Open context for task T-0001/ }))
   expect(screen.getByRole('status')).toHaveTextContent('Loading context')
-  view.removeTasks()
+  await view.removeTasks()
   await act(async () => resolve({ task, context: [], activity: [], replies: [] }))
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   expect(screen.getByText('No work matches these filters')).toBeInTheDocument()
@@ -99,26 +138,26 @@ test('canonical removal closes the popup and ignores its late response', async (
 
 test('visibility filtering keeps an open popup while canonical removal closes it', async () => {
   vi.spyOn(api, 'getTask').mockResolvedValue({ task, context: [], activity: [], replies: [] })
-  const view = setup()
+  const view = await setup()
   await userEvent.click(await screen.findByRole('button', { name: /Open context for task T-0001/ }))
   expect(await screen.findByRole('dialog', { name: task.title })).toBeInTheDocument()
 
   // Hidden by the Done rule, still canonical: the popup must survive.
-  view.hideTasks()
+  await view.hideTasks()
   expect(screen.getByRole('dialog', { name: task.title })).toBeInTheDocument()
   expect(screen.getByText('All matching tasks are completed')).toBeInTheDocument()
 
   // Gone from the canonical array: only now is it dismissed.
-  view.removeTasks()
+  await view.removeTasks()
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })
 
 test('the popup keeps its own response identity when its task becomes hidden', async () => {
   let resolve!: (value: TaskDetail) => void
   const request = vi.spyOn(api, 'getTask').mockReturnValue(new Promise((done) => { resolve = done }))
-  const view = setup()
+  const view = await setup()
   await userEvent.click(await screen.findByRole('button', { name: /Open context for task T-0001/ }))
-  view.hideTasks()
+  await view.hideTasks()
 
   await act(async () => resolve({ task, context: [], activity: [], replies: [] }))
   expect(await screen.findByRole('dialog', { name: task.title })).toBeInTheDocument()
@@ -145,6 +184,7 @@ test('reports context target and focus pin separately to a controlling owner', a
     onSelectTask={vi.fn()}
     onSelectObjective={vi.fn()}
   /></QueryClientProvider>)
+  await settleMockedLayout()
 
   await userEvent.click(await screen.findByRole('button', { name: /Open context for task T-0001/ }))
   expect(onContextTargetChange).toHaveBeenCalledWith(task.id)
@@ -153,14 +193,14 @@ test('reports context target and focus pin separately to a controlling owner', a
 
 test('keeps one canvas instance and makes no camera call across nonempty to empty to nonempty', async () => {
   vi.spyOn(api, 'getTask').mockResolvedValue({ task, context: [], activity: [], replies: [] })
-  const view = setup()
+  const view = await setup()
 
   const canvas = await screen.findByLabelText('Task relationship graph')
   // A sentinel proves the same DOM element survives, so its viewport does too.
   canvas.setAttribute('data-viewport-sentinel', 'kept')
   expect(canvas.getAttribute('data-graph-empty')).toBe('false')
 
-  view.hideTasks()
+  await view.hideTasks()
   const emptied = screen.getByLabelText('Task relationship graph')
   expect(emptied).toBe(canvas)
   expect(emptied.getAttribute('data-viewport-sentinel')).toBe('kept')
@@ -168,7 +208,7 @@ test('keeps one canvas instance and makes no camera call across nonempty to empt
   // The overlay replaced the old early return, so nothing unmounted.
   expect(screen.getByText('All matching tasks are completed')).toBeInTheDocument()
 
-  view.rerenderWith({})
+  await view.rerenderWith({})
   const restored = screen.getByLabelText('Task relationship graph')
   expect(restored).toBe(canvas)
   expect(restored.getAttribute('data-viewport-sentinel')).toBe('kept')
@@ -193,6 +233,7 @@ test('feeds only visible tasks to the model without synthesizing a bypass edge',
     onSelectTask={vi.fn()}
     onSelectObjective={vi.fn()}
   /></QueryClientProvider>)
+  await settleMockedLayout()
 
   expect(await screen.findByRole('button', { name: 'Open task T-A' })).toBeInTheDocument()
   // B is hidden, and no A-to-C node appears in its place.
@@ -213,6 +254,7 @@ test('F3 committed node membership matches the authoritative model on the same c
       tasks={[a, b]} referenceTasks={[a, b]} objectives={[]} notes={[]} edges={[]}
       onSelectTask={vi.fn()} onSelectObjective={vi.fn()}
     /></QueryClientProvider>)
+    await settleMockedLayout()
     await screen.findByRole('button', { name: 'Open task T-A' })
 
     commits.length = 0
@@ -225,13 +267,14 @@ test('F3 committed node membership matches the authoritative model on the same c
     // The FIRST commit after the change must already agree with the model.
     expect(commits[0]).toEqual(['T-A'])
     expect(commits.every((ids) => !ids.includes('T-B'))).toBe(true)
+    await settleMockedLayout()
   } finally {
     observeCommits(null)
   }
 })
 
 
-test('GN3 the key-result frame CSS targets the class names the real frame renders', () => {
+test('GN3 the key-result frame CSS targets the class names the real frame renders', async () => {
   const objectives = [{ id: 'O-1', objective: 'Objective', revision: 1, key_results: [{ id: 'K1', text: 'A legitimately very long outcome statement that must clamp instead of growing the node' }] }]
   const tasks = [{ ...task, id: 'T-0001', objective_ids: ['O-1'], key_result_refs: [{ objective_id: 'O-1', key_result_id: 'K1' }] }]
   const projection = projectKeyResults({ workspaceId: 'W1', tasks: tasks as never, objectives: objectives as never })
@@ -251,6 +294,7 @@ test('GN3 the key-result frame CSS targets the class names the real frame render
       />
     </QueryClientProvider>,
   )
+  await settleMockedLayout()
 
   const frame = container.querySelector('.wsv-graph-node--key-result')
   expect(frame).not.toBeNull()
@@ -265,4 +309,81 @@ test('GN3 the key-result frame CSS targets the class names the real frame render
     if (selector.startsWith('.wsv-relation') || selector.startsWith('.wsv-minimap') || selector === '.wsv-root') continue
     expect(container.querySelector(selector), `no element matches ${selector}`).not.toBeNull()
   }
+})
+
+
+test('selection-only rerenders skip topology-equivalent layout and keep coordinates', async () => {
+  const view = await setup()
+  await screen.findByRole('button', { name: 'Open task T-0001' })
+  await waitFor(() => {
+    expect(layoutPlanningGraphMock).toHaveBeenCalled()
+    expect(lastFlowNodes[0]?.position.x).toBe(40)
+  })
+  const calls = layoutPlanningGraphMock.mock.calls.length
+  const positions = lastFlowNodes.map((node) => [node.id, node.position.x, node.position.y])
+  await view.rerenderWith({ selectedTaskId: 'T-0001', selectedObjectiveId: 'O-1' })
+  await act(async () => { await Promise.resolve() })
+  expect(layoutPlanningGraphMock.mock.calls.length).toBe(calls)
+  expect(lastFlowNodes.map((node) => [node.id, node.position.x, node.position.y])).toEqual(positions)
+})
+
+test('keeps last coordinates until one complete replacement layout exists', async () => {
+  const pending: Array<(value: { nodes: { id: string; position: { x: number; y: number } }[]; edgeRoutes: Record<string, never> }) => void> = []
+  layoutPlanningGraphMock.mockImplementation(async (nodes: { id: string; position: { x: number; y: number } }[]) => (
+    new Promise((resolve) => {
+      pending.push((value) => resolve(value ?? {
+        nodes: nodes.map((node) => ({ ...node, position: { x: 15, y: 25 } })),
+        edgeRoutes: {},
+      }))
+    })
+  ))
+  const view = await setup({ settleLayout: false })
+  await screen.findByRole('button', { name: 'Open task T-0001' })
+  expect(pending).toHaveLength(1)
+  await act(async () => {
+    pending.shift()?.({
+      nodes: lastFlowNodes.map((node) => ({ ...node, position: { x: 15, y: 25 } })),
+      edgeRoutes: {},
+    })
+  })
+  await waitFor(() => {
+    expect(lastFlowNodes.every((node) => node.position.x === 15 && node.position.y === 25)).toBe(true)
+  })
+  await view.rerenderWith({ tasks: [{ ...task, context_count: 2 }] })
+  expect(lastFlowNodes.map((node) => node.data.id).sort()).toEqual(['O-1', 'T-0001'])
+  expect(lastFlowNodes.find((node) => node.data.id === 'T-0001')?.position).toEqual({ x: 15, y: 25 })
+  expect(pending).toHaveLength(1)
+  await act(async () => {
+    pending.shift()?.({
+      nodes: lastFlowNodes.map((node) => ({ ...node, position: { x: 90, y: 90 } })),
+      edgeRoutes: {},
+    })
+  })
+  await waitFor(() => expect(lastFlowNodes[0]?.position).toEqual({ x: 90, y: 90 }))
+})
+
+test('note activation shows existing content and toggles closed without Task navigation', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+  const onSelectTask = vi.fn()
+  const onSelectObjective = vi.fn()
+  const notes = [{ id: 'N-0001', text: 'Full planning note body', created: '2026-09-01', links: ['T-0001'] }]
+  const props = {
+    tasks: [{ ...task, context_count: 0 }],
+    objectives: [{ id: 'O-1', objective: 'Quality' }],
+    notes,
+    edges: [],
+    onSelectTask,
+    onSelectObjective,
+  }
+  render(<QueryClientProvider client={client}><GraphView {...props} referenceTasks={props.tasks} /></QueryClientProvider>)
+  await settleMockedLayout()
+
+  const note = await screen.findByRole('button', { name: 'Show note N-0001' })
+  await userEvent.click(note)
+  const dialog = screen.getByRole('dialog', { name: 'Full planning note body' })
+  expect(dialog).toHaveTextContent('T-0001')
+  expect(onSelectTask).not.toHaveBeenCalled()
+  expect(onSelectObjective).not.toHaveBeenCalled()
+  await userEvent.click(note)
+  expect(screen.queryByRole('dialog', { name: 'Full planning note body' })).not.toBeInTheDocument()
 })

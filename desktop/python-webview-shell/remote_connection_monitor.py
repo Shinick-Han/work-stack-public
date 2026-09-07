@@ -33,6 +33,7 @@ class RemoteConnectionMonitor:
         reload_view: Action,
         is_recovery_required: ConnectionCheck = lambda: False,
         on_recovery_required: Action = lambda: None,
+        is_current_attempt: ConnectionCheck = lambda: True,
         initial_grace: float = 2.0,
         poll_interval: float = 5.0,
         failure_threshold: int = 2,
@@ -54,6 +55,7 @@ class RemoteConnectionMonitor:
         self._reload_view = reload_view
         self._is_recovery_required = is_recovery_required
         self._on_recovery_required = on_recovery_required
+        self._is_current_attempt = is_current_attempt
         self._initial_grace = initial_grace
         self._poll_interval = poll_interval
         self._failure_threshold = failure_threshold
@@ -107,6 +109,10 @@ class RemoteConnectionMonitor:
             return
         failures = 0
         while not self._stop_event.is_set():
+            if not _safe_check(self._is_current_attempt):
+                if self._wait(self._poll_interval):
+                    return
+                continue
             if self._finish_if_recovery_required():
                 return
             observation = self._observe()

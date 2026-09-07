@@ -176,6 +176,8 @@ export interface WorkspaceInteractionPins {
 }
 
 export interface WorkspaceViewsProps extends WorkspaceFilters, WorkspaceInteractionPins {
+  /** Per-workspace identity for local-view persistence. Required on the real Page path. */
+  workspaceId: string;
   /** Active canvas. Graph and Treemap never mutate workspace data. */
   view: WorkspaceView;
   tasks: readonly WorkspaceTask[];

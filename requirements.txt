@@ -1,4 +1,5 @@
 unicodedata2==17.0.0 \
+    --hash=sha256:95443d08ef6e6daf8d749f187d16c6ed90ab8bb47ad6f2fb616517fad0e6d5bf \
     --hash=sha256:2c49ca5ad45108129916f87baed27fb071e12e56f5f97b07798d6afa03519404 \
     --hash=sha256:ffa2f0d6834642fe996d356e728da887201533bb540974ae7ac975e66ecc0e3a
 attrs==26.1.0 \

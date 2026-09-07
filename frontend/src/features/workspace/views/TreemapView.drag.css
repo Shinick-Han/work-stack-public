@@ -1,0 +1,95 @@
+.wsv-treemap-move-handle {
+  touch-action: none;
+}
+
+.wsv-treemap foreignObject .wsv-treemap-move-handle {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--wsv-line);
+  border-radius: 3px;
+  color: var(--wsv-muted);
+  background: var(--wsv-glass);
+  cursor: grab;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.wsv-treemap-objectives .wsv-treemap-objective-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
+}
+
+.wsv-treemap-objectives .wsv-treemap-move-handle {
+  min-width: 1.2rem;
+  width: 1.2rem;
+  height: 1.2rem;
+  padding: 0;
+  border: 1px solid var(--wsv-line);
+  border-radius: 0.28rem;
+  color: var(--wsv-muted);
+  background: var(--wsv-glass);
+  cursor: grab;
+  font-size: 0.68rem;
+  line-height: 1;
+}
+
+.wsv-treemap-objectives .wsv-treemap-move-handle:hover,
+.wsv-treemap-objectives .wsv-treemap-move-handle:focus-visible {
+  color: var(--wsv-text);
+  outline: 2px solid var(--wsv-focus-ring, currentColor);
+  outline-offset: 1px;
+}
+
+.wsv-treemap-objectives .wsv-treemap-move-handle:active,
+.wsv-treemap-objectives .wsv-treemap-move-handle[aria-pressed="true"] {
+  cursor: grabbing;
+  color: var(--wsv-text);
+}
+
+.wsv-treemap-move-handle-glyph {
+  fill: var(--wsv-glass);
+  stroke: var(--wsv-line);
+  stroke-width: 1;
+  cursor: grab;
+  touch-action: none;
+}
+
+.wsv-treemap-move-handle[aria-pressed="true"] .wsv-treemap-move-handle-glyph,
+.wsv-treemap-move-handle:active .wsv-treemap-move-handle-glyph {
+  stroke: var(--wsv-treemap-selection);
+  cursor: grabbing;
+}
+
+.wsv-treemap-move-handle-mark {
+  fill: var(--wsv-muted);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.wsv-treemap-reset {
+  position: absolute;
+  left: 0.85rem;
+  bottom: 0.78rem;
+  z-index: 5;
+  padding: 0.32rem 0.55rem;
+  border: 1px solid var(--wsv-line);
+  border-radius: 0.45rem;
+  color: var(--wsv-text);
+  background: var(--wsv-glass);
+  backdrop-filter: blur(9px);
+  font-size: 0.72rem;
+}
+
+.wsv-treemap-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

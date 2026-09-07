@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/workstack-mutation-notice-v1.schema.json",
+  "title": "Work Stack mutation notice v1",
+  "$comment": "Durable notice and compensating-request shapes only. Persistence, SSE, GUI, and execution are out of band.",
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "revisionOrNull": {
+      "oneOf": [
+        { "$ref": "#/$defs/revision" },
+        { "type": "null" }
+      ]
+    },
+    "taskStatus": {
+      "enum": ["open", "started", "done", "dropped"]
+    },
+    "taskStatusOrNull": {
+      "oneOf": [
+        { "$ref": "#/$defs/taskStatus" },
+        { "type": "null" }
+      ]
+    },
+    "operation": {
+      "enum": [
+        "task.status",
+        "task.create",
+        "task.note",
+        "task.permanent_delete",
+        "subtask.status",
+        "subtask.create",
+        "objective.create",
+        "key_result.create",
+        "okr.link",
+        "okr.progress",
+        "worklog.append",
+        "capture.ingest",
+        "authority.change",
+        "profile.change",
+        "storage.migration",
+        "storage.backup",
+        "storage.restore"
+      ]
+    },
+    "entityKind": {
+      "enum": [
+        "task",
+        "subtask",
+        "objective",
+        "key_result",
+        "worklog",
+        "capture",
+        "workspace",
+        "profile",
+        "storage"
+      ]
+    },
+    "forbiddenNames": {
+      "enum": [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "access_token",
+        "api_key",
+        "authorization",
+        "cookie",
+        "credential",
+        "private_key",
+        "path",
+        "command",
+        "traceback",
+        "title",
+        "detail",
+        "body",
+        "prompt",
+        "context",
+        "retryable",
+        "retry_suggestion"
+      ]
+    },
+    "compensationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "unevaluatedProperties": false,
+      "required": [
+        "format",
+        "schema_version",
+        "notice_id",
+        "workspace_uid",
+        "entity_kind",
+        "entity_uid",
+        "operation",
+        "expected_revision",
+        "requested_status",
+        "idempotency_key"
+      ],
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "not": { "$ref": "#/$defs/forbiddenNames" }
+      },
+      "properties": {
+        "format": { "const": "workstack.mutation-compensation" },
+        "schema_version": { "const": 1 },
+        "notice_id": { "$ref": "#/$defs/uuid" },
+        "workspace_uid": { "$ref": "#/$defs/uuid" },
+        "entity_kind": { "const": "task" },
+        "entity_uid": { "$ref": "#/$defs/uuid" },
+        "operation": { "const": "task.status" },
+        "expected_revision": { "$ref": "#/$defs/revision" },
+        "requested_status": { "$ref": "#/$defs/taskStatus" },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]{8,128}$"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "unevaluatedProperties": false,
+  "required": [
+    "format",
+    "schema_version",
+    "notice_id",
+    "workspace_uid",
+    "mutation_uid",
+    "entity_kind",
+    "entity_uid",
+    "operation",
+    "before_revision",
+    "after_revision",
+    "source",
+    "actor",
+    "idempotency_key",
+    "commit_state",
+    "summary",
+    "undoable",
+    "status_before",
+    "status_after"
+  ],
+  "propertyNames": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 64,
+    "pattern": "^[a-z][a-z0-9_]*$",
+    "not": { "$ref": "#/$defs/forbiddenNames" }
+  },
+  "properties": {
+    "format": { "const": "workstack.mutation-notice" },
+    "schema_version": { "const": 1 },
+    "notice_id": { "$ref": "#/$defs/uuid" },
+    "workspace_uid": { "$ref": "#/$defs/uuid" },
+    "mutation_uid": { "$ref": "#/$defs/uuid" },
+    "entity_kind": { "$ref": "#/$defs/entityKind" },
+    "entity_uid": { "$ref": "#/$defs/uuid" },
+    "operation": { "$ref": "#/$defs/operation" },
+    "before_revision": { "$ref": "#/$defs/revision" },
+    "after_revision": { "$ref": "#/$defs/revisionOrNull" },
+    "source": { "enum": ["cli", "gui", "agent"] },
+    "actor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]{8,128}$"
+    },
+    "commit_state": { "enum": ["committed", "commit_unknown"] },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9 .:_-]{1,160}$"
+    },
+    "undoable": { "type": "boolean" },
+    "status_before": { "$ref": "#/$defs/taskStatusOrNull" },
+    "status_after": { "$ref": "#/$defs/taskStatusOrNull" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "commit_state": { "const": "commit_unknown" } },
+        "required": ["commit_state"]
+      },
+      "then": {
+        "properties": {
+          "undoable": { "const": false },
+          "after_revision": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "commit_state": { "const": "committed" } },
+        "required": ["commit_state"]
+      },
+      "then": {
+        "properties": { "after_revision": { "$ref": "#/$defs/revision" } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "task.create",
+              "task.note",
+              "task.permanent_delete",
+              "subtask.status",
+              "subtask.create",
+              "objective.create",
+              "key_result.create",
+              "okr.link",
+              "okr.progress",
+              "worklog.append",
+              "capture.ingest",
+              "authority.change",
+              "profile.change",
+              "storage.migration",
+              "storage.backup",
+              "storage.restore"
+            ]
+          }
+        },
+        "required": ["operation"]
+      },
+      "then": {
+        "properties": { "undoable": { "const": false } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": { "const": "task.status" },
+          "commit_state": { "const": "committed" }
+        },
+        "required": ["operation", "commit_state"]
+      },
+      "then": {
+        "properties": {
+          "entity_kind": { "const": "task" },
+          "status_before": { "$ref": "#/$defs/taskStatus" },
+          "status_after": { "$ref": "#/$defs/taskStatus" }
+        }
+      }
+    }
+  ]
+}

@@ -275,7 +275,7 @@ class _TailCase(owner_fixture._Case):
 class _BacklogCase(_TailCase):
     path, operation = PATH, "backlog add"
     setter, frame, save_method = "add_task", "add_task_cli", "save_many"
-    changed = {"backlog.json", "activity.json"}
+    changed = {"backlog.json", "activity.json", "workspace.json"}
 
     def setUp(self):
         super().setUp()
@@ -305,7 +305,14 @@ class _BacklogCase(_TailCase):
 
     def assert_save(self, save):
         from workstack.storage.document_repository import WorkspaceDocument
-        self.assertEqual(set(save.call_args.args[0]), {WorkspaceDocument.TASKS, WorkspaceDocument.ACTIVITY})
+        self.assertEqual(
+            set(save.call_args.args[0]),
+            {
+                WorkspaceDocument.TASKS,
+                WorkspaceDocument.ACTIVITY,
+                WorkspaceDocument.WORKSPACE,
+            },
+        )
 
 
 class BacklogParity(_BacklogCase):

@@ -15,11 +15,11 @@ from typing import Any, Callable, Iterator, Mapping
 
 from ..store import (
     CAPTURE_TOKEN_NAME,
-    DEFAULTS,
     SERVER_INFO_NAME,
     StoreLockedError,
     StoreReadiness,
 )
+from ..store_rosters import V3_DOCUMENT_NAMES, V3_SORTED_DOCUMENT_NAMES
 from .canonical import canonical_json_bytes
 from .domain_v4_composition import (
     ExperimentalV4Domain,
@@ -131,7 +131,7 @@ class ExperimentalV4StoreAdapter:
             yield self._readiness
 
     def load(self, name: str) -> dict[str, Any]:
-        if name not in DEFAULTS:
+        if name not in V3_DOCUMENT_NAMES:
             raise ExperimentalV4ApplicationError("V4_APPLICATION_DOCUMENT_UNKNOWN")
         with self._lock:
             if int(getattr(self._local, "depth", 0)) == 0:
@@ -139,7 +139,7 @@ class ExperimentalV4StoreAdapter:
             return copy.deepcopy(self._documents[name])
 
     def path(self, name: str) -> _VirtualDocumentPath:
-        if name not in DEFAULTS:
+        if name not in V3_DOCUMENT_NAMES:
             raise ExperimentalV4ApplicationError("V4_APPLICATION_DOCUMENT_UNKNOWN")
         with self._lock:
             self._refresh_locked()
@@ -283,7 +283,7 @@ class ExperimentalV4StoreAdapter:
                 "type": "store-committed",
                 "workspace_id": self.domain.coordinate.workspace_uid,
                 "generation": self._generation,
-                "changed_files": sorted(DEFAULTS),
+                "changed_files": list(V3_SORTED_DOCUMENT_NAMES),
             }
         )
         self._event_condition.notify_all()

@@ -29,10 +29,11 @@ def profile(**overrides: object):
         "profile_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "label": "Remote",
         "ssh_host_alias": "work-linux",
-        "remote_app_dir": "/srv/work stack/app",
-        "remote_data_dir": "/srv/work stack/ssot;literal",
+        "remote_app_dir": "/srv/workstack/app",
+        "remote_data_dir": "/srv/workstack/ssot",
         "expected_workspace_id": WORKSPACE_ID,
         "preferred_forward_port": 18765,
+        "remote_python": "/srv/workstack/venv/bin/python",
     }
     values.update(overrides)
     return MODULE.SshConnectionProfile(**values)
@@ -43,6 +44,7 @@ class FakeProcess:
         import io
 
         self.stdout = io.BytesIO(payload)
+        self.stderr = io.BytesIO(b"")
         self.returncode = returncode
         self.killed = False
 
@@ -55,7 +57,7 @@ class FakeProcess:
 
 
 class SshProfileMetadataTest(unittest.TestCase):
-    def test_command_is_fixed_shape_and_quotes_paths_as_remote_values(self) -> None:
+    def test_command_is_fixed_shape_and_uses_shared_probe_entry(self) -> None:
         command = MODULE.build_ssh_profile_metadata_command(profile(), "ssh.exe")
 
         self.assertEqual(command[:14], [
@@ -63,11 +65,23 @@ class SshProfileMetadataTest(unittest.TestCase):
             "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o",
             "PermitLocalCommand=no", "-o", "ClearAllForwardings=yes", "--", "work-linux",
         ])
-        self.assertIn("python3 -I -B -c", command[-1])
-        self.assertIn("'/srv/work stack/app'", command[-1])
-        self.assertIn("'/srv/work stack/ssot;literal'", command[-1])
-        self.assertNotIn("mkdir", command[-1])
-        self.assertNotIn("run_work_stack.py", command[-1])
+        remote = command[-1]
+        self.assertIn("/srv/workstack/venv/bin/python", remote)
+        self.assertIn("desktop/python-webview-shell/remote_entry.py", remote)
+        self.assertIn(" probe ", f" {remote} ")
+        self.assertNotIn("python3 -I -B -c", remote)
+        self.assertNotIn("-c", remote.split())
+        self.assertNotIn("mkdir", remote)
+        self.assertNotIn("run_work_stack.py", remote)
+        self.assertNotIn("&&", remote)
+
+    def test_missing_remote_python_fails_before_popen(self) -> None:
+        with mock.patch.object(MODULE.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(RuntimeError, "REMOTE_PYTHON_REQUIRED"):
+                MODULE.run_remote_profile_metadata_check(
+                    profile(remote_python=None), ssh_executable="ssh.exe"
+                )
+        popen.assert_not_called()
 
     def test_valid_bounded_metadata_is_returned(self) -> None:
         payload = json.dumps({
@@ -99,6 +113,17 @@ class SshProfileMetadataTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "metadata check failed") as caught:
                 MODULE.run_remote_profile_metadata_check(profile(), ssh_executable="ssh.exe")
         self.assertNotIn("company-secret", str(caught.exception))
+
+    def test_stable_lock_owned_code_is_surfaced_without_raw_token(self) -> None:
+        import io
+
+        process = FakeProcess(b"", returncode=2)
+        process.stderr = io.BytesIO(b"REMOTE_LOCK_OWNED: pid=4242\n")
+        with mock.patch.object(MODULE.subprocess, "Popen", return_value=process):
+            with self.assertRaisesRegex(RuntimeError, "REMOTE_LOCK_OWNED") as caught:
+                MODULE.run_remote_profile_metadata_check(profile(), ssh_executable="ssh.exe")
+        self.assertNotIn("r5pending", str(caught.exception))
+        self.assertNotIn("session-token", str(caught.exception).lower())
 
     def test_invalid_metadata_shape_and_values_fail_closed(self) -> None:
         bad_values = [

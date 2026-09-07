@@ -12,11 +12,14 @@ from workstack.service import (
     WorkSessionConflictError,
     WorkStack,
 )
-from workstack.store import DEFAULTS, Store
+from workstack.store import Store, _serialized_json_bytes
+from workstack.store_document_validation import validate_document_values
+from workstack.store_rosters import V3_DOCUMENT_ORDER
 from workstack.storage.canonical import canonical_json_bytes
 from workstack.storage.manifest import build_v4_manifest
 from workstack.storage.manifest_store import publish_runtime_manifest
 from workstack.storage.migration_conversion import convert_v3_documents
+from workstack.storage.migration_source import V3_SOURCE_FILES
 from workstack.storage.planning_v4_repository import V4PlanningRepository
 from workstack.storage.query_repository import WorkspaceQueryRepository
 from workstack.storage.read_repository import (
@@ -38,6 +41,32 @@ NOW = "2026-09-01T12:00:00Z"
 TODAY = "2026-09-01"
 
 
+def _write_historical_v3(destination: Path, source_root: Path) -> None:
+    """Materialize schema-3 test data from this test's synthetic current store.
+
+    ``WorkStack(Store(...))`` upgrades the source to schema 5. The V3 reader
+    correctly refuses that roster, so the historical copy is a separate
+    directory: the nine v3 payloads plus stepped-back metadata. The source
+    tree is not relabeled.
+    """
+
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in V3_SOURCE_FILES:
+        body = (source_root / name).read_bytes()
+        if name == "store-meta.json":
+            metadata = json.loads(body.decode("utf-8"))
+            metadata["store_schema_version"] = 3
+            migrations = metadata.get("migrations")
+            if isinstance(migrations, dict):
+                migrations.pop("reports", None)
+            body = _serialized_json_bytes(metadata)
+        (destination / name).write_bytes(body)
+    validate_document_values(
+        {name: json.loads((destination / name).read_bytes()) for name in V3_SOURCE_FILES},
+        schema_version=3,
+    )
+
+
 class Slice56Fixture:
     def __init__(self, base: Path) -> None:
         self.v3 = WorkStack(Store(base / "v3"))
@@ -45,7 +74,13 @@ class Slice56Fixture:
             self.parent = self.v3.add_task("Parent")
             self.target = self.v3.add_task("Target")
             self.dependency = self.v3.add_task("Dependency")
-        documents = {name: self.v3.store.load(name) for name in DEFAULTS}
+        self.historical_v3_root = base / "historical-v3"
+        _write_historical_v3(self.historical_v3_root, self.v3.store.root)
+        # Conversion source is the frozen v3 roster, not this build's DEFAULTS.
+        documents = {
+            name: json.loads((self.historical_v3_root / name).read_bytes())
+            for name in V3_DOCUMENT_ORDER
+        }
         self.conversion = convert_v3_documents(
             documents, candidate_created_at="2026-09-01T00:00:00Z"
         )
@@ -261,8 +296,10 @@ class Slice56ServiceIntegrationTests(unittest.TestCase):
             )
 
     def test_query_search_and_workspace_graph_are_separate_optional_reads(self) -> None:
+        self.assertFalse((self.fixture.historical_v3_root / "reports.json").exists())
+        self.assertTrue((self.fixture.v3.store.root / "reports.json").exists())
         v3_query = WorkspaceQueryRepository(
-            V3WorkspaceRepository(self.fixture.v3.store),
+            V3WorkspaceRepository(Store(self.fixture.historical_v3_root)),
             self.base / "v3-projection",
         )
         v3_service = WorkStack(

@@ -16,6 +16,8 @@ declare module 'features/workspace/views' {
 
   export interface WorkspaceViewsProps {
     view: WorkspaceView
+    /** Per-workspace identity for local-view persistence. */
+    workspaceId: string
     tasks: Task[]
     objectives: Objective[]
     notes: Note[]

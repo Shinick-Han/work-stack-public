@@ -24,20 +24,75 @@ function decodeSignal(value: string): SyncStatusSignal | null {
   }
 }
 
+function invokeRefresh(
+  onChange: (signal?: SyncStatusSignal) => void | Promise<unknown>,
+  signal?: SyncStatusSignal,
+): Promise<void> {
+  try {
+    return Promise.resolve(onChange(signal)).then(() => undefined, () => undefined)
+  } catch {
+    return Promise.resolve()
+  }
+}
+
+/**
+ * One in-flight generic refresh plus at most one trailing run for the latest
+ * hint that arrived while it was pending. Dispose drops the dirty bit so a
+ * later settlement cannot start a new or trailing callback.
+ */
+function coalesceGenericRefresh(
+  onChange: (signal?: SyncStatusSignal) => void | Promise<unknown>,
+) {
+  let disposed = false
+  let pending = false
+  let dirty = false
+  let latest: SyncStatusSignal | undefined
+
+  const start = (signal?: SyncStatusSignal) => {
+    if (disposed) return
+    pending = true
+    void invokeRefresh(onChange, signal).then(() => {
+      pending = false
+      if (disposed || !dirty) return
+      dirty = false
+      const next = latest
+      latest = undefined
+      start(next)
+    })
+  }
+
+  return {
+    hint(signal?: SyncStatusSignal) {
+      if (disposed) return
+      latest = signal
+      if (pending) {
+        dirty = true
+        return
+      }
+      start(signal)
+    },
+    dispose() {
+      disposed = true
+      dirty = false
+    },
+  }
+}
+
 /**
  * SSE is the primary remote-change hint. Focus/online events are deliberately
  * event-driven compatibility fallbacks; this client never introduces a polling
  * loop. Every hint triggers an authoritative HTTP refetch in the caller.
  */
 export function subscribeSyncStatusEvents(
-  onChange: (signal?: SyncStatusSignal) => void,
+  onChange: (signal?: SyncStatusSignal) => void | Promise<unknown>,
   onCheckpoint?: (event: CheckpointCommittedEvent) => void,
   onTransition?: (event: CheckpointTransitionEvent) => void,
 ): () => void {
   if (typeof window === 'undefined') return () => undefined
 
   let active = true
-  const onFallback = () => { if (active) onChange() }
+  const refresh = coalesceGenericRefresh(onChange)
+  const onFallback = () => { if (active) refresh.hint() }
   window.addEventListener('focus', onFallback)
   window.addEventListener('online', onFallback)
 
@@ -47,7 +102,7 @@ export function subscribeSyncStatusEvents(
       source = new EventSource('/api/v1/events', { withCredentials: true })
       const receive = (event: MessageEvent<string>) => {
         const signal = decodeSignal(event.data)
-        if (active && signal) onChange(signal)
+        if (active && signal) refresh.hint(signal)
       }
       source.addEventListener('message', receive as EventListener)
       source.addEventListener('generation', receive as EventListener)
@@ -71,6 +126,7 @@ export function subscribeSyncStatusEvents(
 
   return () => {
     active = false
+    refresh.dispose()
     window.removeEventListener('focus', onFallback)
     window.removeEventListener('online', onFallback)
     source?.close()

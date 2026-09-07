@@ -306,6 +306,16 @@ if __name__ == "__main__":
 APPROVED_FIXTURE = Path("tests/test_sse_event_delivery.py")
 APPROVED_CLASS, APPROVED_METHOD = AUDIT_EXPORT.APPROVED_SOURCE_FIXTURES[APPROVED_FIXTURE][:2]
 APPROVED_DIGEST = AUDIT_EXPORT.APPROVED_SOURCE_FIXTURES[APPROVED_FIXTURE][3]
+REPORTING_FIXTURE = Path("tests/test_reporting.py")
+REPORTING_CLASS, REPORTING_METHOD, REPORTING_RULE, REPORTING_DIGEST = (
+    AUDIT_EXPORT.APPROVED_SOURCE_FIXTURES[REPORTING_FIXTURE]
+)
+DECODER_TEST = Path("frontend/src/features/review/DailyReportDocument.test.tsx")
+DECODER_RULE, DECODER_DIGEST, DECODER_SPANS = AUDIT_EXPORT.APPROVED_SOURCE_TEST_FILES[
+    DECODER_TEST
+]
+DECODER_BYTES = (ROOT / DECODER_TEST).read_bytes()
+DECODER_TEXT = (ROOT / DECODER_TEST).read_text(encoding="utf-8")
 BRAND_SVG = ROOT / "frontend" / "src" / "assets" / "WorkStack-Mark-Lime-v2.svg"
 # This test file is itself part of the audited source, and the audit allows it
 # only the "email address" and "raw-content canary" negative rules. A literal
@@ -315,20 +325,28 @@ BRAND_SVG = ROOT / "frontend" / "src" / "assets" / "WorkStack-Mark-Lime-v2.svg"
 PRIVATE_KEY_PROBE = AUDIT_EXPORT.PRIVATE_KEY_RE.pattern.replace("[A-Z ]*", "RSA ")
 
 
-def approved_method_source() -> str:
-    """The exact complete source segment the scanner's digest is bound to."""
+def method_source(relative: Path, class_name: str, method_name: str) -> str:
+    """The exact complete source segment one approved digest is bound to."""
 
-    text = (ROOT / APPROVED_FIXTURE).read_text(encoding="utf-8")
+    text = (ROOT / relative).read_text(encoding="utf-8")
     tree = ast.parse(text)
     owner = next(
         node for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef) and node.name == APPROVED_CLASS
+        if isinstance(node, ast.ClassDef) and node.name == class_name
     )
     method = next(
         node for node in ast.walk(owner)
-        if isinstance(node, ast.FunctionDef) and node.name == APPROVED_METHOD
+        if isinstance(node, ast.FunctionDef) and node.name == method_name
     )
     return ast.get_source_segment(text, method).replace("\r\n", "\n")
+
+
+def approved_method_source() -> str:
+    return method_source(APPROVED_FIXTURE, APPROVED_CLASS, APPROVED_METHOD)
+
+
+def reporting_method_source() -> str:
+    return method_source(REPORTING_FIXTURE, REPORTING_CLASS, REPORTING_METHOD)
 
 
 class SvgIsScannedTextTest(unittest.TestCase):
@@ -397,6 +415,53 @@ class SvgIsScannedTextTest(unittest.TestCase):
             (root / "frontend" / "src" / "assets" / "icon.ico").write_bytes(b"\x00\x00\x01\x00")
             findings = AUDIT_EXPORT.audit(root, [])
             self.assertTrue(any("icon.ico: unexpected file type" in item for item in findings))
+
+
+class CjsIsScannedTextTest(unittest.TestCase):
+    """CommonJS .cjs is ordinary UTF-8 source text, not a binary exemption."""
+
+    def _root(self, temporary: str) -> Path:
+        root = Path(temporary)
+        (root / "workstack").mkdir()
+        (root / "frontend" / "src").mkdir(parents=True)
+        (root / "scripts").mkdir()
+        return root
+
+    def test_safe_utf8_cjs_source_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            (root / "scripts" / "collector.cjs").write_text(
+                '"use strict";\nmodule.exports = { ok: true };\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(AUDIT_EXPORT.audit(root, []), [])
+
+    def test_a_cjs_file_matching_an_ordinary_sensitive_text_rule_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            (root / "scripts" / "leaked.cjs").write_text(
+                '"use strict";\nconst owner = "owner@example.invalid";\n',
+                encoding="utf-8",
+            )
+            findings = AUDIT_EXPORT.audit(root, [])
+            self.assertTrue(any("leaked.cjs: email address" in item for item in findings))
+
+    def test_invalid_utf8_cjs_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            (root / "scripts" / "broken.cjs").write_bytes(b'"use strict";\n\xff\xfe\n')
+            findings = AUDIT_EXPORT.audit(root, [])
+            self.assertTrue(any("broken.cjs: non-UTF-8 content" in item for item in findings))
+
+    def test_a_deny_term_in_cjs_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            (root / "scripts" / "worded.cjs").write_text(
+                '"use strict";\nmodule.exports = "Roadmap";\n',
+                encoding="utf-8",
+            )
+            findings = AUDIT_EXPORT.audit(root, ["roadmap"])
+            self.assertTrue(any("worded.cjs: prohibited term" in item for item in findings))
 
 
 class ApprovedSourceFixtureTest(unittest.TestCase):
@@ -569,6 +634,204 @@ APPROVED_ICO = Path("desktop/python-webview-shell/assets/WorkStack-Mark-Lime-v2.
 APPROVED_ICO_SHA = AUDIT_EXPORT.APPROVED_SOURCE_BINARIES[APPROVED_ICO]
 ORACLE_MANIFEST = Path("quality/agent-p0-oracle/manifest.v1.json")
 PLACEHOLDERS = AUDIT_EXPORT.APPROVED_STRUCTURED_VALUES[ORACLE_MANIFEST]
+
+
+
+class ApprovedReportingFixtureTest(unittest.TestCase):
+    """The second approved fixture is narrow in exactly the same way as the first.
+
+    GFM autolinks a bare address, so the reporting preview can only prove the address
+    stays literal by holding the real shape. The allowance buys that one match inside
+    one hashed method and nothing else, so this class re-proves the four boundaries
+    that matter for the NEW entry: a changed literal or method, a second occurrence
+    elsewhere in the same file, a relocated occurrence, and tree mode.
+    """
+
+    # Outer blocks are indented by a single space so the method itself still starts
+    # at column four and the segment reproduces byte for byte, keeping the digest.
+    DIRECT_OWNER = "class {cls}:\n    {segment}\n"
+    RELOCATED_CLASS = "class Outer:\n class {cls}:\n    {segment}\n"
+    SECOND_ADDRESS = '\n\nELSEWHERE = "second.person@example.com"\n'
+
+    def _build(self, temporary, *, name=None, body=None, suffix="", template=None):
+        root = Path(temporary)
+        (root / "workstack").mkdir()
+        (root / "frontend" / "src").mkdir(parents=True)
+        (root / "tests").mkdir()
+        segment = reporting_method_source() if body is None else body
+        owner = (template or self.DIRECT_OWNER).format(
+            cls=REPORTING_CLASS, segment=segment
+        )
+        target = root / (name or REPORTING_FIXTURE.as_posix())
+        target.write_text(owner + suffix, encoding="utf-8")
+        return root
+
+    def _findings(self, root: Path, mode: str = "source") -> str:
+        return "\n".join(AUDIT_EXPORT.audit(root, [], mode))
+
+    def test_the_exact_approved_reporting_fixture_passes_in_source_and_auto_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._build(temporary)
+            self.assertEqual(AUDIT_EXPORT.audit(root, [], "source"), [])
+            self.assertEqual(AUDIT_EXPORT.audit(root, []), [])
+
+    def test_tree_mode_refuses_even_the_exact_reporting_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._build(temporary)
+            self.assertIn(REPORTING_RULE, self._findings(root, "tree"))
+
+    def test_a_changed_literal_or_changed_method_loses_the_allowance(self):
+        original = reporting_method_source()
+        changed_literal = original.replace("person@example.com", "someone@example.com")
+        self.assertNotEqual(changed_literal, original)
+        cases = {
+            "changed literal": changed_literal,
+            "changed method": original + "\n        self.assertTrue(True)",
+        }
+        for label, body in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = self._build(temporary, body=body)
+                self.assertIn(REPORTING_RULE, self._findings(root))
+
+    def test_a_second_address_elsewhere_in_the_same_file_still_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._build(temporary, suffix=self.SECOND_ADDRESS)
+            self.assertIn(REPORTING_RULE, self._findings(root))
+
+    def test_relocating_the_occurrence_loses_the_allowance(self):
+        cases = {
+            "another filename": dict(name="tests/test_other_reporting.py"),
+            "class relocated under another owner": dict(
+                template=self.RELOCATED_CLASS
+            ),
+        }
+        for label, arguments in cases.items():
+            with self.subTest(relocation=label), tempfile.TemporaryDirectory() as temporary:
+                root = self._build(temporary, **arguments)
+                self.assertIn(REPORTING_RULE, self._findings(root))
+
+    def test_the_recorded_digest_matches_the_real_reporting_method(self):
+        segment = reporting_method_source()
+        self.assertEqual(
+            hashlib.sha256(segment.encode("utf-8")).hexdigest(), REPORTING_DIGEST
+        )
+        self.assertEqual(
+            len(list(AUDIT_EXPORT.TEXT_RULES[REPORTING_RULE].finditer(segment))), 1
+        )
+
+
+class ApprovedDecoderTestFileTest(unittest.TestCase):
+    """Whole-file SOURCE allowance for the frozen daily-report decoder email oracles.
+
+    The Vitest file must keep both synthetic person@example.com literals visible.
+    Approval is the exact path, the LF-normalized whole-file digest, that one
+    rule, and those two recorded spans. It is not a Python-method row, a frozen
+    skip, a binary skip, or a global email / *.test.tsx bypass.
+    """
+
+    SECOND_ADDRESS = "\ncontact leaked@example.invalid\n"
+    MOVED = Path("frontend/src/features/review/DailyReportDocument.moved.test.tsx")
+    DUPLICATE = Path(
+        "frontend/src/features/review/DailyReportDocument.duplicate.test.tsx"
+    )
+
+    def _root(self, temporary, *, relative=None, data=None, extra=None):
+        root = Path(temporary)
+        (root / "workstack").mkdir()
+        (root / "frontend" / "src").mkdir(parents=True)
+        target = root / (relative or DECODER_TEST)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(DECODER_BYTES if data is None else data)
+        if extra is not None:
+            other = root / extra
+            other.parent.mkdir(parents=True, exist_ok=True)
+            other.write_bytes(DECODER_BYTES)
+        return root
+
+    def _findings(self, root: Path, mode: str = "source") -> str:
+        return "\n".join(AUDIT_EXPORT.audit(root, [], mode))
+
+    def test_the_python_method_table_does_not_cover_the_decoder_file(self):
+        self.assertNotIn(DECODER_TEST, AUDIT_EXPORT.APPROVED_SOURCE_FIXTURES)
+        self.assertNotIn(DECODER_TEST, AUDIT_EXPORT.NEGATIVE_TEST_RULES)
+        self.assertNotIn(DECODER_TEST, AUDIT_EXPORT.FROZEN_FIXTURE_HASHES)
+        self.assertNotIn(DECODER_TEST, AUDIT_EXPORT.APPROVED_SOURCE_BINARIES)
+        self.assertNotIn(DECODER_TEST, AUDIT_EXPORT.SOURCE_METADATA_RULES)
+
+    def test_the_recorded_digest_and_spans_match_the_real_decoder_file(self):
+        normalized = DECODER_TEXT.replace("\r\n", "\n")
+        self.assertEqual(
+            hashlib.sha256(normalized.encode("utf-8")).hexdigest(), DECODER_DIGEST
+        )
+        matches = list(AUDIT_EXPORT.TEXT_RULES[DECODER_RULE].finditer(DECODER_TEXT))
+        self.assertEqual(len(matches), 2)
+        self.assertEqual(len(DECODER_SPANS), 2)
+        self.assertEqual(
+            tuple((match.start(), match.end()) for match in matches), DECODER_SPANS
+        )
+        self.assertEqual({match.group() for match in matches}, {"person@example.com"})
+
+    def test_the_exact_original_decoder_file_passes_in_source_and_auto_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            self.assertEqual(AUDIT_EXPORT.audit(root, [], "source"), [])
+            self.assertEqual(AUDIT_EXPORT.audit(root, []), [])
+
+    def test_tree_mode_refuses_even_the_exact_decoder_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            self.assertIn(DECODER_RULE, self._findings(root, "tree"))
+
+    def test_appending_another_address_loses_the_allowance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(
+                temporary, data=DECODER_BYTES + self.SECOND_ADDRESS.encode("utf-8")
+            )
+            self.assertIn(DECODER_RULE, self._findings(root))
+
+    def test_one_changed_byte_with_the_same_addresses_loses_the_allowance(self):
+        mutated = DECODER_TEXT.replace(
+            "Daily review 2026-08-30", "Daily reviex 2026-08-30", 1
+        )
+        self.assertNotEqual(mutated, DECODER_TEXT)
+        self.assertEqual(mutated.count("person@example.com"), 2)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary, data=mutated.encode("utf-8"))
+            self.assertIn(DECODER_RULE, self._findings(root))
+
+    def test_moving_the_file_loses_the_allowance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary, relative=self.MOVED)
+            findings = AUDIT_EXPORT.audit(root, [], "source")
+            self.assertTrue(
+                any(self.MOVED.name in item and DECODER_RULE in item for item in findings),
+                findings,
+            )
+
+    def test_a_duplicate_copy_elsewhere_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary, extra=self.DUPLICATE)
+            findings = AUDIT_EXPORT.audit(root, [], "source")
+            self.assertTrue(
+                any(
+                    self.DUPLICATE.name in item and DECODER_RULE in item
+                    for item in findings
+                ),
+                findings,
+            )
+            self.assertFalse(
+                any(DECODER_TEST.name in item for item in findings),
+                findings,
+            )
+
+    def test_other_rules_and_deny_terms_still_scan_the_decoder_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            findings = AUDIT_EXPORT.audit(root, ["toBeVisible"], "source")
+            self.assertTrue(
+                any("prohibited term" in item for item in findings), findings
+            )
+            self.assertFalse(any(DECODER_RULE in item for item in findings), findings)
 
 
 class SourceRosterTest(unittest.TestCase):

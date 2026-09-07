@@ -8,6 +8,8 @@ from pathlib import Path
 import ast
 
 from scripts.quality_gate import (
+    FILE_LINE_LIMIT,
+    _discover,
     _python_graph,
     _python_module,
     _resolve_python_import,
@@ -16,6 +18,7 @@ from scripts.quality_gate import (
     load_config,
     measure,
 )
+from quality_typescript import index_typescript_functions
 
 
 class QualityGateTests(unittest.TestCase):
@@ -274,6 +277,438 @@ class QualityGateTests(unittest.TestCase):
         }
 
         self.assertEqual([], evaluate(candidate, baseline))
+
+    def test_new_noncritical_python_ccn_offender_fails(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        baseline = build_baseline(measure(root, config), measurement_commit="abc123")
+        branches = "\n".join(
+            f"    if value == {index}:\n        return {index}" for index in range(16)
+        )
+        (root / "workstack" / "foundation.py").write_text(
+            f"VALUE = 1\n\ndef risky(value):\n{branches}\n    return -1\n",
+            encoding="utf-8",
+        )
+        errors = evaluate(measure(root, config), baseline)
+        self.assertTrue(any("new function exceeds CCN 15" in error for error in errors))
+
+    def test_existing_python_ccn_debt_increase_fails_and_decrease_passes(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        path = root / "workstack" / "foundation.py"
+
+        def write_ccn(branches: int) -> None:
+            body = "\n".join(
+                f"    if value == {index}:\n        return {index}" for index in range(branches)
+            )
+            path.write_text(
+                f"VALUE = 1\n\ndef risky(value):\n{body}\n    return -1\n",
+                encoding="utf-8",
+            )
+
+        write_ccn(16)
+        baseline = build_baseline(measure(root, config), measurement_commit="abc123")
+        write_ccn(17)
+        self.assertTrue(
+            any("complexity increased" in error for error in evaluate(measure(root, config), baseline))
+        )
+        write_ccn(16)
+        self.assertEqual([], evaluate(measure(root, config), baseline))
+        write_ccn(14)
+        self.assertEqual([], evaluate(measure(root, config), baseline))
+
+    def test_new_stable_typescript_ccn_offender_fails(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        initial = measure(root, config)
+        initial["typescript_complexity"] = {}
+        baseline = build_baseline(initial, measurement_commit="abc123")
+        candidate = dict(initial)
+        candidate["typescript_complexity"] = {
+            "frontend/src/app/main.ts::risky": {
+                "path": "frontend/src/app/main.ts",
+                "name": "risky",
+                "line": 1,
+                "ccn": 16,
+                "critical": False,
+                "stable": True,
+            }
+        }
+        errors = evaluate(candidate, baseline)
+        self.assertTrue(any("new TypeScript function exceeds CCN 15" in error for error in errors))
+
+    def test_existing_stable_typescript_ccn_debt_increase_fails_and_decrease_passes(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        initial = measure(root, config)
+        symbol = "frontend/src/app/main.ts::risky"
+        item = {
+            "path": "frontend/src/app/main.ts",
+            "name": "risky",
+            "line": 1,
+            "ccn": 16,
+            "critical": False,
+            "stable": True,
+        }
+        initial["typescript_complexity"] = {symbol: item}
+        baseline = build_baseline(initial, measurement_commit="abc123")
+        increased = dict(initial)
+        increased["typescript_complexity"] = {symbol: {**item, "ccn": 17}}
+        self.assertTrue(
+            any("TypeScript complexity increased" in error for error in evaluate(increased, baseline))
+        )
+        same = dict(initial)
+        same["typescript_complexity"] = {symbol: item}
+        self.assertEqual([], evaluate(same, baseline))
+        reduced = dict(initial)
+        reduced["typescript_complexity"] = {symbol: {**item, "ccn": 15}}
+        self.assertEqual([], evaluate(reduced, baseline))
+
+    def test_anonymous_typescript_cannot_collide_as_a_baseline_symbol(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        initial = measure(root, config)
+        initial["typescript_complexity"] = {}
+        baseline = build_baseline(initial, measurement_commit="abc123")
+        anonymous = {
+            "frontend/src/app/main.ts::<anonymous@1:1>": {
+                "path": "frontend/src/app/main.ts",
+                "name": "<anonymous@1:1>",
+                "line": 1,
+                "ccn": 20,
+                "critical": True,
+                "stable": False,
+            }
+        }
+        candidate = dict(initial)
+        candidate["typescript_complexity"] = anonymous
+        baseline["typescript_complexity_debt"] = {
+            "frontend/src/app/main.ts::<anonymous@1:1>": 20
+        }
+        self.assertEqual([], evaluate(candidate, baseline))
+        mixed = dict(initial)
+        mixed["typescript_complexity"] = {
+            **anonymous,
+            "frontend/src/app/main.ts::risky": {
+                "path": "frontend/src/app/main.ts",
+                "name": "risky",
+                "line": 4,
+                "ccn": 16,
+                "critical": False,
+                "stable": True,
+            },
+        }
+        errors = evaluate(mixed, baseline)
+        self.assertTrue(any("new TypeScript function exceeds CCN 15" in error for error in errors))
+        self.assertFalse(any("anonymous" in error for error in errors))
+
+    def _function_source(self, name: str, lines: int) -> str:
+        inner = max(0, lines - 2)
+        body = "\n".join(["    x = 1"] * inner)
+        return f"VALUE = 1\n\ndef {name}():\n{body}\n    return x\n"
+
+    def test_new_function_over_100_lines_fails(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        baseline = build_baseline(measure(root, config), measurement_commit="abc123")
+        (root / "workstack" / "foundation.py").write_text(
+            self._function_source("long_fn", 101), encoding="utf-8"
+        )
+        errors = evaluate(measure(root, config), baseline)
+        self.assertTrue(any("new function exceeds 100 lines" in error for error in errors))
+
+    def test_existing_long_function_growth_fails_and_reduction_passes(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        path = root / "workstack" / "foundation.py"
+        path.write_text(self._function_source("long_fn", 101), encoding="utf-8")
+        baseline = build_baseline(measure(root, config), measurement_commit="abc123")
+        path.write_text(self._function_source("long_fn", 102), encoding="utf-8")
+        self.assertTrue(
+            any("function length increased" in error for error in evaluate(measure(root, config), baseline))
+        )
+        path.write_text(self._function_source("long_fn", 101), encoding="utf-8")
+        self.assertEqual([], evaluate(measure(root, config), baseline))
+        path.write_text(self._function_source("long_fn", 100), encoding="utf-8")
+        self.assertEqual([], evaluate(measure(root, config), baseline))
+
+    def test_new_typescript_function_over_100_lines_fails(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        initial = measure(root, config)
+        baseline = build_baseline(initial, measurement_commit="abc123")
+        candidate = dict(initial)
+        candidate["typescript_functions"] = {
+            "frontend/src/app/main.ts::longFn": {
+                "path": "frontend/src/app/main.ts",
+                "name": "longFn",
+                "line": 1,
+                "length": 101,
+                "stable": True,
+            }
+        }
+        errors = evaluate(candidate, baseline)
+        self.assertTrue(
+            any("new TypeScript function exceeds 100 lines" in error for error in errors)
+        )
+
+    def test_existing_typescript_function_length_growth_fails_and_reduction_passes(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        initial = measure(root, config)
+        symbol = "frontend/src/app/main.ts::longFn"
+        item = {
+            "path": "frontend/src/app/main.ts",
+            "name": "longFn",
+            "line": 1,
+            "length": 101,
+            "stable": True,
+        }
+        initial["typescript_functions"] = {symbol: item}
+        baseline = build_baseline(initial, measurement_commit="abc123")
+        grown = dict(initial)
+        grown["typescript_functions"] = {symbol: {**item, "length": 102}}
+        self.assertTrue(
+            any(
+                "TypeScript function length increased" in error
+                for error in evaluate(grown, baseline)
+            )
+        )
+        self.assertEqual([], evaluate(initial, baseline))
+        reduced = dict(initial)
+        reduced["typescript_functions"] = {symbol: {**item, "length": 100}}
+        self.assertEqual([], evaluate(reduced, baseline))
+
+    def _write_counted_file(self, path: Path, lines: int, header: str = "VALUE = 1") -> None:
+        path.write_text(
+            "\n".join([header, *[f"# pad {index}" for index in range(lines - 1)]]) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_new_product_file_over_800_lines_fails(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config_path = root / "quality" / "quality-config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["python_layers"] = [
+            {"name": "py_all", "globs": ["workstack/**"], "may_import": []}
+        ]
+        config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        loaded = load_config(root)
+        baseline = build_baseline(measure(root, loaded), measurement_commit="abc123")
+        self._write_counted_file(root / "workstack" / "giant.py", 801, header="GIANT = 1")
+        errors = evaluate(measure(root, loaded), baseline)
+        self.assertTrue(
+            any("new production file exceeds 800 lines" in error for error in errors)
+        )
+
+    def test_existing_giant_file_growth_fails_and_reduction_passes(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        path = root / "workstack" / "foundation.py"
+        self._write_counted_file(path, 801)
+        baseline = build_baseline(measure(root, config), measurement_commit="abc123")
+        self._write_counted_file(path, 802)
+        self.assertTrue(
+            any(
+                "production file length increased" in error
+                for error in evaluate(measure(root, config), baseline)
+            )
+        )
+        self._write_counted_file(path, 801)
+        self.assertEqual([], evaluate(measure(root, config), baseline))
+        self._write_counted_file(path, 800)
+        self.assertEqual([], evaluate(measure(root, config), baseline))
+
+    def test_provenance_only_edit_cannot_conceal_debt_or_config_mutation(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        clean = measure(root, config)
+        baseline = build_baseline(clean, measurement_commit="abc123")
+        branches = "\n".join(
+            f"    if value == {index}:\n        return {index}" for index in range(16)
+        )
+        (root / "workstack" / "foundation.py").write_text(
+            f"VALUE = 1\n\ndef risky(value):\n{branches}\n    return -1\n",
+            encoding="utf-8",
+        )
+        dirty = measure(root, config)
+        forged = dict(baseline)
+        forged["measurement_commit"] = "forged-head"
+        forged["measurement_source_digest"] = dirty["candidate_source_digest"]
+        errors = evaluate(dirty, forged)
+        self.assertTrue(any("new function exceeds CCN 15" in error for error in errors))
+        emptied = dict(forged)
+        emptied["python_complexity_debt"] = {}
+        emptied["critical_complexity_debt"] = {}
+        emptied["config_digest"] = dirty["config_digest"]
+        self.assertTrue(
+            any("new function exceeds CCN 15" in error for error in evaluate(dirty, emptied))
+        )
+
+    def _ts_item(
+        self,
+        name: str,
+        containers: list[str | None],
+        line: int,
+        length: int = 101,
+        path: str = "frontend/src/app/main.ts",
+        computed: bool = False,
+        anonymous: bool = False,
+    ) -> dict:
+        return {
+            "path": path,
+            "name": name,
+            "containers": containers,
+            "line": line,
+            "column": 1,
+            "length": length,
+            "computed": computed,
+            "anonymous": anonymous,
+        }
+
+    def test_two_class_constructors_are_separately_governed(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        initial = measure(root, config)
+        baseline = build_baseline(initial, measurement_commit="abc123")
+        functions, _diagnostic, errors = index_typescript_functions(
+            [
+                self._ts_item("constructor", ["Alpha"], 2),
+                self._ts_item("constructor", ["Beta"], 40),
+            ]
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            set(functions),
+            {
+                "frontend/src/app/main.ts::Alpha.constructor",
+                "frontend/src/app/main.ts::Beta.constructor",
+            },
+        )
+        candidate = dict(initial)
+        candidate["typescript_functions"] = functions
+        findings = evaluate(candidate, baseline)
+        self.assertTrue(any("Alpha.constructor" in item for item in findings))
+        self.assertTrue(any("Beta.constructor" in item for item in findings))
+
+    def test_same_method_name_in_two_classes_has_distinct_identities(self) -> None:
+        functions, _diagnostic, errors = index_typescript_functions(
+            [
+                self._ts_item("receive", ["Alpha"], 4, length=12),
+                self._ts_item("receive", ["Beta"], 30, length=12),
+            ]
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            set(functions),
+            {
+                "frontend/src/app/main.ts::Alpha.receive",
+                "frontend/src/app/main.ts::Beta.receive",
+            },
+        )
+
+    def test_reordering_classes_does_not_change_identities(self) -> None:
+        alpha = self._ts_item("constructor", ["Alpha"], 2, length=8)
+        beta = self._ts_item("constructor", ["Beta"], 20, length=8)
+        first, _, errors_a = index_typescript_functions([alpha, beta])
+        second, _, errors_b = index_typescript_functions([beta, alpha])
+        self.assertEqual(errors_a, [])
+        self.assertEqual(errors_b, [])
+        self.assertEqual(set(first), set(second))
+        self.assertEqual(set(first), {
+            "frontend/src/app/main.ts::Alpha.constructor",
+            "frontend/src/app/main.ts::Beta.constructor",
+        })
+
+    def test_named_lexical_function_cannot_escape_length_ratchet_by_collision(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        initial = measure(root, config)
+        baseline = build_baseline(initial, measurement_commit="abc123")
+        functions, diagnostic, identity_errors = index_typescript_functions(
+            [
+                self._ts_item("fail", ["Host"], 4, length=101),
+                self._ts_item("fail", ["Host"], 120, length=140),
+            ]
+        )
+        self.assertEqual(functions, {})
+        self.assertTrue(any(item.get("category") == "unresolved" for item in diagnostic))
+        self.assertEqual(
+            identity_errors,
+            ["unresolved TypeScript named identity: frontend/src/app/main.ts::Host.fail"],
+        )
+        candidate = dict(initial)
+        candidate["typescript_functions"] = functions
+        candidate["unresolved_typescript_identities"] = diagnostic
+        candidate["config_errors"] = list(initial["config_errors"]) + identity_errors
+        findings = evaluate(candidate, baseline)
+        self.assertTrue(
+            any("unresolved TypeScript named identity" in item for item in findings)
+        )
+        self.assertFalse(
+            any("new TypeScript function exceeds 100 lines" in item for item in findings)
+        )
+
+    def test_q0_rollout_introduces_no_new_file_over_800_lines(self) -> None:
+        import subprocess
+
+        root = Path(__file__).resolve().parents[1]
+        config = load_config(root)
+        populations, errors = _discover(root, config)
+        self.assertEqual(errors, [])
+        crossed: list[str] = []
+        for paths in populations.values():
+            for relative in paths:
+                current = len((root / relative).read_text(encoding="utf-8").splitlines())
+                if current <= FILE_LINE_LIMIT:
+                    continue
+                shown = subprocess.run(
+                    ["git", "show", f"HEAD:{relative}"],
+                    cwd=root,
+                    check=False,
+                    capture_output=True,
+                )
+                sealed = (
+                    len(shown.stdout.decode("utf-8", errors="replace").splitlines())
+                    if shown.returncode == 0
+                    else 0
+                )
+                if sealed <= FILE_LINE_LIMIT:
+                    crossed.append(f"{relative} current={current} sealed={sealed}")
+        self.assertEqual(crossed, [])
+
+    def test_baseline_cannot_bless_file_that_crossed_800_from_sealed_head(self) -> None:
+        temporary = self._repo()
+        root = Path(temporary.name)
+        config = load_config(root)
+        report = measure(root, config)
+        path = "workstack/foundation.py"
+        candidate = dict(report)
+        candidate["file_lengths"] = {**report["file_lengths"], path: 801}
+        candidate["sealed_file_lengths"] = {
+            **report.get("sealed_file_lengths", report["file_lengths"]),
+            path: 676,
+        }
+        baseline = build_baseline(candidate, measurement_commit="abc123")
+        self.assertNotIn(path, baseline["production_file_length_debt"])
+        findings = evaluate(candidate, baseline)
+        self.assertTrue(
+            any("new production file exceeds 800 lines" in item for item in findings)
+        )
 
 
 if __name__ == "__main__":
