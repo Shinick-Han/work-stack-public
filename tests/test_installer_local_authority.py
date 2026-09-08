@@ -30,7 +30,7 @@ $firstWriter = $ast.Find({param($n) $n -is [Management.Automation.Language.Funct
 $selection = $text.Substring(0,$firstWriter.Extent.StartOffset)
 $revalidate = $ast.Find({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$revalidatedAuthority'},$true)
 $refusal = $ast.Find({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$revalidatedAuthority.binding -cne $initialAuthority.binding'},$true)
-$backup = $ast.Find({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq "Test-Path -LiteralPath (Join-Path `$dataPath 'workspace.json')"},$true)
+$backup = $ast.Find({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq "-not `$remoteDesktopUpgrade -and (Test-Path -LiteralPath (Join-Path `$dataPath 'workspace.json'))"},$true)
 $persist = $ast.Find({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$configValues['data_dir']"},$true)
 $stop = $ast.Find({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.Extent.Text -eq '& $stopScript -InstallRoot $installPath'},$true)
 if (-not $revalidate -or -not $refusal -or -not $backup -or -not $persist -or -not $stop) { throw 'Required installer AST missing' }
@@ -289,6 +289,50 @@ class InstallerLocalAuthorityTest(unittest.TestCase):
         self.assertTrue(self.ast(explicit=self.b)["ok"])
         result=self.ast(explicit=self.a)
         self.assertFalse(result["ok"]);self.assertIn("Explicit DataDir conflicts",result["error"]);self.assertEqual(result["backup"],[])
+
+    def prepare_remote_upgrade(self):
+        self.registry["profiles"] = [dict(
+            profile_id=PROFILE, label="SSH", kind="ssh", enabled=True,
+            live_updates=True, expected_workspace_id=UID, ssh_host_alias="fixture",
+            remote_app_dir="/srv/app", remote_data_dir="/srv/data",
+            preferred_forward_port=18765, remote_port=8765,
+        )]
+        self.save_registry()
+        install = self.case / "install"
+        install.mkdir()
+        (install / "WorkStack.exe").write_bytes(b"fixture")
+        config = json.loads(self.config.read_text())
+        config["install_dir"] = str(install)
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+
+    def test_ssh_upgrade_binds_registry_without_inspecting_any_store(self):
+        self.prepare_remote_upgrade()
+        with mock.patch.object(self.resolver, "inspect_selected", side_effect=AssertionError("store read")), \
+             mock.patch.object(self.resolver, "runtime_root", side_effect=AssertionError("runtime read")):
+            result = self.resolve_pure()
+        self.assertEqual(result["status"], "selected-remote")
+        self.assertNotIn("data_dir", result)
+        admitted = self.ast()
+        self.assertTrue(admitted["ok"], admitted)
+        self.assertEqual(admitted["backup"], [])
+        self.assertEqual(admitted["persisted"], str(self.a))
+        self.assertEqual((admitted["port"], admitted["retention"]), (8877, 19))
+
+    def test_ssh_upgrade_refuses_changed_config_and_missing_install(self):
+        self.prepare_remote_upgrade()
+        result = self.ast(explicit=self.b)
+        self.assertFalse(result["ok"])
+        self.assertIn("preserve the existing", result["error"])
+        (self.case / "install/WorkStack.exe").unlink()
+        self.assertFalse(self.ast()["ok"])
+
+    def test_ssh_upgrade_refuses_registry_change_before_any_effect(self):
+        self.prepare_remote_upgrade()
+        changed = json.loads(self.registry_path.read_text())
+        changed["profiles"][0]["remote_data_dir"] = "/srv/other"
+        result = self.ast(mutation=(self.registry_path, json.dumps(changed).encode()))
+        self.assertFalse(result["ok"])
+        self.assertIn("changed during staging", result["error"])
 
     def test_actual_staged_revalidation_refuses_profile_and_registry_changes(self):
         self.save_registry()

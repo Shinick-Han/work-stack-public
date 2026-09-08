@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "desktop" / "python-webview-shell"))
 
 from connection_registry import (  # noqa: E402
-    LocalConnectionProfile, MAX_REGISTRY_BYTES, REGISTRY_FILE,
+    LocalConnectionProfile, SshConnectionProfile, MAX_REGISTRY_BYTES, REGISTRY_FILE,
     registry_from_document, registry_to_document,
 )
 from local_workspace_rebind import derive_store_runtime_root  # noqa: E402
@@ -111,12 +111,12 @@ def record_binding(record: Evidence | None) -> dict:
     return {"state": "present", "sha256": digest(record.raw), "identity": record.identity}
 
 
-def selected_local_profile(registry):
+def selected_profile(registry):
     matches = [profile for profile in registry.profiles if profile.profile_id == registry.active_profile_id]
     if len(matches) != 1 or not matches[0].enabled:
         raise AuthorityError("active_profile_invalid")
     profile = matches[0]
-    if not isinstance(profile, LocalConnectionProfile):
+    if not isinstance(profile, (LocalConnectionProfile, SshConnectionProfile)):
         raise AuthorityError("active_profile_not_local")
     selected = next(item for item in registry_to_document(registry)["profiles"] if item["profile_id"] == profile.profile_id)
     return profile, selected
@@ -203,7 +203,19 @@ def resolve_authority(state_root: Path) -> dict:
         registry = registry_from_document(raw_registry)
     except RuntimeError as error:
         raise AuthorityError("registry_invalid") from error
-    profile, selected = selected_local_profile(registry)
+    profile, selected = selected_profile(registry)
+    if isinstance(profile, SshConnectionProfile):
+        # A desktop payload upgrade has no authority to inspect or migrate a
+        # remote store. Bind the selected configuration, without contacting SSH
+        # or treating the legacy local data directory as the selected store.
+        if read_optional(registry_path, MAX_REGISTRY_BYTES) != registry_record:
+            raise AuthorityError("registry_changed")
+        result = {
+            "status": "selected-remote", "profile_id": profile.profile_id,
+            "profile_sha256": digest(canonical(selected)),
+            "registry": record_binding(registry_record),
+        }
+        return {**result, "binding": digest(canonical(result))}
     data, current = inspect_selected(profile, selected)
     runtime = runtime_root(data)
     manifest_path = runtime / STORE_MANIFEST_NAME

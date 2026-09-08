@@ -2496,7 +2496,10 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
         try:
             subprocess.Popen(
                 command,
-                cwd=self.install_root,
+                # Install renames the old application directory. PowerShell's
+                # Move-Item refuses to move its current location, so run from
+                # the separate state directory, which survives installation.
+                cwd=self.state_root,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

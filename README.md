@@ -1,7 +1,7 @@
 # Work Stack
 
-**Source snapshot: 1.0.11 (2026-09-08).** This commit updates source code; it does not publish a 1.0.11 installer.
-**Published manual-install preview: [1.0.8](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.8).** See the [installation and upgrade guide](docs/WORKSTACK-1.0.8-INSTALL-UPGRADE.ko.md). That installer does not contain the newer Knowledge/Resume features.
+**Source version: 1.0.12 (2026-09-08).** Fixes Windows desktop upgrades while an SSH connection is selected and installation initiated from the app directory.
+**Windows downloads:** [latest release](https://github.com/Shinick-Han/work-stack-public/releases/latest). See the [1.0.12 upgrade notes](docs/WORKSTACK-1.0.12-UPGRADE.ko.md) for verification scope and instructions.
 
 For the current Task/Knowledge capabilities and the remaining OpenDocuments integration
 work, see [Knowledge integration status (2026-09-08, Korean)](docs/KNOWLEDGE-INTEGRATION-STATUS-2026-09-08.ko.md).

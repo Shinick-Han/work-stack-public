@@ -69,7 +69,7 @@ function Get-InstallerAuthority {
         if ($code -notmatch '^[a-z_]{1,64}$') { $code = 'unavailable' }
         throw "Local installer authority refused ($code)."
     }
-    if ($authority.status -notin @('selected', 'absent-registry') -or
+    if ($authority.status -notin @('selected', 'selected-remote', 'absent-registry') -or
         [string]$authority.binding -cnotmatch '^sha256:[0-9a-f]{64}$') {
         throw 'Bundled installer authority response is invalid.'
     }
@@ -77,6 +77,22 @@ function Get-InstallerAuthority {
 }
 
 $initialAuthority = Get-InstallerAuthority -RuntimeRoot $sourcePath
+$remoteDesktopUpgrade = $initialAuthority.status -eq 'selected-remote'
+if ($remoteDesktopUpgrade) {
+    if ($null -eq $existingConfig -or -not (Test-Path -LiteralPath (Join-Path $installPath 'WorkStack.exe') -PathType Leaf)) {
+        throw 'An SSH-selected desktop upgrade requires an existing installation and configuration.'
+    }
+    # This mode replaces the desktop payload only. Do not reinterpret old
+    # config.data_dir as the remote store or rewrite local fallback settings.
+    if ([IO.Path]::GetFullPath([string]$existingConfig.install_dir) -ine $installPath -or
+        [IO.Path]::GetFullPath([string]$existingConfig.data_dir) -ine $dataPath -or
+        [IO.Path]::GetFullPath([string]$existingConfig.backup_dir) -ine $backupRoot -or
+        [int]$existingConfig.port -ne $Port -or
+        [int]$existingConfig.backup_retention -ne $BackupRetention) {
+        throw 'An SSH-selected desktop upgrade must preserve the existing installation settings.'
+    }
+    Write-Host 'Updating the Windows desktop only; SSH connection and remote storage remain unchanged.'
+}
 if ($initialAuthority.status -eq 'selected') {
     $selectedDataPath = [IO.Path]::GetFullPath([string]$initialAuthority.data_dir)
     if ($PSBoundParameters.ContainsKey('DataDir') -and
@@ -259,22 +275,36 @@ try {
         $stopScript = Join-Path $staging 'scripts\windows\Stop-WorkStack.ps1'
         if (Test-Path -LiteralPath $stopScript) { & $stopScript -InstallRoot $installPath }
         $stagedEntry = Join-Path $staging 'run_work_stack.py'
-        if (Test-Path -LiteralPath (Join-Path $dataPath 'workspace.json')) {
+        if (-not $remoteDesktopUpgrade -and (Test-Path -LiteralPath (Join-Path $dataPath 'workspace.json'))) {
             # The installed runtime may be incomplete or damaged, which is one of
             # the conditions an upgrade must be able to repair.  Use the already
             # smoke-tested staged runtime to create the read-only safety backup.
             & $stagedPython $stagedEntry --data-dir $dataPath maintenance backup --out $backupRoot | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Pre-upgrade backup failed; installation was not changed.' }
         }
+        # Older desktop hosts launch the updater inside this directory.
+        # Move-Item cannot rename PowerShell's current location. Moving out
+        # here also repairs upgrades initiated by those already-installed hosts.
+        Set-Location -LiteralPath $parent
+        # Set-Location changes the PowerShell provider location, not necessarily
+        # the Win32 process current-directory handle inherited from the host.
+        [Environment]::CurrentDirectory = $parent
         Move-Item -LiteralPath $installPath -Destination $rollback
     }
-    $resolvedPort = Resolve-AvailableLoopbackPort -PreferredPort $Port
+    if ($remoteDesktopUpgrade) {
+        $resolvedPort = $Port
+    } else {
+        $resolvedPort = Resolve-AvailableLoopbackPort -PreferredPort $Port
+    }
     if ($resolvedPort -ne $Port) {
         Write-Warning "Port $Port is already in use; Work Stack will use $resolvedPort instead."
     }
     Move-Item -LiteralPath $staging -Destination $installPath
 
-    New-Item -ItemType Directory -Force -Path $statePath, $dataPath, $backupRoot | Out-Null
+    New-Item -ItemType Directory -Force -Path $statePath | Out-Null
+    if (-not $remoteDesktopUpgrade) {
+        New-Item -ItemType Directory -Force -Path $dataPath, $backupRoot | Out-Null
+    }
     $configValues = [ordered]@{}
     if ($null -ne $existingConfig) {
         foreach ($property in $existingConfig.PSObject.Properties) {
