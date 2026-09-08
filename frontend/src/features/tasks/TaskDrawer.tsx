@@ -1,8 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { ApiError, api } from '../../api/client'
-import { Icon } from '../../components/Icon'
-import { EmptyState, IconButton, LoadingBlock } from '../../components/Primitives'
 import {
   microsoftProviderGates,
   type MicrosoftProviderGates,
@@ -16,8 +14,6 @@ import {
   type WorkspaceProjection,
 } from '../../domain/types'
 import { getErrorMessage } from '../../utils/format'
-import { SnapshotExportDialog } from './SnapshotExportDialog'
-import { TaskActionsDialog } from './TaskActionsDialog'
 import { removeDeletedTaskFromWorkspace } from './taskDeletionProjection'
 import {
   createSaveRun,
@@ -30,15 +26,15 @@ import {
   type EditableTaskPatch,
   type SaveRun,
 } from './taskDrawerModel'
-import { TaskActivityTimeline, TaskContextTimeline } from './TaskDrawerTimelines'
-import { TaskRelationshipsSection } from './TaskRelationshipsSection'
-import { TaskOverviewEditor } from './TaskOverviewEditor'
-import { TaskOverviewSummary } from './TaskOverviewSummary'
-import { TaskReplySection } from './TaskReplySection'
-import { selectTaskDrawerData, type TaskDrawerSelection } from './taskDrawerSelectors'
-
-type DrawerTab = 'overview' | 'context' | 'activity'
-type SaveState = 'idle' | 'saving' | 'saved' | 'error'
+import {
+  drawerClassName,
+  TaskDrawerChrome,
+  TaskDrawerDialogs,
+  type DrawerSurface,
+  type DrawerTab,
+  type SaveState,
+} from './TaskDrawerPresentation'
+import { selectTaskDrawerData } from './taskDrawerSelectors'
 
 interface TaskDrawerProps {
   taskId: string
@@ -48,6 +44,7 @@ interface TaskDrawerProps {
   onNotice: (message: string, tone?: 'success' | 'error') => void
   onOpenObjective?: (objectiveId: string) => void
   onOpenTask?: (taskId: string) => void
+  onRecordProgress?: (taskId: string) => void
   providerGates?: MicrosoftProviderGates
 }
 
@@ -57,16 +54,8 @@ function saveRunForTask(current: SaveRun, taskId: string) {
   return createSaveRun(taskId)
 }
 
-function draftContextCount(draft: Task | null) {
-  return draft ? draft.context_count : 0
-}
-
 function retryAvailable(saveState: SaveState, run: SaveRun) {
   return saveState === 'error' && hasPatch(run.queued)
-}
-
-function draftTabActive(tab: DrawerTab, expected: DrawerTab, draft: Task | null) {
-  return tab === expected && Boolean(draft)
 }
 
 function taskDetailError(isError: boolean, error: unknown) {
@@ -85,146 +74,25 @@ function taskDetailReplies(detail?: TaskDetail) {
   return detail ? detail.replies : []
 }
 
-function saveStateLabel(saveState: SaveState) {
-  if (saveState === 'saving') return 'Saving…'
-  if (saveState === 'saved') return 'Saved'
-  if (saveState === 'error') return 'Not saved'
-  return ''
+function cacheReply(queryClient: QueryClient, taskId: string, updated: ReplyCommand) {
+  queryClient.setQueryData(['task', taskId], (current: TaskDetail | undefined) => current ? {
+    ...current,
+    replies: [...current.replies.filter((reply) => reply.id !== updated.id), updated],
+  } : current)
 }
 
-function TaskDrawerHeader({ navigationLocked, onClose, onMore, saveState, taskId }: {
-  navigationLocked: boolean
-  onClose: () => void
-  onMore: () => void
-  saveState: SaveState
-  taskId: string
-}) {
-  return <header className="drawer-header">
-    <div className="drawer-header__identity"><span className="task-glyph"><Icon name="task" size={17} /></span><div><span>Task</span><strong>{taskId}</strong></div></div>
-    <div className="drawer-header__actions">
-      <span aria-live="polite" className={`save-state save-state--${saveState}`}>{saveStateLabel(saveState)}</span>
-      <IconButton disabled={navigationLocked} icon="more" label="More task actions" onClick={onMore} variant="ghost" />
-      <IconButton disabled={navigationLocked} icon="close" label="Close task drawer" onClick={onClose} variant="ghost" />
-    </div>
-  </header>
+async function createTaskReply(queryClient: QueryClient, taskId: string, input: ApprovedReplyInput) {
+  const created = await api.createReply(input)
+  cacheReply(queryClient, taskId, created)
+  await queryClient.invalidateQueries({ queryKey: ['task', taskId] })
+  return created
 }
 
-function TaskDrawerTabs({ contextCount, onTab, tab }: { contextCount: number; onTab: (tab: DrawerTab) => void; tab: DrawerTab }) {
-  return <nav aria-label="Task details" className="drawer-tabs">
-    {(['overview', 'context', 'activity'] as const).map((item) => (
-      <button aria-selected={tab === item} className={tab === item ? 'is-active' : ''} key={item} onClick={() => onTab(item)} role="tab" type="button">
-        {item[0].toUpperCase() + item.slice(1)}
-        {item === 'context' && contextCount ? <span>{contextCount}</span> : null}
-      </button>
-    ))}
-  </nav>
-}
-
-function TaskDrawerLoadState({ draft, error, pending }: { draft: Task | null; error: unknown; pending: boolean }) {
-  if (pending) return <LoadingBlock label="Loading task details…" />
-  if (error) return <EmptyState icon="warning" title="Task detail unavailable">{getErrorMessage(error)}</EmptyState>
-  if (!draft) return <EmptyState icon="warning" title="Task detail unavailable">The task did not include a readable projection.</EmptyState>
-  return null
-}
-
-function TaskDrawerOverviewTab({ active, canRetry, draft, markDirty, navigateAfterSave, navigationLocked, onDiscard, onDraftChange, onInvalidTitle, onOpenObjective, onOpenSnapshot, onOpenTask, onRetry, onSave, onTagTextChange, saveError, saveState, selection, tagText, workspace }: {
-  active: boolean
-  canRetry: boolean
-  draft: Task | null
-  markDirty: (field: EditableTaskField) => void
-  navigateAfterSave: (action: () => void) => void
-  navigationLocked: boolean
-  onDiscard: () => void
-  onDraftChange: (task: Task) => void
-  onInvalidTitle: () => void
-  onOpenObjective?: (objectiveId: string) => void
-  onOpenSnapshot: () => void
-  onOpenTask?: (taskId: string) => void
-  onRetry: () => void
-  onSave: (patch: EditableTaskPatch) => void
-  onTagTextChange: (value: string) => void
-  saveError: string | null
-  saveState: SaveState
-  selection: TaskDrawerSelection
-  tagText: string
-  workspace: WorkspaceProjection
-}) {
-  if (!active || !draft) return null
-  const openObjective = onOpenObjective ? (objectiveId: string) => navigateAfterSave(() => onOpenObjective(objectiveId)) : undefined
-  const relationshipSection = onOpenTask ? (
-    <TaskRelationshipsSection
-      childTasks={selection.childTasks}
-      dependentTasks={selection.dependentTasks}
-      dependencyTasks={selection.dependencyTasks}
-      disabled={navigationLocked}
-      onOpenTask={(relatedTaskId) => navigateAfterSave(() => onOpenTask(relatedTaskId))}
-      parentTask={selection.parentTask}
-    />
-  ) : null
-  return <div className="drawer-overview">
-    <TaskOverviewSummary
-      canDiscard={saveState === 'error'}
-      canRetry={canRetry}
-      draft={draft}
-      isSaving={saveState === 'saving'}
-      navigationLocked={navigationLocked}
-      objectives={selection.taskObjectives}
-      onDiscard={onDiscard}
-      onDraftChange={onDraftChange}
-      onInvalidTitle={onInvalidTitle}
-      onMarkDirty={markDirty}
-      onOpenObjective={openObjective}
-      onOpenSnapshot={onOpenSnapshot}
-      onRetry={onRetry}
-      onSaveTitle={(title) => onSave({ title })}
-      saveError={saveError}
-    />
-    <TaskOverviewEditor
-      availableDependencyTasks={selection.availableDependencyTasks}
-      availableParentTasks={selection.availableParentTasks}
-      draft={draft}
-      isSaving={saveState === 'saving'}
-      onDraftChange={onDraftChange}
-      onMarkDirty={markDirty}
-      onSave={onSave}
-      onTagTextChange={onTagTextChange}
-      relationshipSection={relationshipSection}
-      tagText={tagText}
-      workspace={workspace}
-    />
-  </div>
-}
-
-function TaskDrawerContextTab({ active, context, onCreate, onImportReceipt, onToggle, open, providerGates, replies, selection, taskId }: {
-  active: boolean
-  context: TaskDetail['context']
-  onCreate: (input: ApprovedReplyInput) => Promise<ReplyCommand>
-  onImportReceipt: (replyId: string, receipt: ReplyReceipt) => Promise<ReplyCommand>
-  onToggle: () => void
-  open: boolean
-  providerGates: MicrosoftProviderGates
-  replies: ReplyCommand[]
-  selection: TaskDrawerSelection
-  taskId: string
-}) {
-  if (!active) return null
-  return <div className="context-tab">
-    <TaskReplySection
-      onCreate={onCreate}
-      onImportReceipt={onImportReceipt}
-      onToggle={onToggle}
-      open={open}
-      replies={replies}
-      sources={selection.replySources}
-      taskId={taskId}
-      unavailableSources={selection.replyUnavailableSources}
-    />
-    <TaskContextTimeline context={context} providerGates={providerGates} />
-  </div>
-}
-
-function TaskDrawerActivityTab({ active, activity }: { active: boolean; activity: TaskDetail['activity'] }) {
-  return active ? <TaskActivityTimeline activity={activity} /> : null
+async function importTaskReplyReceipt(queryClient: QueryClient, taskId: string, replyId: string, receipt: ReplyReceipt) {
+  const updated = await api.importReplyReceipt(replyId, receipt)
+  cacheReply(queryClient, taskId, updated)
+  await queryClient.invalidateQueries({ queryKey: ['task', taskId] })
+  return updated
 }
 
 function applyConfirmedPermanentDeletion(queryClient: QueryClient, taskId: string) {
@@ -247,43 +115,46 @@ function scheduleDeletedTaskFocusHandoff() {
   }, 0)
 }
 
-function TaskDrawerDialogs({
-  draft,
-  onActionClose,
-  onNotice,
-  onPermanentlyDeleted,
-  onSaved,
-  onSnapshotClose,
-  snapshotOpen,
-  taskActionsOpen,
-  taskId,
-  workspaceUid,
-}: {
-  draft: Task | null
-  onActionClose: () => void
-  onNotice: TaskDrawerProps['onNotice']
-  onPermanentlyDeleted: () => void
-  onSaved: (task: Task) => void
-  onSnapshotClose: () => void
-  snapshotOpen: boolean
-  taskActionsOpen: boolean
-  taskId: string
-  workspaceUid: string
-}) {
-  return <>
-    <SnapshotExportDialog onClose={onSnapshotClose} onNotice={onNotice} open={snapshotOpen} taskId={taskId} />
-    {draft ? (
-      <TaskActionsDialog
-        onClose={onActionClose}
-        onNotice={onNotice}
-        onPermanentlyDeleted={onPermanentlyDeleted}
-        onSaved={onSaved}
-        open={taskActionsOpen}
-        task={draft}
-        workspaceUid={workspaceUid}
-      />
-    ) : null}
-  </>
+function applySavedTaskAction(
+  queryClient: QueryClient,
+  taskId: string,
+  run: SaveRun,
+  updated: Task,
+  onNavigationLockChange: ((locked: boolean) => void) | undefined,
+  setDraft: (task: Task) => void,
+  setTagText: (value: string) => void,
+) {
+  run.confirmed = updated
+  run.dirtyFields.clear()
+  run.queued = {}
+  run.inFlight = null
+  run.inFlightBase = null
+  run.autoRebaseUsed = false
+  onNavigationLockChange?.(false)
+  setDraft(updated)
+  setTagText(updated.tags.join(', '))
+  queryClient.setQueryData(['task', taskId], (current: TaskDetail | undefined) => current ? {
+    ...current,
+    task: updated,
+  } : current)
+  queryClient.setQueryData<WorkspaceProjection>(['workspace'], (current) => current ? {
+    ...current,
+    tasks: current.tasks.map((item) => item.id === updated.id ? updated : item),
+  } : current)
+}
+
+function closeAfterPermanentDeletion(
+  queryClient: QueryClient,
+  taskId: string,
+  onClose: () => void,
+  setTaskRemoved: (value: boolean) => void,
+  setTaskActionsOpen: (value: boolean) => void,
+) {
+  setTaskRemoved(true)
+  applyConfirmedPermanentDeletion(queryClient, taskId)
+  setTaskActionsOpen(false)
+  onClose()
+  scheduleDeletedTaskFocusHandoff()
 }
 
 export function TaskDrawer({
@@ -292,12 +163,14 @@ export function TaskDrawer({
   onNotice,
   onOpenObjective,
   onOpenTask,
+  onRecordProgress,
   providerGates = microsoftProviderGates,
   taskId,
   workspace,
 }: TaskDrawerProps) {
   const queryClient = useQueryClient()
-  const [tab, setTab] = useState<DrawerTab>('overview')
+  const [tab, setTab] = useState<DrawerTab>('resume')
+  const [surface, setSurface] = useState<DrawerSurface>('task')
   const [draft, setDraft] = useState<Task | null>(null)
   const [tagText, setTagText] = useState('')
   const [replyOpen, setReplyOpen] = useState(false)
@@ -318,7 +191,8 @@ export function TaskDrawer({
   })
 
   useEffect(() => {
-    setTab('overview')
+    setTab('resume')
+    setSurface('task')
     setReplyOpen(false)
     setSnapshotOpen(false)
     setTaskActionsOpen(false)
@@ -693,90 +567,81 @@ export function TaskDrawer({
     workspace,
   }), [detailQuery.data?.context, draft, providerGates, workspace])
 
-  const recordReply = (updated: ReplyCommand, message: string) => {
-    queryClient.setQueryData(['task', taskId], (current: typeof detailQuery.data) => current ? {
-      ...current,
-      replies: [...current.replies.filter((reply) => reply.id !== updated.id), updated],
-    } : current)
-    onNotice(message)
-  }
-
   const createReply = async (input: ApprovedReplyInput) => {
-    const created = await api.createReply(input)
-    recordReply(created, `${created.id} approved; copy it to the connected agent when ready`)
-    await queryClient.invalidateQueries({ queryKey: ['task', taskId] })
+    const created = await createTaskReply(queryClient, taskId, input)
+    onNotice(`${created.id} approved; copy it to the connected agent when ready`)
     return created
   }
 
   const importReplyReceipt = async (replyId: string, receipt: ReplyReceipt) => {
-    const updated = await api.importReplyReceipt(replyId, receipt)
-    recordReply(updated, `${updated.id} receipt recorded as ${updated.state}`)
-    await queryClient.invalidateQueries({ queryKey: ['task', taskId] })
+    const updated = await importTaskReplyReceipt(queryClient, taskId, replyId, receipt)
+    onNotice(`${updated.id} receipt recorded as ${updated.state}`)
     return updated
   }
 
   const recordTaskAction = (updated: Task) => {
-    saveRunRef.current.confirmed = updated
-    saveRunRef.current.dirtyFields.clear()
-    saveRunRef.current.queued = {}
-    saveRunRef.current.inFlight = null
-    saveRunRef.current.inFlightBase = null
-    saveRunRef.current.autoRebaseUsed = false
-    onNavigationLockChange?.(false)
-    setDraft(updated)
-    setTagText(updated.tags.join(', '))
-    queryClient.setQueryData(['task', taskId], (current: typeof detailQuery.data) => current ? {
-      ...current,
-      task: updated,
-    } : current)
-    queryClient.setQueryData<WorkspaceProjection>(['workspace'], (current) => current ? {
-      ...current,
-      tasks: current.tasks.map((task) => task.id === updated.id ? updated : task),
-    } : current)
+    applySavedTaskAction(queryClient, taskId, saveRunRef.current, updated, onNavigationLockChange, setDraft, setTagText)
   }
 
   const handlePermanentlyDeleted = () => {
-    setTaskRemoved(true)
-    applyConfirmedPermanentDeletion(queryClient, taskId)
-    setTaskActionsOpen(false)
-    onClose()
-    scheduleDeletedTaskFocusHandoff()
+    closeAfterPermanentDeletion(queryClient, taskId, onClose, setTaskRemoved, setTaskActionsOpen)
   }
 
+  const savedTask = detailQuery.data?.task ?? null
+  // Stable so the subview's Escape listener subscribes once per surface, not
+  // once per render of the drawer.
+  const closeContext = useCallback(() => {
+    setSurface('task')
+    setTab('resume')
+  }, [])
+
   return (
-    <aside aria-label={`Task ${taskId}`} className="detail-drawer">
-      <TaskDrawerHeader navigationLocked={navigationLocked} onClose={() => navigateAfterSave(onClose)} onMore={() => setTaskActionsOpen(true)} saveState={saveState} taskId={taskId} />
-      <TaskDrawerTabs contextCount={draftContextCount(draft)} onTab={setTab} tab={tab} />
-      <div className="drawer-body">
-        <TaskDrawerLoadState draft={draft} error={taskDetailError(detailQuery.isError, detailQuery.error)} pending={detailQuery.isPending} />
-        <TaskDrawerOverviewTab
-          active={tab === 'overview'}
-          canRetry={retryAvailable(saveState, saveRunRef.current)}
-          draft={draft}
-          markDirty={markDirty}
-          navigateAfterSave={navigateAfterSave}
-          navigationLocked={navigationLocked}
-          onDiscard={discardUnsavedChanges}
-          onDraftChange={setDraft}
-          onInvalidTitle={() => {
-            setSaveState('error')
-            setSaveError('Task title cannot be empty. Restore a title or discard the unsaved change.')
-          }}
-          onOpenObjective={onOpenObjective}
-          onOpenSnapshot={() => setSnapshotOpen(true)}
-          onOpenTask={onOpenTask}
-          onRetry={() => { void retrySave() }}
-          onSave={(patch) => { void save(patch) }}
-          onTagTextChange={setTagText}
-          saveError={saveError}
-          saveState={saveState}
-          selection={selection}
-          tagText={tagText}
-          workspace={workspace}
-        />
-        <TaskDrawerContextTab active={draftTabActive(tab, 'context', draft)} context={taskDetailContext(detailQuery.data)} onCreate={createReply} onImportReceipt={importReplyReceipt} onToggle={() => setReplyOpen((value) => !value)} open={replyOpen} providerGates={providerGates} replies={taskDetailReplies(detailQuery.data)} selection={selection} taskId={taskId} />
-        <TaskDrawerActivityTab active={draftTabActive(tab, 'activity', draft)} activity={taskDetailActivity(detailQuery.data)} />
-      </div>
+    <aside aria-label={`Task ${taskId}`} className={drawerClassName(surface, tab, Boolean(draft && savedTask))}>
+      <TaskDrawerChrome
+        activity={taskDetailActivity(detailQuery.data)}
+        canRetry={retryAvailable(saveState, saveRunRef.current)}
+        context={taskDetailContext(detailQuery.data)}
+        draft={draft}
+        loadError={taskDetailError(detailQuery.isError, detailQuery.error)}
+        loadPending={detailQuery.isPending}
+        markDirty={markDirty}
+        navigateAfterSave={navigateAfterSave}
+        navigationLocked={navigationLocked}
+        onActivityToggle={() => setReplyOpen((value) => !value)}
+        onClose={() => navigateAfterSave(onClose)}
+        onContextBack={closeContext}
+        onContextCreate={createReply}
+        onContextImport={importReplyReceipt}
+        onDiscard={discardUnsavedChanges}
+        onDraftChange={setDraft}
+        onInvalidTitle={() => {
+          setSaveState('error')
+          setSaveError('Task title cannot be empty. Restore a title or discard the unsaved change.')
+        }}
+        onMore={() => setTaskActionsOpen(true)}
+        onOpenContext={() => setSurface('context')}
+        onOpenObjective={onOpenObjective}
+        onOpenSnapshot={() => setSnapshotOpen(true)}
+        onOpenTask={onOpenTask}
+        onRecordProgress={onRecordProgress ? () => navigateAfterSave(() => onRecordProgress(taskId)) : undefined}
+        onRetry={() => { void retrySave() }}
+        onSave={(patch) => { void save(patch) }}
+        onTab={setTab}
+        onTagTextChange={setTagText}
+        progressLocked={navigationBlocked()}
+        providerGates={providerGates}
+        replies={taskDetailReplies(detailQuery.data)}
+        replyOpen={replyOpen}
+        saveError={saveError}
+        saveState={saveState}
+        savedTask={savedTask}
+        selection={selection}
+        surface={surface}
+        tab={tab}
+        tagText={tagText}
+        taskId={taskId}
+        workspace={workspace}
+      />
       <TaskDrawerDialogs
         draft={draft}
         onActionClose={() => setTaskActionsOpen(false)}

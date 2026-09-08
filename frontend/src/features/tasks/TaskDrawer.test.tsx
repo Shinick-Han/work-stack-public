@@ -4,10 +4,25 @@ import userEvent from '@testing-library/user-event'
 import { StrictMode } from 'react'
 import { vi, afterEach } from 'vitest'
 import { api } from '../../api/client'
-import type { Task, TaskDetail, WorkspaceProjection } from '../../domain/types'
+import type { CheckpointAudit, Task, TaskDetail, WorkspaceProjection } from '../../domain/types'
 import { TaskDrawer } from './TaskDrawer'
 import { capture, jsonResponse, task, workspace } from '../../test/fixtures'
 import { verifiedMicrosoftProviderGates } from '../../test/providerGates'
+
+async function waitForResume() {
+  return screen.findByRole('button', { name: /View all context/i })
+}
+
+async function openDetails(title = task.title) {
+  await waitForResume()
+  await userEvent.click(screen.getByRole('tab', { name: 'Details' }))
+  return screen.findByDisplayValue(title)
+}
+
+async function openContextSubview() {
+  await waitForResume()
+  await userEvent.click(screen.getByRole('button', { name: /View all context/i }))
+}
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -23,6 +38,21 @@ function response(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+const EMPTY_CHECKPOINT_AUDIT: CheckpointAudit = {
+  workspace_uid: '123e4567-e89b-42d3-a456-426614174000',
+  entries: [],
+}
+
+function drawerFetch(
+  route: (input: RequestInfo | URL, init?: RequestInit) => ReturnType<typeof jsonResponse> | Promise<Response> | Response,
+  audit: CheckpointAudit = EMPTY_CHECKPOINT_AUDIT,
+) {
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith('/api/v1/review/checkpoints')) return jsonResponse({ data: audit })
+    return route(input, init)
   })
 }
 
@@ -74,8 +104,8 @@ function renderStrictSavingDrawer(client: QueryClient, initialWorkspace: Workspa
   )
 }
 
-test('shares overview, sanitized context, and activity in one drawer', async () => {
-  vi.stubGlobal('fetch', vi.fn(() => jsonResponse({
+test('shares resume, sanitized context, and activity in one drawer', async () => {
+  vi.stubGlobal('fetch', drawerFetch(() => jsonResponse({
     data: {
       task,
       context: [{
@@ -97,21 +127,34 @@ test('shares overview, sanitized context, and activity in one drawer', async () 
   const onOpenObjective = vi.fn()
   render(<QueryClientProvider client={client}><TaskDrawer onClose={vi.fn()} onNotice={vi.fn()} onOpenObjective={onOpenObjective} taskId="T-0001" workspace={workspace} /></QueryClientProvider>)
 
-  expect(await screen.findByDisplayValue('Define release quality gate')).toBeInTheDocument()
-  expect(screen.getByRole('group', { name: 'Task identity' })).toHaveTextContent(task.uid)
-  expect(screen.getByRole('group', { name: 'Task identity' })).toHaveTextContent(`Revision ${task.revision}`)
+  expect(await screen.findByRole('heading', { name: 'Next step' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'References for this task' })).toBeInTheDocument()
+  expect(await screen.findByText('No progress recorded yet.')).toBeInTheDocument()
+  expect(screen.queryByRole('group', { name: 'Task identity' })).not.toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: 'Open objective O-1' }))
   expect(onOpenObjective).toHaveBeenCalledWith('O-1')
+
+  await openDetails()
+  expect(screen.getByRole('group', { name: 'Task identity' })).toHaveTextContent(task.uid)
+  expect(screen.getByRole('group', { name: 'Task identity' })).toHaveTextContent(`Revision ${task.revision}`)
   expect(screen.getByRole('button', { name: 'Export to Conduit' })).toBeEnabled()
   await userEvent.click(screen.getByRole('button', { name: 'More task actions' }))
   expect(screen.getByRole('dialog', { name: 'Task actions' })).toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: 'Close dialog' }))
   expect(screen.getByLabelText('Priority')).toHaveValue(task.priority)
-  await userEvent.click(screen.getByRole('tab', { name: /context/i }))
+
+  await userEvent.click(screen.getByRole('tab', { name: 'Resume' }))
+  await openContextSubview()
+  expect(screen.getByRole('button', { name: 'Back to task' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'Prepare a resume brief' })).toBeInTheDocument()
+  expect(screen.getByText('Links are saved on this device. They are not included in workspace sync or backups.')).toBeInTheDocument()
   expect(screen.getByText('Release review feedback')).toBeInTheDocument()
   expect(screen.getByText('Sanitized context.')).toBeInTheDocument()
   expect(screen.getByRole('link', { name: /open source/i })).toHaveAttribute('rel', 'noopener noreferrer')
-  await userEvent.click(screen.getByRole('tab', { name: /activity/i }))
+  await userEvent.click(screen.getByRole('button', { name: 'Back to task' }))
+  expect(screen.getByRole('tab', { name: 'Resume' })).toHaveAttribute('aria-selected', 'true')
+
+  await userEvent.click(screen.getByRole('tab', { name: 'Activity' }))
   expect(screen.getByText('status_changed')).toBeInTheDocument()
   expect(screen.queryByText('Hidden reply detail')).not.toBeInTheDocument()
   expect(screen.queryByText('Hidden target detail')).not.toBeInTheDocument()
@@ -124,12 +167,12 @@ test('opens parent, dependency, child, and dependent Tasks from the relationship
   const dependent: Task = { ...task, id: 'T-0005', uid: '55555555-5555-4555-8555-555555555555', title: 'Dependent outcome', objective_ids: [], dependencies: [task.id] }
   const relatedTask: Task = { ...task, parent_id: parent.id, dependencies: [dependency.id] }
   const relatedWorkspace: WorkspaceProjection = { ...workspace, tasks: [relatedTask, parent, dependency, child, dependent] }
-  vi.stubGlobal('fetch', vi.fn(() => jsonResponse({ data: detail(relatedTask) })))
+  vi.stubGlobal('fetch', drawerFetch(() => jsonResponse({ data: detail(relatedTask) })))
   const onOpenTask = vi.fn()
   const client = createClient()
   render(<QueryClientProvider client={client}><TaskDrawer onClose={vi.fn()} onNotice={vi.fn()} onOpenTask={onOpenTask} taskId={relatedTask.id} workspace={relatedWorkspace} /></QueryClientProvider>)
 
-  await screen.findByDisplayValue(relatedTask.title)
+  await openDetails(relatedTask.title)
   await userEvent.click(screen.getByRole('button', { name: 'Open parent T-0002' }))
   await userEvent.click(screen.getByRole('button', { name: 'Open dependency T-0003' }))
   await userEvent.click(screen.getByRole('button', { name: 'Open child T-0004' }))
@@ -148,7 +191,7 @@ test('opens parent, dependency, child, and dependent Tasks from the relationship
 })
 
 test('renders append-only planning status history with revisions and provenance', async () => {
-  vi.stubGlobal('fetch', vi.fn(() => jsonResponse({
+  vi.stubGlobal('fetch', drawerFetch(() => jsonResponse({
     data: {
       task,
       context: [],
@@ -172,8 +215,8 @@ test('renders append-only planning status history with revisions and provenance'
   const client = createClient()
   renderSavingDrawer(client)
 
-  await screen.findByDisplayValue(task.title)
-  await userEvent.click(screen.getByRole('tab', { name: /activity/i }))
+  await screen.findByRole('tab', { name: 'Resume' })
+  await userEvent.click(screen.getByRole('tab', { name: 'Activity' }))
 
   expect(screen.getByText('Open → In progress')).toBeInTheDocument()
   expect(screen.getByText('Revision 1 → 2')).toBeInTheDocument()
@@ -181,14 +224,13 @@ test('renders append-only planning status history with revisions and provenance'
 })
 
 test('offers reply preparation only for the linked Microsoft capture target', async () => {
-  vi.stubGlobal('fetch', vi.fn(() => jsonResponse({
+  vi.stubGlobal('fetch', drawerFetch(() => jsonResponse({
     data: { task, context: [capture], activity: [], replies: [] },
   })))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(<QueryClientProvider client={client}><TaskDrawer onClose={vi.fn()} onNotice={vi.fn()} providerGates={verifiedMicrosoftProviderGates} taskId="T-0001" workspace={workspace} /></QueryClientProvider>)
 
-  await screen.findByDisplayValue('Define release quality gate')
-  await userEvent.click(screen.getByRole('tab', { name: /context/i }))
+  await openContextSubview()
   await userEvent.click(screen.getByRole('button', { name: 'Prepare Outlook/Teams reply' }))
 
   expect(screen.getByLabelText('Linked Microsoft source')).toHaveValue(capture.id)
@@ -203,14 +245,13 @@ test('offers reply preparation only for the linked Microsoft capture target', as
 })
 
 test('labels linked Microsoft replies unavailable until Gate 0 passes', async () => {
-  vi.stubGlobal('fetch', vi.fn(() => jsonResponse({
+  vi.stubGlobal('fetch', drawerFetch(() => jsonResponse({
     data: { task, context: [capture], activity: [], replies: [] },
   })))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(<QueryClientProvider client={client}><TaskDrawer onClose={vi.fn()} onNotice={vi.fn()} taskId="T-0001" workspace={workspace} /></QueryClientProvider>)
 
-  await screen.findByDisplayValue('Define release quality gate')
-  await userEvent.click(screen.getByRole('tab', { name: /context/i }))
+  await openContextSubview()
 
   expect(screen.queryByRole('button', { name: 'Prepare Outlook/Teams reply' })).not.toBeInTheDocument()
   expect(screen.getAllByText('Reply unavailable · Gate 0 pending').length).toBeGreaterThanOrEqual(1)
@@ -224,7 +265,7 @@ test('serializes queued edits, chains the returned revision, and converges both 
   let workspaceReads = 0
   let serverTask = task
 
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) {
       return jsonResponse({ data: { csrf_token: 'test-csrf-token' } })
@@ -246,7 +287,7 @@ test('serializes queued edits, chains the returned revision, and converges both 
   const client = createClient()
   renderSavingDrawer(client)
 
-  await screen.findByDisplayValue(task.title)
+  await openDetails()
   const status = screen.getByLabelText('Status') as HTMLSelectElement
   const priority = screen.getByLabelText('Priority') as HTMLSelectElement
 
@@ -302,7 +343,7 @@ test('queues a same-field return to the original value behind the in-flight chan
   let workspaceReads = 0
   let serverTask = task
 
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) {
       return jsonResponse({ data: { csrf_token: 'test-csrf-token' } })
@@ -324,7 +365,7 @@ test('queues a same-field return to the original value behind the in-flight chan
   const client = createClient()
   renderSavingDrawer(client)
 
-  await screen.findByDisplayValue(task.title)
+  await openDetails()
   const status = screen.getByLabelText('Status') as HTMLSelectElement
   act(() => {
     status.value = 'done'
@@ -368,7 +409,7 @@ test('drains the first and queued PATCH through React StrictMode remount checks'
   const patchBodies: Array<Record<string, unknown>> = []
   let serverTask = task
 
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) {
       return jsonResponse({ data: { csrf_token: 'test-csrf-token' } })
@@ -388,7 +429,7 @@ test('drains the first and queued PATCH through React StrictMode remount checks'
   const client = createClient()
   renderStrictSavingDrawer(client)
 
-  await screen.findByDisplayValue(task.title)
+  await openDetails()
   const status = screen.getByLabelText('Status') as HTMLSelectElement
   const priority = screen.getByLabelText('Priority') as HTMLSelectElement
   act(() => {
@@ -421,7 +462,7 @@ test('automatically rebases one disjoint-field conflict onto the latest revision
   const dirtyTitle = 'Rebased local title'
   let serverTask: Task = task
 
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'test-csrf-token' } })
     if (url.includes(`/api/v1/tasks/${task.id}`) && init?.method === 'PATCH') {
@@ -441,7 +482,7 @@ test('automatically rebases one disjoint-field conflict onto the latest revision
   const client = createClient()
   renderSavingDrawer(client)
 
-  const title = await screen.findByRole('textbox', { name: 'Task title' })
+  const title = await openDetails()
   await userEvent.clear(title)
   await userEvent.type(title, dirtyTitle)
   await userEvent.tab()
@@ -466,7 +507,7 @@ test('keeps dirty intent after a conflict and retries only explicitly with the l
   let workspaceReads = 0
   let serverTask: Task = task
 
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) {
       return jsonResponse({ data: { csrf_token: 'test-csrf-token' } })
@@ -503,7 +544,7 @@ test('keeps dirty intent after a conflict and retries only explicitly with the l
   const client = createClient()
   renderSavingDrawer(client)
 
-  const title = await screen.findByRole('textbox', { name: 'Task title' })
+  const title = await openDetails()
   await userEvent.clear(title)
   await userEvent.type(title, dirtyTitle)
   await userEvent.tab()
@@ -548,7 +589,7 @@ test('requires an explicit discard before leaving after a failed save', async ()
   const onNavigationLockChange = vi.fn()
   const onOpenObjective = vi.fn()
   let serverTask = task
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'test-csrf-token' } })
     if (url.includes(`/api/v1/tasks/${task.id}`) && init?.method === 'PATCH') {
@@ -561,7 +602,7 @@ test('requires an explicit discard before leaving after a failed save', async ()
   const client = createClient()
   render(<QueryClientProvider client={client}><TaskDrawer onClose={onClose} onNavigationLockChange={onNavigationLockChange} onNotice={vi.fn()} onOpenObjective={onOpenObjective} taskId={task.id} workspace={workspace} /></QueryClientProvider>)
 
-  const title = await screen.findByRole('textbox', { name: 'Task title' })
+  const title = await openDetails()
   await userEvent.clear(title)
   await userEvent.type(title, 'Local title that was not saved')
   await userEvent.tab()
@@ -595,7 +636,7 @@ test('clears a conflicted title when the user restores the authoritative value w
   let workspaceReads = 0
   let serverTask: Task = task
 
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) {
       return jsonResponse({ data: { csrf_token: 'test-csrf-token' } })
@@ -624,7 +665,7 @@ test('clears a conflicted title when the user restores the authoritative value w
   const client = createClient()
   renderSavingDrawer(client)
 
-  const title = await screen.findByRole('textbox', { name: 'Task title' })
+  const title = await openDetails()
   await userEvent.clear(title)
   await userEvent.type(title, dirtyTitle)
   await userEvent.tab()
@@ -661,7 +702,7 @@ test('finishes an ambiguous failure retry without another PATCH when the server 
   let workspaceReads = 0
   let serverTask: Task = task
 
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) {
       return jsonResponse({ data: { csrf_token: 'test-csrf-token' } })
@@ -684,7 +725,7 @@ test('finishes an ambiguous failure retry without another PATCH when the server 
   const client = createClient()
   renderSavingDrawer(client)
 
-  const title = await screen.findByRole('textbox', { name: 'Task title' })
+  const title = await openDetails()
   await userEvent.clear(title)
   await userEvent.type(title, dirtyTitle)
   await userEvent.tab()
@@ -717,7 +758,7 @@ test('does not let a late lower revision rewind newer detail or workspace caches
   let workspaceReads = 0
   let patchCalls = 0
 
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) {
       return jsonResponse({ data: { csrf_token: 'test-csrf-token' } })
@@ -741,7 +782,7 @@ test('does not let a late lower revision rewind newer detail or workspace caches
   const client = createClient()
   renderSavingDrawer(client)
 
-  await screen.findByDisplayValue(task.title)
+  await openDetails()
   await userEvent.selectOptions(screen.getByLabelText('Priority'), 'P1')
 
   const newerTask: Task = {
@@ -792,7 +833,7 @@ const outcomeWorkspace: WorkspaceProjection = {
 test('links an outcome through the real drawer and never repeats a confirmed ref PATCH', async () => {
   const aligned: Task = { ...task, objective_ids: ['O-1'] }
   const patches: Array<Record<string, unknown>> = []
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'PATCH') {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>
       patches.push(body)
@@ -811,7 +852,7 @@ test('links an outcome through the real drawer and never repeats a confirmed ref
   const client = createClient()
   renderSavingDrawer(client, outcomeWorkspace)
 
-  await screen.findByDisplayValue(aligned.title)
+  await openDetails(aligned.title)
   await userEvent.selectOptions(
     screen.getByRole('combobox', { name: 'Add outcome' }),
     screen.getByRole('option', { name: /First outcome/ }),
@@ -831,7 +872,7 @@ test('links an outcome through the real drawer and never repeats a confirmed ref
 
 test('an unrelated edit on a Task with an omitted field never emits an empty ref list', async () => {
   const patches: Array<Record<string, unknown>> = []
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'PATCH') {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>
       patches.push(body)
@@ -842,7 +883,7 @@ test('an unrelated edit on a Task with an omitted field never emits an empty ref
   const client = createClient()
   renderSavingDrawer(client, outcomeWorkspace)
 
-  await screen.findByDisplayValue(task.title)
+  await openDetails()
   await userEvent.selectOptions(screen.getByLabelText('Priority'), 'P1')
 
   await waitFor(() => expect(patches).toHaveLength(1))
@@ -919,7 +960,7 @@ test('applies the workspace projection and focus handoff only after a confirmed 
     if (url.endsWith(`/api/v1/tasks/${task.id}`)) return jsonResponse({ data: detail(task) })
     throw new Error(`Unexpected request: ${url}`)
   })
-  vi.stubGlobal('fetch', fetchMock)
+  vi.stubGlobal('fetch', drawerFetch(fetchMock))
   const { fallback } = mountFocusFallbacks()
   const client = createClient()
   const onClose = vi.fn()
@@ -931,7 +972,7 @@ test('applies the workspace projection and focus handoff only after a confirmed 
   )
   onClose.mockImplementation(() => view.unmount())
 
-  await screen.findByDisplayValue(task.title)
+  await openDetails()
   await userEvent.click(screen.getByRole('button', { name: 'More task actions' }))
   const permanent = screen.getByRole('region', { name: 'Delete permanently' })
   await userEvent.click(within(permanent).getByRole('button', { name: 'Delete permanently…' }))
@@ -951,7 +992,7 @@ test('applies the workspace projection and focus handoff only after a confirmed 
 
 test('Drop keeps the drawer open and never applies the permanent-delete projection', async () => {
   const dropped = { ...task, revision: task.revision + 1, status: 'dropped' as const }
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-1234' } })
     if (url.endsWith(`/api/v1/tasks/${task.id}`) && init?.method === 'PATCH') {
@@ -969,7 +1010,7 @@ test('Drop keeps the drawer open and never applies the permanent-delete projecti
     </QueryClientProvider>,
   )
 
-  await screen.findByDisplayValue(task.title)
+  await openDetails()
   await userEvent.click(screen.getByRole('button', { name: 'More task actions' }))
   const drop = screen.getByRole('region', { name: 'Drop Task' })
   await userEvent.click(within(drop).getByRole('button', { name: 'Drop Task…' }))
@@ -986,7 +1027,7 @@ test('Drop keeps the drawer open and never applies the permanent-delete projecti
 })
 
 test('preserves the workspace cache and selection when permanent delete does not commit', async () => {
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-1234' } })
     if (url.endsWith(`/api/v1/tasks/${task.id}/deletion-preview`)) {
@@ -1007,7 +1048,7 @@ test('preserves the workspace cache and selection when permanent delete does not
     </QueryClientProvider>,
   )
 
-  await screen.findByDisplayValue(task.title)
+  await openDetails()
   await userEvent.click(screen.getByRole('button', { name: 'More task actions' }))
   const permanent = screen.getByRole('region', { name: 'Delete permanently' })
   await userEvent.click(within(permanent).getByRole('button', { name: 'Delete permanently…' }))
@@ -1024,7 +1065,7 @@ test('preserves the workspace cache and selection when permanent delete does not
 
 test('falls back to the active primary-nav control when the workspace fallback is absent', async () => {
   const remainingWorkspace: WorkspaceProjection = { ...workspace, tasks: [], edges: [] }
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'csrf-token-1234' } })
     if (url.endsWith('/api/v1/workspace')) return jsonResponse({ data: remainingWorkspace })
@@ -1052,7 +1093,7 @@ test('falls back to the active primary-nav control when the workspace fallback i
   )
   onClose.mockImplementation(() => view.unmount())
 
-  await screen.findByDisplayValue(task.title)
+  await openDetails()
   await userEvent.click(screen.getByRole('button', { name: 'More task actions' }))
   const permanent = screen.getByRole('region', { name: 'Delete permanently' })
   await userEvent.click(within(permanent).getByRole('button', { name: 'Delete permanently…' }))
@@ -1062,4 +1103,53 @@ test('falls back to the active primary-nav control when the workspace fallback i
 
   await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
   await waitFor(() => expect(document.activeElement).toBe(nav))
+})
+
+test('Record progress stays on the selected Task and does not bypass an unsaved save queue', async () => {
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'PATCH') return new Promise<Response>(() => {})
+    return jsonResponse({ data: detail(task) })
+  }))
+  const onRecordProgress = vi.fn()
+  const onNotice = vi.fn()
+  const client = createClient()
+  render(
+    <QueryClientProvider client={client}>
+      <TaskDrawer onClose={vi.fn()} onNotice={onNotice} onRecordProgress={onRecordProgress} taskId={task.id} workspace={workspace} />
+    </QueryClientProvider>,
+  )
+
+  await waitForResume()
+  await userEvent.click(screen.getByRole('button', { name: 'Record progress' }))
+  expect(onRecordProgress).toHaveBeenCalledWith(task.id)
+
+  await openDetails()
+  await userEvent.selectOptions(screen.getByLabelText('Priority'), 'P1')
+  await userEvent.click(screen.getByRole('tab', { name: 'Resume' }))
+  expect(screen.getByRole('button', { name: 'Record progress' })).toBeDisabled()
+  expect(onRecordProgress).toHaveBeenCalledTimes(1)
+})
+
+test('tab changes keep a dirty Details draft and return Resume from the context subview', async () => {
+  const edited = `${task.title} and more`
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'PATCH') {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>
+      return jsonResponse({ data: { ...task, ...body, revision: task.revision + 1 } })
+    }
+    return jsonResponse({ data: detail(task) })
+  }))
+  const client = createClient()
+  renderSavingDrawer(client)
+  const title = await openDetails()
+  await userEvent.clear(title)
+  await userEvent.type(title, edited)
+  await userEvent.click(screen.getByRole('tab', { name: 'Activity' }))
+  await userEvent.click(screen.getByRole('tab', { name: 'Details' }))
+  expect(await screen.findByDisplayValue(edited)).toHaveValue(edited)
+  await userEvent.click(screen.getByRole('tab', { name: 'Resume' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Prepare resume brief' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Back to task' }))
+  expect(screen.getByRole('tab', { name: 'Resume' })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByRole('heading', { name: 'Next step' })).toBeInTheDocument()
 })

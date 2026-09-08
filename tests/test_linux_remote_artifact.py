@@ -112,6 +112,18 @@ def write_source(root: Path, *, lock: str | None = None, version: str = "1.0.7")
     (root / "desktop" / "python-webview-shell" / "remote_command_contract.py").write_text(
         "PROTOCOL = 1\n", encoding="utf-8"
     )
+    (root / "desktop" / "python-webview-shell" / "remote_owner.py").write_text(
+        "OWNER = 1\n", encoding="utf-8"
+    )
+    (root / "desktop" / "python-webview-shell" / "remote_process_handle.py").write_text(
+        "HANDLE = 1\n", encoding="utf-8"
+    )
+    (root / "desktop" / "python-webview-shell" / "remote_receipt_guard.py").write_text(
+        "GUARD = 1\n", encoding="utf-8"
+    )
+    (root / "desktop" / "python-webview-shell" / "remote_receipt_io.py").write_text(
+        "IO = 1\n", encoding="utf-8"
+    )
     (root / "run_work_stack.py").write_text("print('run')\n", encoding="utf-8")
     (root / "README.md").write_text("readme\n", encoding="utf-8")
     (root / "SECURITY.md").write_text("security\n", encoding="utf-8")
@@ -770,6 +782,10 @@ class LinuxRemoteArtifactTests(unittest.TestCase):
                 "run_work_stack.py",
                 "desktop/python-webview-shell/remote_entry.py",
                 "desktop/python-webview-shell/remote_command_contract.py",
+                "desktop/python-webview-shell/remote_owner.py",
+                "desktop/python-webview-shell/remote_process_handle.py",
+                "desktop/python-webview-shell/remote_receipt_guard.py",
+                "desktop/python-webview-shell/remote_receipt_io.py",
                 "README.md",
                 "SECURITY.md",
                 "THIRD_PARTY_NOTICES.md",

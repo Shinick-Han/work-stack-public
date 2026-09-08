@@ -14,7 +14,11 @@ import uuid
 from typing import Any
 from urllib.parse import parse_qs
 
-from .capture import canonical_digest
+# The digest itself is a pure foundation leaf: the preview answers with it, the
+# report composer compares against it, and neither may import this adapter to
+# reach it. Re-exported here so the released `day_source_digest` import path
+# keeps naming the one function all three surfaces call.
+from .report_source_digest import day_source_digest as day_source_digest
 from .reporting import (
     TEMPLATE_DAILY_V1,
     DailyReportPreviewError,
@@ -83,12 +87,6 @@ def daily_preview_payload(stack: Any, query: str) -> dict[str, Any]:
         "source_digest": day_source_digest(date=parsed["date"], day=projection["day"]),
         "preview": preview,
     }
-
-
-def day_source_digest(*, date: str, day: Any) -> str:
-    """Canonical SHA-256 of the bounded single-day source, not the generated preview."""
-
-    return canonical_digest({"date": date, "day": day})
 
 
 def _after_precheck_race_hook() -> None:

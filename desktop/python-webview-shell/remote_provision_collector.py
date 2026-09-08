@@ -394,14 +394,17 @@ def _object_from_bytes(payload: bytes) -> dict[str, object] | None:
     return value
 
 
-def _evidence_record(value: object, *, planning: bool) -> bool:
+def _evidence_record(value: object, *, planning: bool = False, reports: bool = False) -> bool:
     if type(value) is not dict or set(value) != EVIDENCE_KEYS:
         return False
     if type(value["id"]) is not str or type(value["origin"]) is not str:
         return False
     digest = value["source_sha256"]
     origin = value["origin"]
-    if planning:
+    if reports:
+        expected_id = "workstack.reports.v5" if origin == "fresh" else "workstack.reports.v3-to-v5"
+        migrated_origins = {"migrated_v1", "migrated_v2", "migrated_v3"}
+    elif planning:
         expected_id = "workstack.planning-status.v1"
         migrated_origins = {"migrated_v1", "migrated_v2"}
     else:
@@ -423,14 +426,16 @@ def _well_formed_store_meta(value: object) -> bool:
         return False
     if type(value["version"]) is not int or value["version"] != 2:
         return False
-    if type(value["store_schema_version"]) is not int or value["store_schema_version"] != 3:
-        return False
+    schema = value["store_schema_version"]
     migrations = value["migrations"]
-    if type(migrations) is not dict or set(migrations) != MIGRATION_KEYS:
+    if type(schema) is not int or schema not in {3, 5} or type(migrations) is not dict:
         return False
-    return _evidence_record(migrations["identity"], planning=False) and _evidence_record(
-        migrations["planning_status"], planning=True
-    )
+    if set(migrations) != (MIGRATION_KEYS if schema == 3 else MIGRATION_KEYS | {"reports"}):
+        return False
+    identity = _evidence_record(migrations["identity"], planning=False)
+    planning = _evidence_record(migrations["planning_status"], planning=True)
+    reports = schema != 5 or _evidence_record(migrations["reports"], reports=True)
+    return identity and planning and reports
 
 
 def _canonical_uid(text: object) -> str | None:
@@ -624,18 +629,14 @@ def _canonical_receipt_digest(
     workspace_uid: str,
 ) -> str | None:
     payload = _read_held_file(dirfd, RECEIPT_NAME, expected_owner=owner)
-    if payload is None:
-        return None
-    receipt = _parse_canonical_receipt(payload)
-    if receipt is None:
-        return None
-    if receipt["product_version"] != product_version:
-        return None
-    if receipt["remote_protocol_version"] != protocol_version:
-        return None
-    if receipt["owner"] != owner:
-        return None
-    if receipt["workspace_uid"] != workspace_uid:
+    receipt = None if payload is None else _parse_canonical_receipt(payload)
+    if (
+        receipt is None
+        or receipt["product_version"] != product_version
+        or receipt["remote_protocol_version"] != protocol_version
+        or receipt["owner"] != owner
+        or receipt["workspace_uid"] != workspace_uid
+    ):
         return None
     digest = receipt["artifact_digest"]
     return digest if type(digest) is str else None

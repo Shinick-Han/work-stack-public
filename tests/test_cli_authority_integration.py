@@ -218,14 +218,30 @@ class TwoWorkspaceSeparation(_IsolatedRuntime):
 
 
 class OwnerReadRefusal(_IsolatedRuntime):
-    def test_owner_held_list_refuses_rather_than_reading_locally(self) -> None:
-        self.store.write_server_info("127.0.0.1", 9)
+    def test_owner_held_list_refuses_local_json_when_the_owner_is_unreachable(self) -> None:
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        dead_port = probe.getsockname()[1]
+        probe.close()
+        self.store.write_server_info("127.0.0.1", dead_port)
         blocker = _FileLease(self.root / LOCK_NAME)
         blocker.acquire()
         self.addCleanup(blocker.release)
+        before = {
+            path.name: path.read_bytes()
+            for path in self.root.iterdir()
+            if path.is_file() and path.name.endswith(".json")
+        }
         code, _out, err = self.run_cli("backlog", "list")
         self.assertEqual(code, 2)
-        self.assertIn(cli_reads.OWNER_READ_REFUSAL, err)
+        self.assertNotIn(cli_reads.OWNER_READ_REFUSAL, err)
+        self.assertNotEqual(err.strip(), "")
+        after = {
+            path.name: path.read_bytes()
+            for path in self.root.iterdir()
+            if path.is_file() and path.name.endswith(".json")
+        }
+        self.assertEqual(after, before)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,12 @@ import {
   type MicrosoftProviderGates,
 } from '../config/providerGates'
 import { formatDateTime, safeExternalUrl } from '../utils/format'
-import { contextTitle, externalContext } from '../utils/taskContext'
+import {
+  contextPlainBody,
+  contextTitle,
+  contextUnknownFields,
+  externalContext,
+} from '../utils/taskContext'
 
 /**
  * Q4: the shared context timeline. Moved unchanged from the Task feature so the
@@ -44,13 +49,33 @@ function TaskContextHeader({ external, item, replyUnavailable }: { external: boo
   </header>
 }
 
+function TaskContextUnknownFields({ item }: { item: TaskContextItem }) {
+  const extras = contextUnknownFields(item)
+  if (extras.length === 0) return null
+  return (
+    <details className="context-entry__extras">
+      <summary>{`Additional recorded data (${extras.length})`}</summary>
+      <dl>
+        {extras.map((extra) => (
+          <div key={extra.label}>
+            <dt>{extra.label}</dt>
+            <dd>{extra.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  )
+}
+
 function TaskContextBody({ item, sourceUrl }: { item: TaskContextItem; sourceUrl: string | null }) {
   const normalized = item.normalized
+  const body = contextPlainBody(item)
   return <>
     <h3>{contextTitle(item)}</h3>
-    {normalized?.context ? <p>{normalized.context}</p> : item.text ? <p>{item.text}</p> : null}
+    {body ? <p>{body}</p> : null}
     {normalized?.action_items?.length ? <ul>{normalized.action_items.map((action, actionIndex) => <li key={action.id ?? actionIndex}>{action.title}</li>)}</ul> : null}
     {sourceUrl ? <a href={sourceUrl} rel="noopener noreferrer" target="_blank">Open source <Icon name="arrowUpRight" size={13} /></a> : null}
+    <TaskContextUnknownFields item={item} />
   </>
 }
 

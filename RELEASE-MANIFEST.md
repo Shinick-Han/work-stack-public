@@ -1,5 +1,18 @@
 # Public snapshot manifest
 
+- Source version: **1.0.11**, source preview updated 2026-09-08.
+- Integrated source commit: `46ab115b22d993d1f12fb7730c8d336773473a22`.
+- Previous public commit: `de7d764af2e48454a32e770efe66feaaaaccbba2`.
+- Private Git history is not exported. This is a new commit on the existing public history.
+- Only committed product files are copied. Local artifacts, credentials, CodeGraph state and coordinator-only material are excluded.
+- Public README/manifest are maintained separately. Existing installer files and their hashes remain unchanged.
+- This source update does not publish a new installer, tag or stable update manifest. The manual preview remains 1.0.8.
+- Current capabilities and remaining connector work: [Knowledge integration status](docs/KNOWLEDGE-INTEGRATION-STATUS-2026-09-08.ko.md).
+- Validation and limitations: [source snapshot validation](docs/SOURCE-SNAPSHOT-2026-09-08.md).
+
+## Previous binary release record (historical)
+
+
 - Version: 1.0.8, manual-install pre-release; stable update remains 1.0.7.
 - Source repository: `Shinick-Han/work-stack` (private development history is not exported).
 - Integrated source commit: `80c86281a4fbba2c5a4fa139d781d2ef6791e4a5`.

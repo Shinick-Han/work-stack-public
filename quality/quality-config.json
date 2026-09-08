@@ -136,17 +136,96 @@
     "workstack/cli_routing.py",
     "workstack/cli_reads.py",
     "workstack/mutation_receipts.py",
-    "workstack/mutation_service.py"
+    "workstack/mutation_service.py",
+    "workstack/report_command_service.py",
+    "workstack/report_queries.py",
+    "workstack/report_repository_service.py",
+    "workstack/report_source_digest.py",
+    "workstack/service_capture_rules.py",
+    "workstack/service_captures.py",
+    "workstack/service_checkpoints.py",
+    "workstack/service_cli_commands.py",
+    "workstack/service_composition.py",
+    "workstack/service_contracts.py",
+    "workstack/service_domain.py",
+    "workstack/service_errors.py",
+    "workstack/service_graph.py",
+    "workstack/service_idempotency.py",
+    "workstack/service_objectives.py",
+    "workstack/service_replies.py",
+    "workstack/service_review.py",
+    "workstack/service_search.py",
+    "workstack/service_task_commands.py",
+    "workstack/service_task_reads.py",
+    "workstack/service_task_rules.py",
+    "workstack/service_text.py",
+    "workstack/service_work_sessions.py",
+    "workstack/service_workspace.py",
+    "workstack/cli_writer_owner.py",
+    "workstack/cli_writer_planning.py",
+    "workstack/cli_writer_records.py",
+    "workstack/cli_writer_subtasks.py",
+    "workstack/cli_writer_tasks.py",
+    "workstack/cli_writer_transport.py",
+    "workstack/store_layout.py",
+    "workstack/store_manifest_validation.py",
+    "workstack/store_rebind.py",
+    "workstack/store_recovery.py",
+    "workstack/store_schema_upgrade.py",
+    "workstack/store_sync.py"
   ],
   "python_layers": [
+    {
+      "name": "py_knowledge_reference",
+      "globs": [
+        "workstack/knowledge_reference.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_knowledge_host",
+      "globs": [
+        "desktop/python-webview-shell/knowledge_host.py",
+        "desktop/python-webview-shell/knowledge_host_search.py"
+      ],
+      "may_import": [
+        "py_knowledge_registry",
+        "py_knowledge_context",
+        "py_knowledge_reference"
+      ]
+    },
+    {
+      "name": "py_knowledge_registry",
+      "globs": [
+        "desktop/python-webview-shell/knowledge_registry.py",
+        "desktop/python-webview-shell/knowledge_registry_paths.py",
+        "desktop/python-webview-shell/knowledge_search.py"
+      ],
+      "may_import": [
+        "py_knowledge_context",
+        "py_knowledge_reference"
+      ]
+    },
+    {
+      "name": "py_knowledge_context",
+      "globs": [
+        "workstack/knowledge_context.py"
+      ],
+      "may_import": [
+        "py_knowledge_reference"
+      ]
+    },
     {
       "name": "py_foundation",
       "globs": [
         "workstack/__init__.py",
         "workstack/capture.py",
         "workstack/planning_status.py",
+        "workstack/report_command_service.py",
         "workstack/report_documents.py",
         "workstack/report_json.py",
+        "workstack/report_queries.py",
+        "workstack/report_source_digest.py",
         "workstack/reporting.py",
         "workstack/weekly_reporting.py",
         "workstack/snapshot_safety.py",
@@ -187,13 +266,22 @@
     },
     {
       "name": "py_store_validation",
-      "globs": ["workstack/store_document_validation.py"],
-      "may_import": ["py_foundation"]
+      "globs": [
+        "workstack/store_document_validation.py"
+      ],
+      "may_import": [
+        "py_foundation"
+      ]
     },
     {
       "name": "py_store_migration",
-      "globs": ["workstack/store_report_migration.py"],
-      "may_import": ["py_foundation", "py_store_validation"]
+      "globs": [
+        "workstack/store_report_migration.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_store_validation"
+      ]
     },
     {
       "name": "py_legacy_store",
@@ -204,7 +292,13 @@
         "py_foundation",
         "py_store_validation",
         "py_store_migration",
-        "py_file_lease"
+        "py_file_lease",
+        "py_store_layout",
+        "py_store_manifest_validation",
+        "py_store_recovery",
+        "py_store_sync",
+        "py_store_rebind",
+        "py_store_schema_upgrade"
       ]
     },
     {
@@ -222,7 +316,28 @@
     {
       "name": "py_application",
       "globs": [
-        "workstack/service.py"
+        "workstack/report_repository_service.py",
+        "workstack/service.py",
+        "workstack/service_capture_rules.py",
+        "workstack/service_captures.py",
+        "workstack/service_checkpoints.py",
+        "workstack/service_cli_commands.py",
+        "workstack/service_composition.py",
+        "workstack/service_contracts.py",
+        "workstack/service_domain.py",
+        "workstack/service_errors.py",
+        "workstack/service_graph.py",
+        "workstack/service_idempotency.py",
+        "workstack/service_objectives.py",
+        "workstack/service_replies.py",
+        "workstack/service_review.py",
+        "workstack/service_search.py",
+        "workstack/service_task_commands.py",
+        "workstack/service_task_reads.py",
+        "workstack/service_task_rules.py",
+        "workstack/service_text.py",
+        "workstack/service_work_sessions.py",
+        "workstack/service_workspace.py"
       ],
       "may_import": [
         "py_foundation",
@@ -242,15 +357,25 @@
       "name": "py_transport",
       "globs": [
         "workstack/server.py",
+        "workstack/report_documents_http.py",
+        "workstack/http_route_types.py",
         "workstack/reporting_http.py",
-        "workstack/weekly_reporting_http.py"
+        "workstack/weekly_reporting_http.py",
+        "workstack/cli_read_http.py",
+        "workstack/server_admission.py",
+        "workstack/server_errors.py",
+        "workstack/server_patch_routes.py",
+        "workstack/server_post_routes.py",
+        "workstack/server_read_routes.py",
+        "workstack/server_transport.py"
       ],
       "may_import": [
         "py_application",
         "py_foundation",
         "py_legacy_store",
         "py_sse_encoder",
-        "py_mutation_service"
+        "py_mutation_service",
+        "py_cli_read_contract"
       ]
     },
     {
@@ -340,6 +465,7 @@
         "py_agent_local_backend",
         "py_agent_registry",
         "py_agent_transport",
+        "py_owner_authority",
         "py_legacy_store"
       ]
     },
@@ -372,7 +498,8 @@
         "py_cli_writer",
         "py_checkpoint_cli",
         "py_cli_capabilities",
-        "py_cli_routing"
+        "py_cli_routing",
+        "py_cli_parser"
       ]
     },
     {
@@ -380,6 +507,7 @@
       "globs": [
         "desktop/python-webview-shell/bounded_request_worker.py",
         "desktop/python-webview-shell/brand_assets.py",
+        "desktop/python-webview-shell/connection_activation_evidence.py",
         "desktop/python-webview-shell/connection_registry.py",
         "desktop/python-webview-shell/connection_registry_activation_recovery.py",
         "desktop/python-webview-shell/connection_registry_compat.py",
@@ -388,11 +516,14 @@
         "desktop/python-webview-shell/connection_registry_startup.py",
         "desktop/python-webview-shell/generated/__init__.py",
         "desktop/python-webview-shell/generated/theme_tokens.py",
+        "desktop/python-webview-shell/knowledge_desktop.py",
         "desktop/python-webview-shell/native_theme.py",
         "desktop/python-webview-shell/remote_command_contract.py",
         "desktop/python-webview-shell/remote_connection_monitor.py",
         "desktop/python-webview-shell/remote_entry.py",
         "desktop/python-webview-shell/remote_provision_plan.py",
+        "desktop/python-webview-shell/remote_provision_payload.py",
+        "desktop/python-webview-shell/remote_provision_command.py",
         "desktop/python-webview-shell/remote_provision_probe.py",
         "desktop/python-webview-shell/remote_provision_collector.py",
         "desktop/python-webview-shell/remote_provision_installer.py",
@@ -404,18 +535,30 @@
         "desktop/python-webview-shell/startup_recovery_host.py",
         "desktop/python-webview-shell/v4_activation_binding.py",
         "desktop/python-webview-shell/workstack_desktop.py",
-        "desktop/python-webview-shell/workstack_update.py"
+        "desktop/python-webview-shell/workstack_update.py",
+        "desktop/python-webview-shell/remote_attempt_resources.py",
+        "desktop/python-webview-shell/remote_owner.py",
+        "desktop/python-webview-shell/remote_process_handle.py",
+        "desktop/python-webview-shell/remote_receipt_guard.py",
+        "desktop/python-webview-shell/remote_receipt_io.py"
       ],
       "may_import": [
         "py_foundation",
         "py_desktop_rebind",
+        "py_knowledge_host",
         "py_profile_inspection"
       ]
     },
     {
       "name": "py_profile_inspection",
-      "globs": ["desktop/python-webview-shell/profile_inspection.py"],
-      "may_import": ["py_foundation", "py_desktop", "py_legacy_store"]
+      "globs": [
+        "desktop/python-webview-shell/profile_inspection.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_desktop",
+        "py_legacy_store"
+      ]
     },
     {
       "name": "py_quality_tooling",
@@ -488,7 +631,13 @@
     {
       "name": "py_cli_writer",
       "globs": [
-        "workstack/cli_writer.py"
+        "workstack/cli_writer.py",
+        "workstack/cli_writer_owner.py",
+        "workstack/cli_writer_planning.py",
+        "workstack/cli_writer_records.py",
+        "workstack/cli_writer_subtasks.py",
+        "workstack/cli_writer_tasks.py",
+        "workstack/cli_writer_transport.py"
       ],
       "may_import": [
         "py_legacy_store",
@@ -555,7 +704,8 @@
         "py_cli_reads",
         "py_cli_writer",
         "py_owner_authority",
-        "py_legacy_store"
+        "py_legacy_store",
+        "py_cli_read_transport"
       ]
     },
     {
@@ -599,6 +749,104 @@
         "py_application",
         "py_storage",
         "py_legacy_store"
+      ]
+    },
+    {
+      "name": "py_cli_read_contract",
+      "globs": [
+        "workstack/cli_read_contract.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_cli_read_transport",
+      "globs": [
+        "workstack/cli_read_transport.py"
+      ],
+      "may_import": [
+        "py_cli_read_contract",
+        "py_cli_reads",
+        "py_cli_writer",
+        "py_application"
+      ]
+    },
+    {
+      "name": "py_cli_parser",
+      "globs": [
+        "workstack/cli_parser_operations.py",
+        "workstack/cli_parser_planning.py",
+        "workstack/cli_parser_root.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_store_layout",
+      "globs": [
+        "workstack/store_layout.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_store_validation"
+      ]
+    },
+    {
+      "name": "py_store_manifest_validation",
+      "globs": [
+        "workstack/store_manifest_validation.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_store_validation",
+        "py_store_layout"
+      ]
+    },
+    {
+      "name": "py_store_recovery",
+      "globs": [
+        "workstack/store_recovery.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_store_validation",
+        "py_store_layout",
+        "py_store_manifest_validation"
+      ]
+    },
+    {
+      "name": "py_store_sync",
+      "globs": [
+        "workstack/store_sync.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_store_validation",
+        "py_store_layout",
+        "py_store_manifest_validation"
+      ]
+    },
+    {
+      "name": "py_store_rebind",
+      "globs": [
+        "workstack/store_rebind.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_store_validation",
+        "py_store_layout",
+        "py_store_manifest_validation"
+      ]
+    },
+    {
+      "name": "py_store_schema_upgrade",
+      "globs": [
+        "workstack/store_schema_upgrade.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_store_validation",
+        "py_store_migration",
+        "py_store_layout",
+        "py_store_manifest_validation"
       ]
     }
   ],
@@ -747,11 +995,24 @@
       ]
     },
     {
+      "name": "fe_feature_knowledge",
+      "globs": [
+        "frontend/src/features/knowledge/**"
+      ],
+      "may_import": [
+        "fe_api",
+        "fe_components",
+        "fe_domain",
+        "fe_utils"
+      ]
+    },
+    {
       "name": "fe_feature_tasks",
       "globs": [
         "frontend/src/features/tasks/**"
       ],
       "may_import": [
+        "fe_feature_knowledge",
         "fe_api",
         "fe_components",
         "fe_config",

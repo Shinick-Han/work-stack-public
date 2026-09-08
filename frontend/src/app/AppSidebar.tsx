@@ -6,6 +6,7 @@ import type { ConnectionCenterGates } from '../config/connectionCenterGates'
 import type { AppUrlState, Objective, SyncStatus, Task, WorkspaceProjection } from '../domain/types'
 import { getObjectiveTitle, statusLabels } from '../utils/format'
 import { SsotConnectionCenter } from './SsotConnectionCenter'
+import { reviewNavigationPatch } from './reviewNavigation'
 import {
   groupSidebarTasks,
   isOpenTask,
@@ -264,7 +265,9 @@ export function AppSidebar({ connectionCenterGates, mobileNavOpen, onOpenConnect
 }) {
   const closeMobile = () => setMobileNavOpen(false)
   const navigate = (surface: AppUrlState['surface']) => {
-    update(surface === 'inbox' ? { surface, taskId: null } : { surface, captureId: null })
+    update(surface === 'review'
+      ? reviewNavigationPatch(state)
+      : surface === 'inbox' ? { surface, taskId: null } : { surface, captureId: null })
     closeMobile()
   }
   const ssotAvailable = Boolean(syncStatus || syncEndpointDisconnected)

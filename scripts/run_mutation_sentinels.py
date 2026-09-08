@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SENTINELS: tuple[dict[str, Any], ...] = (
     {
         "id": "revision-safe-integer-bound",
-        "path": "workstack/service.py",
+        "path": "workstack/service_domain.py",
         "original": "def _next_revision(record: dict[str, Any]) -> int:\n    current = _revision(record)\n    if current == MAX_REVISION:",
         "replacement": "def _next_revision(record: dict[str, Any]) -> int:\n    current = _revision(record)\n    if current > MAX_REVISION:",
         "tests": ("tests.test_store_identity",),

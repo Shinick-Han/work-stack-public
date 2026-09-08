@@ -57,6 +57,7 @@ export function readUrlState(search = window.location.search): NormalizedAppUrlS
     outcomeFilter: decodeOutcomeFilter(params.get('outcome')),
     taskId: params.get('task') || null,
     captureId: params.get('capture') || null,
+    ...(params.get('reviewTask') ? { reviewTaskId: params.get('reviewTask')! } : {}),
     doneVisibility: normalizeDoneVisibility(suppliedVisibility ?? undefined, legacyExplicitAll),
   })
 }
@@ -64,6 +65,7 @@ export function readUrlState(search = window.location.search): NormalizedAppUrlS
 export function normalizeUrlState(state: AppUrlState): NormalizedAppUrlState {
   const taskId = state.surface === 'inbox' ? null : state.taskId
   const captureId = state.surface === 'inbox' ? state.captureId : null
+  const reviewTaskId = state.surface === 'review' ? state.reviewTaskId : undefined
   // No legacy flag here: an in-memory status of 'all' must never be read as an
   // old explicit All. Only readUrlState sees literal parameter presence.
   const doneVisibility = normalizeDoneVisibility(state.doneVisibility)
@@ -71,12 +73,19 @@ export function normalizeUrlState(state: AppUrlState): NormalizedAppUrlState {
   if (
     taskId === state.taskId
     && captureId === state.captureId
+    && reviewTaskId === state.reviewTaskId
     && doneVisibility === state.doneVisibility
     && outcomeFilter === state.outcomeFilter
   ) {
     return state as NormalizedAppUrlState
   }
-  return { ...state, taskId, captureId, doneVisibility, outcomeFilter }
+  return { ...state, taskId, captureId, reviewTaskId, doneVisibility, outcomeFilter }
+}
+
+function writeSelectionCoordinates(params: URLSearchParams, state: NormalizedAppUrlState) {
+  if (state.taskId) params.set('task', state.taskId)
+  if (state.captureId) params.set('capture', state.captureId)
+  if (state.reviewTaskId) params.set('reviewTask', state.reviewTaskId)
 }
 
 export function writeUrlState(state: AppUrlState, replace: boolean): NormalizedAppUrlState {
@@ -94,8 +103,7 @@ export function writeUrlState(state: AppUrlState, replace: boolean): NormalizedA
   // URLSearchParams round-trips exactly even for delimiter-bearing identifiers.
   const outcome = encodeOutcomeFilter(normalized.outcomeFilter)
   if (outcome !== null) params.set('outcome', outcome)
-  if (normalized.taskId) params.set('task', normalized.taskId)
-  if (normalized.captureId) params.set('capture', normalized.captureId)
+  writeSelectionCoordinates(params, normalized)
   // 'default' is omitted exactly as 'all' statuses are; hide/show serialize.
   if (normalized.doneVisibility !== 'default') {
     params.set('doneVisibility', normalized.doneVisibility)

@@ -1,0 +1,78 @@
+/* Reading sizes come from UI-A's additive reading tokens; the fallbacks keep this file
+   correct on its own until that shared change lands. */
+.knowledge-panel { display: grid; gap: 11px; min-width: 0; }
+.knowledge-panel > h3 {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-body, 14px);
+  font-weight: 650;
+  letter-spacing: normal;
+  margin: 0;
+  text-transform: none;
+}
+.knowledge-panel__bar {
+  align-items: center;
+  border-bottom: 1px solid var(--ws-border-subtle);
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  padding-bottom: 9px;
+}
+.knowledge-panel__bar .button { min-height: var(--ws-control-min-height); }
+.knowledge-panel__task {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  margin-left: auto;
+}
+.knowledge-panel__lede,
+.knowledge-panel__notice,
+.knowledge-panel__scope {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.55;
+  margin: 0;
+}
+.knowledge-panel .inline-error { margin: 0; }
+.knowledge-panel__row { align-items: end; display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.knowledge-panel__row .field { flex: 1 1 10rem; min-width: 0; }
+.knowledge-panel__row .button { flex: 0 0 auto; }
+.knowledge-panel__row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.knowledge-panel__row-actions .button { min-height: var(--ws-control-min-height); }
+.knowledge-panel__span { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-width: 0; }
+.knowledge-panel__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.knowledge-panel__actions .button { min-height: var(--ws-control-min-height); }
+.knowledge-panel__matches { display: grid; gap: 8px; list-style: none; margin: 0; min-width: 0; padding: 0; }
+.knowledge-panel__disclosure { min-width: 0; }
+.knowledge-panel__disclosure > summary {
+  color: var(--ws-text-secondary);
+  cursor: pointer;
+  font-size: var(--ws-type-reading-control, 13px);
+  line-height: 1.5;
+  padding: 6px 0;
+}
+.knowledge-panel__disclosure > summary:focus-visible {
+  outline: 2px solid var(--ws-border-focus);
+  outline-offset: 2px;
+}
+.knowledge-panel__disclosure-body { display: grid; gap: 14px; min-width: 0; padding-top: 8px; }
+.knowledge-panel .reply-launch { margin: 0; }
+.knowledge-source,
+.knowledge-search { display: grid; gap: 8px; min-width: 0; }
+.knowledge-source > h5,
+.knowledge-search > h5,
+.knowledge-panel__disclosure-body .form-stack > h5 {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  margin: 0;
+  text-transform: uppercase;
+}
+.knowledge-source > p,
+.knowledge-search > p,
+.knowledge-search__corpus {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.55;
+  margin: 0;
+}
+.knowledge-source > p strong { color: var(--ws-text-secondary); }

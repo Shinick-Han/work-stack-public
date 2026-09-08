@@ -6,22 +6,22 @@
   border-radius: 7px;
   box-sizing: border-box;
   color: var(--ws-text-primary);
-  font-size: var(--ws-type-control-label);
+  font-size: var(--ws-type-reading-control);
   grid-column: 1 / -1;
   min-height: var(--ws-control-min-height);
   min-width: 0;
   padding: 7px 9px;
   width: 100%;
 }
-.date-input-control > label { color: var(--ws-type-label-ink); font-size: var(--ws-type-control-label); font-weight: 600; }
+.date-input-control > label { color: var(--ws-type-label-ink); font-size: var(--ws-type-reading-control); font-weight: 600; }
 .date-input-control.date-input-control--property { grid-column: 1 / -1; background: var(--ws-surface-raised); border: 1px solid var(--ws-border-subtle); border-radius: 7px; padding: 8px; }
-.date-input-control.date-input-control--property > label { display: block; background: transparent; border: 0; color: var(--ws-type-label-ink); font-size: var(--ws-type-eyebrow); min-height: 0; padding: 0; text-transform: uppercase; }
-.date-input-control--property .date-input-control__field input { background: transparent; border: 0; border-radius: 0; font-size: var(--ws-type-meta); min-height: var(--ws-control-min-height); padding: 0 8px; }
-.date-input-control button { background: var(--ws-surface-base); border: 1px solid var(--ws-border-subtle); border-radius: 5px; color: var(--ws-text-primary); cursor: pointer; font: inherit; font-size: var(--ws-type-control-label); min-height: var(--ws-control-min-height); padding: 0 7px; }
+.date-input-control.date-input-control--property > label { display: block; background: transparent; border: 0; color: var(--ws-type-label-ink); font-size: var(--ws-type-reading-label); min-height: 0; padding: 0; text-transform: uppercase; }
+.date-input-control--property .date-input-control__field input { background: transparent; border: 0; border-radius: 0; font-size: var(--ws-type-reading-control); min-height: var(--ws-control-min-height); padding: 0 8px; }
+.date-input-control button { background: var(--ws-surface-base); border: 1px solid var(--ws-border-subtle); border-radius: 5px; color: var(--ws-text-primary); cursor: pointer; font: inherit; font-size: var(--ws-type-reading-control); min-height: var(--ws-control-min-height); padding: 0 7px; }
 .date-input-control button:disabled { cursor: default; opacity: .45; }
 .date-input-control button:focus-visible, .date-input-control input:focus-visible { outline: 2px solid var(--ws-control-border-focus); outline-offset: 2px; }
-.date-input-control__hint { color: var(--ws-text-muted); font-size: .8em; }
-.date-input-control__error { color: var(--ws-status-danger-text); font-size: .8em; }
+.date-input-control__hint { color: var(--ws-text-muted); font-size: var(--ws-type-reading-meta); }
+.date-input-control__error { color: var(--ws-status-danger-text); font-size: var(--ws-type-reading-meta); }
 /* Fixed overlay stays out of document and overflow-ancestor layout; JS clamps to the viewport. */
 .date-input-control__calendar {
   background: var(--ws-surface-base);

@@ -80,17 +80,21 @@ export function FocusSurface({
 
 export function ReviewSurface({
   captures,
+  initialTaskId,
+  onNavigationLockChange,
   onNotice,
   onOpenCapture,
   onOpenTask,
   workspace,
 }: {
   captures: Capture[]
+  initialTaskId?: string | null
+  onNavigationLockChange?: (locked: boolean) => void
   onNotice: (message: string, tone?: 'success' | 'error') => void
   onOpenCapture: (captureId: string) => void
   onOpenTask: (taskId: string) => void
   workspace: WorkspaceProjection
 }) {
   const today = useLocalToday()
-  return <DailyReviewPage captures={captures} onNotice={onNotice} onOpenCapture={onOpenCapture} onOpenTask={onOpenTask} today={today} workspace={workspace} />
+  return <DailyReviewPage captures={captures} initialTaskId={initialTaskId} onNavigationLockChange={onNavigationLockChange} onNotice={onNotice} onOpenCapture={onOpenCapture} onOpenTask={onOpenTask} today={today} workspace={workspace} />
 }

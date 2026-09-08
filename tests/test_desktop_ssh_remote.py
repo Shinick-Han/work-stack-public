@@ -14,6 +14,10 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SHELL = ROOT / "desktop" / "python-webview-shell"
+if str(SHELL) not in sys.path:
+    sys.path.insert(0, str(SHELL))
+import remote_attempt_resources as RESOURCES
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 REQUIRED_REMOTE_PYTHON = "/srv/workstack/venv/bin/python"
 RUNTIME_SESSION_TOKEN = "r5pending-token-not-enforced-01"
@@ -55,6 +59,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
 
     def test_ready_local_server_is_reused_only_for_the_configured_workspace(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = None
         host._local_runtime_config = mock.Mock(return_value=(
             {"port": 8765, "data_dir": "unused", "backup_dir": "unused", "backup_retention": 7},
@@ -74,6 +79,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
     def test_ready_local_server_with_another_identity_moves_to_a_session_port(self) -> None:
         different_workspace_id = "22222222-2222-4222-8222-222222222222"
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = None
         host._local_runtime_config = mock.Mock(return_value=(
             {"port": 8765, "data_dir": "unused", "backup_dir": "unused", "backup_retention": 7},
@@ -95,6 +101,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
 
     def test_session_port_updates_both_navigation_url_and_trusted_origin(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.workstack_url = "http://127.0.0.1:8765/"
         host.workstack_origin = "http://127.0.0.1:8765"
         host._trace = mock.Mock()
@@ -250,6 +257,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             }
         }).encode("utf-8")
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -268,6 +276,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             "remote_protocol_version": 0,
         }}).encode("utf-8")
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -286,6 +295,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             "remote_protocol_version": 2,
         }}).encode("utf-8")
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -318,6 +328,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             minimum_remote_protocol=2,
         )
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -342,6 +353,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
 
     def test_update_check_reports_a_lagging_stable_channel_as_current(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.downloaded_update = object()
         host.install_update_on_exit = True
         host._set_update_status = mock.Mock()
@@ -374,6 +386,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             root = Path(directory)
             write_profile(root)
             host = object.__new__(MODULE.WorkStackDesktopHost)
+            MODULE.initialize_attempt_resources(host)
             host.state_root = root
             host.active_connection_draft = MODULE.load_connection_draft(root)
             host.remote_profile = MODULE.connection_profile_from_draft(host.active_connection_draft)
@@ -395,6 +408,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
 
     def test_remote_rebind_coordination_failure_stops_tunnel_and_requires_recovery(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.active_connection_draft = {
             "storage_mode": "ssh-remote",
             "ssh_host_alias": "work-linux",
@@ -437,6 +451,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
     def test_source_zoom_command_updates_native_view_and_reports_status(self) -> None:
         core = mock.Mock()
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.state_root = Path(tempfile.mkdtemp())
         host.source_zoom = {"outlook": 100, "teams": 100, "onenote": 100}
         host.source_webviews = {"teams": types.SimpleNamespace(ZoomFactor=1.0)}
@@ -455,6 +470,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         process.pid = 1234
         log = mock.Mock()
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_ssh_process = process
         host.remote_ssh_log = log
 
@@ -469,6 +485,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
     def test_source_resume_cannot_resurrect_a_view_after_inbox_deactivation(self) -> None:
         viewport = types.SimpleNamespace(Visible=True, BringToFront=mock.Mock())
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.source_viewports = {"outlook": viewport}
         host.source_suspended = False
         host.source_host_active = True
@@ -524,6 +541,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             host = object.__new__(MODULE.WorkStackDesktopHost)
+            MODULE.initialize_attempt_resources(host)
             host.state_root = root
             payload = host._test_ssot_connection(draft)
 
@@ -540,6 +558,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         core = mock.Mock()
         with tempfile.TemporaryDirectory() as directory:
             host = object.__new__(MODULE.WorkStackDesktopHost)
+            MODULE.initialize_attempt_resources(host)
             host.state_root = Path(directory)
             host.active_connection_draft = {"storage_mode": "local"}
             host.workstack_webview = types.SimpleNamespace(CoreWebView2=core)
@@ -566,6 +585,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
 
     def test_remote_status_reports_runtime_port_and_session_change_detection(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.state_root = Path("C:/state")
         host.active_connection_draft = {
             "storage_mode": "ssh-remote",
@@ -589,6 +609,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
 
     def test_remote_prerequisite_test_marks_changed_draft_for_save_and_restart(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.state_root = Path("C:/state")
         host.active_connection_draft = {"storage_mode": "local"}
         host.remote_profile = None
@@ -609,8 +630,73 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         self.assertTrue(payload["restart_required"])
         self.assertIn("Save settings", payload["message"])
 
+    def _remote_draft(self, **overrides: object) -> dict[str, object]:
+        draft = {
+            "storage_mode": "ssh-remote",
+            "ssh_host_alias": "work-linux",
+            "remote_app_dir": "/srv/workstack/app",
+            "remote_data_dir": "/srv/workstack/ssot",
+            "local_forward_port": 18765,
+            "remote_port": 8765,
+            "workspace_id": WORKSPACE_ID,
+            "remote_python": REQUIRED_REMOTE_PYTHON,
+        }
+        draft.update(overrides)
+        return draft
+
+    def test_prerequisite_test_probes_the_active_session_with_its_own_token(self) -> None:
+        host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
+        host.state_root = Path("C:/state")
+        draft = self._remote_draft()
+        host.active_connection_draft = draft
+        host.remote_profile = MODULE.connection_profile_from_draft(draft)
+        host.remote_session_token = RUNTIME_SESSION_TOKEN
+
+        with mock.patch.object(MODULE, "run_remote_connection_check") as check:
+            payload = host._test_ssot_connection(draft)
+
+        self.assertEqual(check.call_args.kwargs["session_token"], RUNTIME_SESSION_TOKEN)
+        self.assertFalse(payload["restart_required"])
+        self.assertIn("already active", payload["message"])
+
+    def test_prerequisite_test_never_sends_the_token_to_another_target(self) -> None:
+        host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
+        host.state_root = Path("C:/state")
+        active = self._remote_draft()
+        host.active_connection_draft = active
+        host.remote_profile = MODULE.connection_profile_from_draft(active)
+        host.remote_session_token = RUNTIME_SESSION_TOKEN
+        cases = (
+            ("alias", self._remote_draft(ssh_host_alias="other-linux")),
+            ("app-dir", self._remote_draft(remote_app_dir="/srv/other/app")),
+            ("data-dir", self._remote_draft(remote_data_dir="/srv/other/ssot")),
+            ("python", self._remote_draft(remote_python="/tmp/foreign-python")),
+        )
+        for label, draft in cases:
+            with self.subTest(changed=label):
+                with mock.patch.object(MODULE, "run_remote_connection_check") as check:
+                    host._test_ssot_connection(draft)
+                self.assertIsNone(check.call_args.kwargs["session_token"])
+
+    def test_prerequisite_test_without_a_live_session_stays_anonymous(self) -> None:
+        host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
+        host.state_root = Path("C:/state")
+        draft = self._remote_draft()
+        host.active_connection_draft = draft
+        host.remote_profile = MODULE.connection_profile_from_draft(draft)
+        host.remote_session_token = None
+
+        with mock.patch.object(MODULE, "run_remote_connection_check") as check:
+            host._test_ssot_connection(draft)
+
+        self.assertIsNone(check.call_args.kwargs["session_token"])
+
     def test_ssot_host_routes_only_exact_reconnect_and_diagnostics_commands(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host._start_manual_remote_reconnect = mock.Mock()
         host._open_ssot_diagnostics = mock.Mock()
 
@@ -625,6 +711,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         workspace_id = "22222222-2222-4222-8222-222222222222"
         core = mock.Mock()
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -647,6 +734,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         process.poll.return_value = None
         with tempfile.TemporaryDirectory() as directory:
             host = object.__new__(MODULE.WorkStackDesktopHost)
+            MODULE.initialize_attempt_resources(host)
             host.state_root = Path(directory)
             host.remote_profile = MODULE.RemoteConnectionProfile(
                 "work-linux",
@@ -668,9 +756,9 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             host._start_remote_monitor = mock.Mock()
             host._trace = mock.Mock()
             with (
-                mock.patch.object(MODULE, "find_ssh_executable", return_value="ssh"),
-                mock.patch.object(MODULE, "generate_session_token", return_value=RUNTIME_SESSION_TOKEN),
-                mock.patch.object(MODULE.subprocess, "Popen", return_value=process) as popen,
+                mock.patch.object(RESOURCES, "find_ssh_executable", return_value="ssh"),
+                mock.patch.object(RESOURCES, "generate_session_token", return_value=RUNTIME_SESSION_TOKEN),
+                mock.patch.object(RESOURCES.subprocess, "Popen", return_value=process) as popen,
             ):
                 host._ensure_remote_server()
             if host.remote_ssh_log is not None:
@@ -683,11 +771,12 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         self.assertEqual(host.remote_lifecycle_state, "READY")
         self.assertEqual(host.remote_ready_attempt_id, host.remote_attempt_id)
         host._verify_remote_workspace.assert_called_once_with()
-        host._start_remote_monitor.assert_called_once_with()
+        host._start_remote_monitor.assert_called_once_with(host.remote_attempt_id)
         self.assertNotIn(RUNTIME_SESSION_TOKEN, str(host._trace.call_args_list))
 
     def test_stale_attempt_does_not_mutate_newer_connection_state(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID, 8765, REQUIRED_REMOTE_PYTHON
         )
@@ -704,6 +793,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
 
     def test_monitor_does_not_start_before_remote_ready(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID, 8765, REQUIRED_REMOTE_PYTHON
         )
@@ -722,6 +812,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         log = mock.Mock()
         runner = mock.Mock()
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_ssh_process = process
         host.remote_ssh_log = log
         host.remote_session_token = RUNTIME_SESSION_TOKEN

@@ -15,7 +15,8 @@ progress, weekly summaries, or relationships among those records.
 3. A daily record references a task by stable task ID.
 4. A weekly roll-up aggregates daily records and restores their objective links.
 5. A note may link to any existing graph node.
-6. CLI and web operations call the same service layer and JSON store.
+6. CLI and web operations use the same service contract. A running GUI owner
+   is the single writer; supported CLI commands forward to its HTTP API.
 
 Never infer progress from source code or communication history. Record only
 information explicitly supplied by the user or by a separately approved,
@@ -68,14 +69,23 @@ $WS graph serve --host 127.0.0.1 --port 8765
 Use the explicitly selected data directory with `--data-dir <data-dir>` before
 the command family. Task IDs are local to that workspace.
 
-`backlog show`, `okr rollup`, and `snapshot preview` are local-only reads. They
-may refuse while a running owner holds the workspace; preserve that refusal
-instead of stopping the owner or reading its files directly. For a selected
-Task's bounded context while the owner is running, use the canonical
-`work-stack` Skill linked above. Snapshot preview reviews data locally; it does
-not authorize snapshot export or external publication.
+`backlog list/show`, `okr list/rollup`, `worklog list`, and `weekly` forward to
+the running owner over authenticated loopback HTTP. The CLI discovers the
+owner's actual Linux listen port and supplies the workspace and request
+authentication; keep the GUI running. A failed HTTP read must not fall back to
+direct file access. `snapshot preview` remains local-only and may refuse while
+an owner holds the workspace. Preserve that refusal. For a selected Task's
+bounded context, use the canonical `work-stack` Skill linked above. Snapshot
+preview does not authorize snapshot export or external publication.
 
 ## Agent Rules
+
+- Keep a healthy GUI owner running. Use the supported `ws`/source launcher;
+  do not launch a second `graph serve` for an agent or edit SSOT files through
+  `backlog.py`, `BACKLOG_FILE`, symlink aliases or direct JSON writes.
+- A failed HTTP request does not prove the owner is dead. Preserve the lease
+  and runtime evidence; do not kill another session, delete locks or switch
+  to direct writes. Concurrent mutations must respect revision conflicts.
 
 - Ask for a due date when it materially affects prioritization.
 - Preserve user wording; do not invent completion claims.

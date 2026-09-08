@@ -1,5 +1,6 @@
 import { Dialog } from '../../components/Dialog'
 import { LOCAL_ONLY_LABEL } from './reportDraftMessages'
+import { ReportPromotionPanel } from './ReportPromotionPanel'
 import { DraftBody, DraftFooter, DraftPrompts } from './reportDraftEditorViews'
 import { useReportDraftEditor } from './useReportDraftEditor'
 import type { DailyReportDraftSource } from './reportDraftEditorModel'
@@ -9,10 +10,15 @@ import './dailyReportDraftEditor.css'
 /**
  * Standalone editor for the origin-local edited daily-report draft.
  *
- * It edits ONE buffer on ONE device. It never writes a Work Stack revision, never
- * finalizes or publishes, never generates text and never calls a model. Saving is
- * always an explicit click with a compare-and-set against the revision this editor
- * loaded, so a draft written in another tab is reported rather than overwritten.
+ * It edits ONE buffer on ONE device. It never finalizes or publishes, never
+ * generates text and never calls a model. Saving the local draft is always an
+ * explicit click with a compare-and-set against the revision this editor loaded,
+ * so a draft written in another tab is reported rather than overwritten.
+ *
+ * Saving the same text to the workspace is a SEPARATE explicit action, offered by
+ * `ReportPromotionPanel`. It creates a workspace report and leaves the local
+ * draft, the text on screen and both fallbacks exactly as they are, whether it
+ * succeeds or fails.
  *
  * The rule the whole feature is built around: the reader's text is never lost
  * without them saying so. A failed save keeps the text and names the fallback; a
@@ -51,11 +57,12 @@ export function DailyReportDraftEditor({
       onClose={model.actions.requestClose}
       size="large"
       title="Edit local report draft"
-      description={LOCAL_ONLY_LABEL}
+      description={LOCAL_ONLY_LABEL + ' Saving it to your workspace is a separate action below.'}
       footer={<DraftFooter model={model} />}
     >
       <DraftPrompts model={model} />
       <DraftBody model={model} source={source} />
+      <ReportPromotionPanel model={model} source={source} />
     </Dialog>
   )
 }

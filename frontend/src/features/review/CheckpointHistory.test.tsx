@@ -71,6 +71,22 @@ describe('history display', () => {
     expect(screen.queryByText(CP_B)).toBeNull()
   })
 
+  test('a Task filter hides other tasks without deleting the day-wide audit', () => {
+    const other = entry()
+    renderHistory([
+      entry(),
+      entry({
+        checkpoint_id: CP_B,
+        locator: { ...other.locator, task_id: 'T-0033', ordinal: 1 },
+        recorded: other.recorded
+          ? { ...other.recorded, task_id: 'T-0033', ordinal: 1 }
+          : null,
+      }),
+    ], { taskId: 'T-0033' })
+    expect(screen.getByText(CP_B)).toBeVisible()
+    expect(screen.queryByText(CP_A)).toBeNull()
+  })
+
   test('shows every transition with its reason and explanation', () => {
     renderHistory([
       entry({

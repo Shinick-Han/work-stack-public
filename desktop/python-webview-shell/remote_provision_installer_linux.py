@@ -106,14 +106,17 @@ def _data_object(payload: bytes) -> dict[str, object]:
     return value
 
 
-def _evidence_record(value: object, *, planning: bool) -> bool:
+def _evidence_record(value: object, *, planning: bool = False, reports: bool = False) -> bool:
     if type(value) is not dict or set(value) != EVIDENCE_KEYS:
         return False
     if type(value["id"]) is not str or type(value["origin"]) is not str:
         return False
     digest = value["source_sha256"]
     origin = value["origin"]
-    if planning:
+    if reports:
+        expected = "workstack.reports.v5" if origin == "fresh" else "workstack.reports.v3-to-v5"
+        migrated = {"migrated_v1", "migrated_v2", "migrated_v3"}
+    elif planning:
         expected = "workstack.planning-status.v1"
         migrated = {"migrated_v1", "migrated_v2"}
     elif origin == "fresh":
@@ -136,14 +139,16 @@ def _store_meta_ok(value: object) -> bool:
         return False
     if type(value["version"]) is not int or value["version"] != 2:
         return False
-    if type(value["store_schema_version"]) is not int or value["store_schema_version"] != 3:
-        return False
+    schema = value["store_schema_version"]
     migrations = value["migrations"]
-    if type(migrations) is not dict or set(migrations) != MIGRATION_KEYS:
+    if type(schema) is not int or schema not in {3, 5} or type(migrations) is not dict:
+        return False
+    if set(migrations) != (MIGRATION_KEYS if schema == 3 else MIGRATION_KEYS | {"reports"}):
         return False
     identity = _evidence_record(migrations["identity"], planning=False)
     planning = _evidence_record(migrations["planning_status"], planning=True)
-    return identity and planning
+    reports = schema != 5 or _evidence_record(migrations["reports"], reports=True)
+    return identity and planning and reports
 
 
 def _data_uid(value: object) -> str | None:

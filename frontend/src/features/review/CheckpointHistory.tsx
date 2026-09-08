@@ -64,6 +64,8 @@ export interface CheckpointHistoryProps {
   audit: CheckpointAudit
   /** Display filter only, applied after the whole audit was validated. */
   date: string
+  /** Optional Task presentation filter. Does not delete day-wide records. */
+  taskId?: string | null
   /** One attempt. Ambiguity is surfaced, never retried automatically. */
   onSubmit: (attempt: FrozenAttempt) => void
   /** Present only while an ambiguous attempt is awaiting an explicit retry. */
@@ -254,6 +256,7 @@ function CompensationControl(props: CompensationProps) {
 export function CheckpointHistory({
   audit,
   date,
+  taskId = null,
   onSubmit,
   pendingRetry = null,
   onRetry,
@@ -274,10 +277,15 @@ export function CheckpointHistory({
     setStaged(null)
   }, [owner])
 
-  const dayEntries = audit.entries.filter((entry) => entry.locator.date === date)
+  const dayEntries = audit.entries.filter((entry) => (
+    entry.locator.date === date && (!taskId || entry.locator.task_id === taskId)
+  ))
   // A second action is refused while an ambiguous attempt is unresolved.
   const blocked = pendingRetry !== null
   const draft: SupersedeDraft = { code, setCode, explanation, setExplanation }
+  const empty = taskId
+    ? 'No checkpoints recorded for this task on this day.'
+    : 'No checkpoints recorded for this day.'
 
   return (
     <section className="checkpoint-history" aria-label="Checkpoint history">
@@ -288,7 +296,7 @@ export function CheckpointHistory({
       ) : null}
 
       {dayEntries.length === 0 ? (
-        <p className="checkpoint-history__empty">No checkpoints recorded for this day.</p>
+        <p className="checkpoint-history__empty">{empty}</p>
       ) : (
         <ul className="checkpoint-history__list">
           {dayEntries.map((entry, index) => {

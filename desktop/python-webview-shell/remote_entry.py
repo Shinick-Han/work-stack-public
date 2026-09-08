@@ -5,20 +5,26 @@ home directory and never composes a login-shell script.
 
 Serve creates exclusive owner metadata that stores a token hash, never the
 raw session token. stop-owned terminates only the matching live process.
+
+Probe accepts an optional caller session token.  A caller that proves it holds
+the live owner's token reads its own session instead of being locked out; a
+missing or foreign token stays locked, and neither one can take the receipt.
+
+The receipt itself, its host and boot fencing, the guard that serializes every
+receipt mutation, and the bounded confirmation that stop-owned's own process
+really exited all live in the sibling ``remote_owner`` module and the two
+helpers it owns; this file is the argv, probe and exec boundary.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import json
 import os
-import signal
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Mapping, Protocol, Sequence
+from typing import Mapping, Sequence
 
 # Python isolated mode (-I) omits the script directory from sys.path. Admit
 # only the resolved directory containing this checked-in file so the sibling
@@ -30,165 +36,23 @@ from remote_command_contract import (
     R5_OWNERSHIP_NOT_IMPLEMENTED,
     RemoteCommandError,
     require_session_token,
-    token_hash,
+)
+from remote_owner import (
+    EntryError,
+    OWNER_FILENAME,  # noqa: F401  re-exported: the receipt this entry point writes
+    acquire_owner_receipt,
+    local_path_digest,
+    reclaim_or_refuse_owner,
+    remove_published_owner_receipt_if_still_ours,
+    run_stop_owned,
 )
 
 
 PROBE_KEYS = ("workspace_id", "product_version", "protocol_version")
-OWNER_KEYS = (
-    "workspace_id",
-    "data_dir_digest",
-    "app_dir_digest",
-    "pid",
-    "start_identity",
-    "release_id",
-    "token_hash",
-)
 MAX_METADATA_FILE_BYTES = 1_048_576
 MAX_STDOUT_BYTES = 4096
-MAX_OWNER_BYTES = 4096
-MAX_PROC_STAT_BYTES = 4096
-OWNER_FILENAME = ".workstack-remote-owner.json"
 STORE_META = "store-meta.json"
 WORKSPACE_FILE = "workspace.json"
-SHA256_HEX_LENGTH = 64
-
-
-class EntryError(Exception):
-    def __init__(self, code: str, detail: str = "") -> None:
-        self.code = code
-        super().__init__(code if not detail else f"{code}: {detail}")
-
-
-class ProcessController(Protocol):
-    def current_pid(self) -> int:
-        ...
-
-    def start_identity(self, pid: int) -> str | None:
-        ...
-
-    def is_alive(self, pid: int, start_identity: str) -> bool | None:
-        ...
-
-    def terminate(self, pid: int) -> None:
-        ...
-
-
-class IsolatedProcessController:
-    """Default controller outside Linux /proc. Never kills the current process."""
-
-    def current_pid(self) -> int:
-        return os.getpid()
-
-    def start_identity(self, pid: int) -> str | None:
-        if pid == os.getpid():
-            return "isolated-self"
-        return None
-
-    def is_alive(self, pid: int, start_identity: str) -> bool | None:
-        if pid == os.getpid() and start_identity == "isolated-self":
-            return True
-        return False
-
-    def terminate(self, pid: int) -> None:
-        if pid == os.getpid():
-            raise EntryError("REMOTE_PROTOCOL_INVALID", "refusing to terminate the current process")
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "no process controller terminate on this host")
-
-
-class LinuxProcController:
-    def current_pid(self) -> int:
-        return os.getpid()
-
-    def start_identity(self, pid: int) -> str | None:
-        return _proc_starttime(pid)
-
-    def is_alive(self, pid: int, start_identity: str) -> bool | None:
-        if not start_identity:
-            return None
-        actual = _proc_starttime(pid)
-        if actual is None:
-            if Path(f"/proc/{pid}").exists():
-                return None
-            return False
-        return actual == start_identity
-
-    def terminate(self, pid: int) -> None:
-        if pid <= 0:
-            raise EntryError("REMOTE_PROTOCOL_INVALID", "invalid pid")
-        if pid == os.getpid():
-            raise EntryError("REMOTE_PROTOCOL_INVALID", "refusing to terminate the current process")
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        except PermissionError as error:
-            raise EntryError("REMOTE_PROTOCOL_INVALID", "cannot terminate owned pid") from error
-
-
-_PROCESS_CONTROLLER: ProcessController | None = None
-
-
-def default_process_controller() -> ProcessController:
-    if Path("/proc/self/stat").is_file():
-        return LinuxProcController()
-    return IsolatedProcessController()
-
-
-def get_process_controller() -> ProcessController:
-    if _PROCESS_CONTROLLER is not None:
-        return _PROCESS_CONTROLLER
-    return default_process_controller()
-
-
-def set_process_controller(controller: ProcessController | None) -> ProcessController | None:
-    global _PROCESS_CONTROLLER
-    previous = _PROCESS_CONTROLLER
-    _PROCESS_CONTROLLER = controller
-    return previous
-
-
-def _proc_starttime(pid: int) -> str | None:
-    path = Path("/proc") / str(pid) / "stat"
-    try:
-        with path.open("rb") as stream:
-            payload = stream.read(MAX_PROC_STAT_BYTES)
-    except FileNotFoundError:
-        return None
-    except PermissionError:
-        return None
-    except OSError:
-        return None
-    try:
-        text = payload.decode("ascii")
-    except UnicodeError:
-        return None
-    close = text.rfind(")")
-    if close < 0:
-        return None
-    fields = text[close + 2 :].split()
-    if len(fields) < 20:
-        return None
-    starttime = fields[19]
-    if not starttime.isdigit():
-        return None
-    return starttime
-
-
-def local_path_digest(path: Path) -> str:
-    canonical = str(path)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-@dataclass(frozen=True)
-class OwnerReceipt:
-    workspace_id: str
-    data_dir_digest: str
-    app_dir_digest: str
-    pid: int
-    start_identity: str
-    release_id: str
-    token_hash: str
 
 
 class _BoundedArgumentParser(argparse.ArgumentParser):
@@ -208,6 +72,7 @@ def parse_remote_entry_argv(argv: Sequence[str] | None = None) -> argparse.Names
     probe = sub.add_parser("probe", add_help=False)
     probe.add_argument("--app-dir", required=True)
     probe.add_argument("--data-dir", required=True)
+    probe.add_argument("--session-token", default=None)
     serve = sub.add_parser("serve", add_help=False)
     serve.add_argument("--app-dir", required=True)
     serve.add_argument("--data-dir", required=True)
@@ -220,7 +85,7 @@ def parse_remote_entry_argv(argv: Sequence[str] | None = None) -> argparse.Names
     stop.add_argument("--data-dir", required=True)
     stop.add_argument("--session-token", required=True)
     args = parser.parse_args(list(argv) if argv is not None else None)
-    if args.command in {"serve", "stop-owned"}:
+    if args.command in {"serve", "stop-owned"} or getattr(args, "session_token", None) is not None:
         try:
             args.session_token = require_session_token(args.session_token)
         except RemoteCommandError as error:
@@ -339,175 +204,15 @@ def refuse_extra_stdout(raw: bytes) -> dict[str, object]:
     return value
 
 
-def owner_receipt_path(data_dir: Path) -> Path:
-    return data_dir / OWNER_FILENAME
-
-
-def _sha256_hex(value: object, field: str) -> str:
-    if not isinstance(value, str) or len(value) != SHA256_HEX_LENGTH:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", f"{field} is invalid")
-    if any(character not in "0123456789abcdef" for character in value):
-        raise EntryError("REMOTE_PROTOCOL_INVALID", f"{field} is invalid")
-    return value
-
-
-def parse_owner_receipt(payload: bytes) -> OwnerReceipt:
-    if len(payload) > MAX_OWNER_BYTES:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt too large")
-    try:
-        value = json.loads(payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt is not JSON") from error
-    if not isinstance(value, dict) or set(value) != set(OWNER_KEYS):
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt shape")
-    workspace_id = value["workspace_id"]
-    if not isinstance(workspace_id, str) or not workspace_id or len(workspace_id) > 64:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner workspace identity is invalid")
-    pid = value["pid"]
-    if type(pid) is not int or pid <= 0:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner pid is invalid")
-    start_identity = value["start_identity"]
-    if not isinstance(start_identity, str) or not start_identity or len(start_identity) > 64:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner start identity is invalid")
-    if any(ord(character) < 32 for character in start_identity):
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner start identity is invalid")
-    release_id = value["release_id"]
-    if not isinstance(release_id, str) or not release_id or len(release_id) > 64:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner release identity is invalid")
-    return OwnerReceipt(
-        workspace_id=workspace_id,
-        data_dir_digest=_sha256_hex(value["data_dir_digest"], "data_dir_digest"),
-        app_dir_digest=_sha256_hex(value["app_dir_digest"], "app_dir_digest"),
-        pid=pid,
-        start_identity=start_identity,
-        release_id=release_id,
-        token_hash=_sha256_hex(value["token_hash"], "token_hash"),
-    )
-
-
-def read_owner_receipt(data_dir: Path) -> OwnerReceipt | None:
-    path = owner_receipt_path(data_dir)
-    try:
-        with path.open("rb") as stream:
-            payload = stream.read(MAX_OWNER_BYTES + 1)
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt is unreadable") from error
-    if len(payload) > MAX_OWNER_BYTES:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt too large")
-    return parse_owner_receipt(payload)
-
-
-def encode_owner_receipt(receipt: OwnerReceipt) -> bytes:
-    encoded = json.dumps(
-        {
-            "workspace_id": receipt.workspace_id,
-            "data_dir_digest": receipt.data_dir_digest,
-            "app_dir_digest": receipt.app_dir_digest,
-            "pid": receipt.pid,
-            "start_identity": receipt.start_identity,
-            "release_id": receipt.release_id,
-            "token_hash": receipt.token_hash,
-        },
-        ensure_ascii=True,
-        separators=(",", ":"),
-    ).encode("utf-8") + b"\n"
-    if len(encoded) > MAX_OWNER_BYTES:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt too large")
-    return encoded
-
-
-def unlink_owner_receipt(data_dir: Path) -> None:
-    try:
-        owner_receipt_path(data_dir).unlink()
-    except FileNotFoundError:
-        return
-    except OSError as error:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt could not be removed") from error
-
-
-def write_owner_receipt_exclusive(data_dir: Path, receipt: OwnerReceipt) -> None:
-    path = owner_receipt_path(data_dir)
-    encoded = encode_owner_receipt(receipt)
-    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-    try:
-        fd = os.open(str(path), flags, 0o600)
-    except FileExistsError as error:
-        raise EntryError("REMOTE_LOCK_OWNED", "pid=unknown") from error
-    except OSError as error:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt could not be created") from error
-    try:
-        os.write(fd, encoded)
-    finally:
-        os.close(fd)
-
-
-OwnerState = Literal["absent", "dead", "live", "ambiguous"]
-
-
-def classify_owner(receipt: OwnerReceipt, controller: ProcessController) -> OwnerState:
-    alive = controller.is_alive(receipt.pid, receipt.start_identity)
-    if alive is None:
-        return "ambiguous"
-    if alive is False:
-        return "dead"
-    return "live"
-
-
-def reclaim_or_refuse_owner(
-    data_dir: Path,
-    *,
-    expected_workspace_id: str | None = None,
-    expected_data_digest: str | None = None,
-) -> None:
-    receipt = read_owner_receipt(data_dir)
-    if receipt is None:
-        return
-    if expected_data_digest is not None and receipt.data_dir_digest != expected_data_digest:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt identity mismatch")
-    if expected_workspace_id is not None and receipt.workspace_id != expected_workspace_id:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt identity mismatch")
-    state = classify_owner(receipt, get_process_controller())
-    if state == "ambiguous":
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner liveness is ambiguous")
-    if state == "live":
-        raise EntryError("REMOTE_LOCK_OWNED", f"pid={receipt.pid}")
-    unlink_owner_receipt(data_dir)
-
-
-def run_probe(app_dir: Path, data_dir: Path) -> bytes:
+def run_probe(app_dir: Path, data_dir: Path, session_token: str | None = None) -> bytes:
     payload = build_probe_payload(app_dir, data_dir)
     reclaim_or_refuse_owner(
         data_dir,
         expected_workspace_id=str(payload["workspace_id"]),
         expected_data_digest=local_path_digest(data_dir),
+        caller_token=session_token,
     )
     return encode_probe_stdout(payload)
-
-
-def _build_owner_receipt(
-    *,
-    app_dir: Path,
-    data_dir: Path,
-    workspace_id: str,
-    release_id: str,
-    session_token: str,
-) -> OwnerReceipt:
-    controller = get_process_controller()
-    pid = controller.current_pid()
-    start = controller.start_identity(pid)
-    if not start:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "process start identity is unavailable")
-    return OwnerReceipt(
-        workspace_id=workspace_id,
-        data_dir_digest=local_path_digest(data_dir),
-        app_dir_digest=local_path_digest(app_dir),
-        pid=pid,
-        start_identity=start,
-        release_id=release_id,
-        token_hash=token_hash(session_token),
-    )
 
 
 def run_serve(args: argparse.Namespace) -> None:
@@ -522,19 +227,16 @@ def run_serve(args: argparse.Namespace) -> None:
     if not runner.is_file():
         raise EntryError("REMOTE_APP_MISMATCH", "run_work_stack.py is missing")
     probe_payload = build_probe_payload(app_dir, data_dir)
-    reclaim_or_refuse_owner(
-        data_dir,
-        expected_workspace_id=str(probe_payload["workspace_id"]),
-        expected_data_digest=local_path_digest(data_dir),
-    )
-    receipt = _build_owner_receipt(
+    # Reclaiming a finished owner and publishing this one are one decision, so
+    # they happen inside a single hold of the receipt guard; the guard is
+    # released before the exec below and is never inherited by the server.
+    receipt = acquire_owner_receipt(
         app_dir=app_dir,
         data_dir=data_dir,
         workspace_id=str(probe_payload["workspace_id"]),
         release_id=str(probe_payload["product_version"]),
         session_token=str(args.session_token),
     )
-    write_owner_receipt_exclusive(data_dir, receipt)
     argv = [
         sys.executable,
         str(runner),
@@ -551,29 +253,14 @@ def run_serve(args: argparse.Namespace) -> None:
     ]
     if args.exit_with_parent:
         argv.append("--exit-with-parent")
-    os.execv(sys.executable, argv)
-
-
-def run_stop_owned(data_dir: Path, session_token: str) -> None:
-    expected_hash = token_hash(session_token)
-    expected_data = local_path_digest(data_dir)
-    receipt = read_owner_receipt(data_dir)
-    if receipt is None:
-        return
-    if receipt.data_dir_digest != expected_data:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt identity mismatch")
-    controller = get_process_controller()
-    state = classify_owner(receipt, controller)
-    if state == "ambiguous":
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner liveness is ambiguous")
-    own = receipt.token_hash == expected_hash
-    if state == "dead":
-        unlink_owner_receipt(data_dir)
-        return
-    if not own:
-        raise EntryError("REMOTE_LOCK_OWNED", f"pid={receipt.pid}")
-    controller.terminate(receipt.pid)
-    unlink_owner_receipt(data_dir)
+    try:
+        os.execv(sys.executable, argv)
+    except OSError as error:
+        cleanup = remove_published_owner_receipt_if_still_ours(data_dir, receipt)
+        detail = "could not exec the remote server"
+        if cleanup is not None:
+            detail = f"{detail}; {cleanup}"
+        raise EntryError("REMOTE_PROTOCOL_INVALID", detail) from error
 
 
 def _emit_error(error: EntryError) -> int:
@@ -588,7 +275,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = parse_remote_entry_argv(argv)
         if args.command == "probe":
-            sys.stdout.buffer.write(run_probe(Path(args.app_dir), Path(args.data_dir)))
+            sys.stdout.buffer.write(
+                run_probe(
+                    Path(args.app_dir),
+                    Path(args.data_dir),
+                    getattr(args, "session_token", None),
+                )
+            )
             return 0
         if args.command == "serve":
             run_serve(args)

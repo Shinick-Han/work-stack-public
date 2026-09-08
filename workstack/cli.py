@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 from . import agent_apply_admission, agent_runtime
 from . import checkpoint_state_cli, cli_capabilities, cli_routing, cli_writer
+from .cli_parser_root import parser
 from .server import serve
 from .service import DomainError, WorkStack
 from .maintenance import backup_store, initialize_store, relocate_store, restore_store, verify_backup
@@ -45,229 +46,6 @@ _APPLY_COMMIT_UNKNOWN = (
 
 def emit(value: object) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
-
-
-def _add_context_arguments(agent_context: argparse.ArgumentParser) -> None:
-    """`agent context` flags. `--view` is opt-in: omitting it keeps core-v1,
-    and an unknown value is a parser refusal (exit 2), never a silent default.
-    """
-
-    agent_context.add_argument("--task", required=True)
-    agent_context.add_argument(
-        "--view", choices=("core-v1", "planning-v1"), default="core-v1"
-    )
-
-
-def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="work-stack")
-    root.add_argument("--data-dir", help="override the local JSON data directory")
-    sub = root.add_subparsers(dest="domain", required=True)
-
-    backlog = sub.add_parser("backlog", help="manage projects and tasks")
-    backlog_sub = backlog.add_subparsers(dest="action", required=True)
-    add = backlog_sub.add_parser(
-        "add", description="Create a task; running-owner requests are limited to 1 MiB."
-    )
-    add.add_argument("title")
-    add.add_argument("--detail", default="")
-    add.add_argument("--priority", choices=("P0", "P1", "P2", "P3"), default="P2")
-    add.add_argument("--due")
-    add.add_argument("--tag", action="append", default=[])
-    add.add_argument("--objective", action="append", default=[])
-    add.add_argument("--parent")
-    add.add_argument("--depends-on", action="append", default=[])
-    listing = backlog_sub.add_parser("list")
-    listing.add_argument("--status", default="active")
-    show = backlog_sub.add_parser("show")
-    show.add_argument("id")
-    for action in ("start", "done", "drop", "reopen"):
-        command = backlog_sub.add_parser(action)
-        command.add_argument("id")
-    note = backlog_sub.add_parser("note")
-    note.add_argument("id")
-    note.add_argument("text")
-    subtask = backlog_sub.add_parser("subtask")
-    subtask.add_argument("operation", choices=("add", "start", "done", "drop", "reopen"))
-    subtask.add_argument("task")
-    subtask.add_argument("subtask_or_title")
-    subtask.add_argument("--priority", choices=("P0", "P1", "P2", "P3"), default="P2")
-
-    okr = sub.add_parser("okr", help="manage objectives and key results")
-    okr_sub = okr.add_subparsers(dest="action", required=True)
-    add_objective = okr_sub.add_parser("add-objective")
-    add_objective.add_argument("text")
-    add_objective.add_argument("--quarter")
-    add_key_result = okr_sub.add_parser("add-key-result")
-    add_key_result.add_argument("objective")
-    add_key_result.add_argument("text")
-    add_key_result.add_argument("--target", default="")
-    okr_list = okr_sub.add_parser("list")
-    okr_list.add_argument("--status", default="active")
-    link = okr_sub.add_parser(
-        "link", description="Link an objective and task; running-owner requests are limited to 1 MiB."
-    )
-    link.add_argument("objective")
-    link.add_argument("task")
-    progress = okr_sub.add_parser(
-        "progress", description="Update key result progress; running-owner requests are limited to 1 MiB."
-    )
-    progress.add_argument("objective")
-    progress.add_argument("key_result")
-    progress.add_argument("value", type=int)
-    okr_sub.add_parser("rollup")
-
-    worklog = sub.add_parser("worklog", help="record daily progress")
-    worklog_sub = worklog.add_subparsers(dest="action", required=True)
-    checkin = worklog_sub.add_parser(
-        "checkin", description="Record checkin; running-owner requests are limited to 1 MiB."
-    )
-    checkin.add_argument("--time")
-    checkin.add_argument("--date")
-    worklog_add = worklog_sub.add_parser(
-        "add", description="Append worklog evidence; running-owner requests are limited to 1 MiB."
-    )
-    worklog_add.add_argument("task")
-    worklog_add.add_argument("--done", action="append", default=[])
-    worklog_add.add_argument("--next", dest="next_items", action="append", default=[])
-    worklog_add.add_argument("--blocker", action="append", default=[])
-    worklog_add.add_argument("--date")
-    checkpoint_state = worklog_sub.add_parser("checkpoint-state")
-    checkpoint_state.add_argument("checkpoint")
-    checkpoint_state.add_argument("--stdin", action="store_true", required=True)
-    checkpoint_state.add_argument("--idempotency-key", required=True)
-    worklog_list = worklog_sub.add_parser("list")
-    worklog_list.add_argument("--date")
-
-    weekly = sub.add_parser("weekly", help="aggregate daily records")
-    weekly.add_argument("--end")
-    weekly.add_argument("--days", type=int, default=7)
-
-    notes = sub.add_parser("note", help="add a graph note")
-    notes.add_argument("text")
-    notes.add_argument("--link", action="append", default=[])
-
-    capture = sub.add_parser("capture", help="send sanitized Capture Packet v1 data")
-    capture_sub = capture.add_subparsers(dest="action", required=True)
-    ingest = capture_sub.add_parser("ingest")
-    ingest.add_argument("--stdin", action="store_true", required=True)
-    ingest.add_argument("--idempotency-key")
-
-    agent = sub.add_parser(
-        "agent",
-        help="apply one revision-guarded agent update without editing Store files",
-    )
-    agent.add_argument("--workspace-uid")
-    agent_sub = agent.add_subparsers(dest="action", required=True)
-    agent_apply = agent_sub.add_parser("apply")
-    agent_apply.add_argument("--stdin", action="store_true", required=True)
-    agent_apply.add_argument("--intent-id", required=True)
-    agent_sub.add_parser("status")
-    agent_context = agent_sub.add_parser("context")
-    _add_context_arguments(agent_context)
-    agent_checkpoint = agent_sub.add_parser("checkpoint")
-    agent_checkpoint.add_argument("--intent-id", required=True)
-    agent_checkpoint.add_argument("--stdin", action="store_true", required=True)
-
-    snapshot = sub.add_parser("snapshot", help="review and export one planning snapshot")
-    snapshot_sub = snapshot.add_subparsers(dest="action", required=True)
-    snapshot_preview = snapshot_sub.add_parser("preview")
-    snapshot_preview.add_argument("task")
-    snapshot_export = snapshot_sub.add_parser("export")
-    snapshot_export.add_argument("task")
-    snapshot_export.add_argument("--out", required=True)
-    snapshot_export.add_argument("--expected-revision", required=True, type=int)
-    snapshot_export.add_argument("--expected-digest", required=True)
-    snapshot_export.add_argument("--confirm-disclosure", action="store_true")
-
-    storage = sub.add_parser("storage", help="inspect a local SSOT without modifying it")
-    storage_sub = storage.add_subparsers(dest="action", required=True)
-    storage_validate = storage_sub.add_parser("validate")
-    storage_validate.add_argument("path", help="candidate v3 or v4 SSOT directory")
-    migration = storage_sub.add_parser("migration", help="plan or verify an explicit v3-to-v4 copy")
-    migration_sub = migration.add_subparsers(dest="migration_action", required=True)
-    migration_plan = migration_sub.add_parser("plan")
-    migration_plan.add_argument("source")
-    migration_plan.add_argument("--candidate")
-    migration_plan.add_argument("--backup")
-    migration_preview = migration_sub.add_parser("preview")
-    migration_preview.add_argument("source")
-    migration_preview.add_argument("--candidate-created-at", required=True)
-    migration_preview.add_argument("--candidate")
-    migration_preview.add_argument("--backup")
-    migration_execute = migration_sub.add_parser("execute")
-    migration_execute.add_argument("source")
-    migration_execute.add_argument("--candidate-created-at", required=True)
-    migration_execute.add_argument("--candidate")
-    migration_execute.add_argument("--backup")
-    migration_execute.add_argument("--expected-source-digest", required=True)
-    migration_execute.add_argument("--expected-conversion-digest", required=True)
-    migration_verify = migration_sub.add_parser("verify")
-    migration_verify.add_argument("--source", required=True)
-    migration_verify.add_argument("--candidate", required=True)
-    migration_verify.add_argument("--backup", required=True)
-    migration_verify.add_argument("--receipt", required=True)
-    migration_receipt = migration_sub.add_parser("receipt")
-    migration_receipt.add_argument("path")
-    migration_resume = migration_sub.add_parser("resume")
-    migration_resume.add_argument("source")
-    migration_resume.add_argument("--candidate-created-at", required=True)
-    migration_resume.add_argument("--candidate", required=True)
-    migration_resume.add_argument("--backup", required=True)
-    migration_resume.add_argument("--expected-source-digest", required=True)
-    migration_resume.add_argument("--expected-conversion-digest", required=True)
-    v4_backup = storage_sub.add_parser(
-        "v4-backup", help="explicitly create, verify, or restore an inactive v4 authority"
-    )
-    v4_backup_sub = v4_backup.add_subparsers(dest="v4_backup_action", required=True)
-    v4_backup_create = v4_backup_sub.add_parser("create")
-    v4_backup_create.add_argument("source")
-    v4_backup_create.add_argument("--out", required=True)
-    v4_backup_verify = v4_backup_sub.add_parser("verify")
-    v4_backup_verify.add_argument("archive")
-    v4_backup_restore = v4_backup_sub.add_parser("restore")
-    v4_backup_restore.add_argument("archive")
-    v4_backup_restore.add_argument("--to", required=True)
-
-    maintenance = sub.add_parser("maintenance", help="verify, back up, restore, relocate, or initialize local data")
-    maintenance_sub = maintenance.add_subparsers(dest="action", required=True)
-    backup = maintenance_sub.add_parser("backup")
-    backup.add_argument("--out", required=True, help="backup directory")
-    verify = maintenance_sub.add_parser("verify")
-    verify.add_argument("archive")
-    restore = maintenance_sub.add_parser("restore")
-    restore.add_argument("archive")
-    restore.add_argument("--to", required=True, help="destination data directory")
-    restore.add_argument("--replace", action="store_true")
-    restore.add_argument("--safety-backups", help="required when replacing an existing store")
-    relocate = maintenance_sub.add_parser("relocate")
-    relocate.add_argument("--to", required=True, help="empty destination data directory")
-    maintenance_sub.add_parser(
-        "initialize", help="create a new empty workspace in an absent or empty data directory"
-    )
-
-    graph = sub.add_parser("graph", help="export or serve the web dashboard")
-    graph_sub = graph.add_subparsers(dest="action", required=True)
-    export = graph_sub.add_parser("export")
-    export.add_argument("--out", default="graph-data.json")
-    server = graph_sub.add_parser("serve")
-    server.add_argument("--host", default="127.0.0.1")
-    server.add_argument("--port", type=int, default=8765)
-    server.add_argument(
-        "--public-port",
-        type=int,
-        help="additional loopback Host port accepted behind a local SSH forward",
-    )
-    server.add_argument(
-        "--exit-with-parent",
-        action="store_true",
-        help="on Linux, stop the server when its SSH session parent exits",
-    )
-    server.add_argument(
-        "--seed-demo",
-        action="store_true",
-        help="copy tracked demo fixtures only when runtime data is empty",
-    )
-    return root
 
 
 def forward_checkpoint_state(
@@ -931,6 +709,14 @@ def _owner_forwarded_write(arguments: argparse.Namespace):
     )
 
 
+def _owner_forwarded_read(arguments: argparse.Namespace):
+    return cli_routing.owner_reader(
+        arguments,
+        coordinates_reader=_server_coordinates,
+        request_json=_request_json,
+    )
+
+
 def _dispatch_path_tool(arguments: argparse.Namespace) -> int:
     if arguments.domain == "storage":
         return _run_storage(arguments)
@@ -996,6 +782,7 @@ def _dispatch_parsed(
             capability,
             run_local=_execute_stack,
             owner_writer_for=_owner_forwarded_write,
+            owner_reader_for=_owner_forwarded_read,
             emit=emit,
         )
     raise OSError("unsupported Work Stack command")

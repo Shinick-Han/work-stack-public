@@ -1,0 +1,114 @@
+.saved-reports {
+  display: grid;
+  gap: 12px;
+  max-width: min(52rem, 100%);
+  min-width: 0;
+  padding: 13px 15px;
+  background: var(--ws-surface-base);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 9px;
+  color: var(--ws-text-primary);
+}
+
+.saved-reports__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.saved-reports__header h2 {
+  margin: 0;
+  font-size: var(--ws-type-section-title, 1.05rem);
+}
+
+.saved-reports__header p,
+.saved-reports__meta,
+.saved-reports__status,
+.saved-reports__empty,
+.saved-reports__history pre,
+.saved-reports__body {
+  margin: 0;
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-body, 0.95rem);
+}
+
+.saved-reports__filters,
+.saved-reports__actions,
+.saved-reports__list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.saved-reports__list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.saved-reports__item {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  background: var(--ws-control-bg);
+  border: 1px solid var(--ws-control-border);
+  border-radius: 8px;
+  color: var(--ws-text-primary);
+}
+
+.saved-reports__item:hover,
+.saved-reports__item.is-selected {
+  background: var(--ws-surface-hover);
+  border-color: var(--ws-border-accent);
+}
+
+.saved-reports__item strong {
+  font-size: var(--ws-type-item-title, 11px);
+}
+
+.saved-reports__item small,
+.saved-reports__version {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-meta, 9px);
+}
+
+.saved-reports__status[data-tone='error'] {
+  color: var(--ws-status-danger-text);
+}
+
+.saved-reports__detail,
+.saved-reports__history {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.saved-reports__body,
+.saved-reports__history pre {
+  max-height: 24rem;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--ws-surface-sunken);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+
+.saved-reports__history h3,
+.saved-reports__detail h3 {
+  margin: 0;
+  font-size: var(--ws-type-panel-heading, 13px);
+}
+
+@media (max-width: 720px) {
+  .saved-reports {
+    max-width: 100%;
+    padding: 12px;
+  }
+}

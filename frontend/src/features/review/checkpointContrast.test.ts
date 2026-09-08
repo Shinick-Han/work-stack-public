@@ -148,12 +148,19 @@ describe('checkpoint history stylesheet contrast', () => {
       return (rule as CssRule).declarations
     }
     // The Task heading still leads on size and weight...
-    expect(declarationsFor('.checkpoint-entry__task strong')).toContain('font-size: 11px')
+    expect(declarationsFor('.checkpoint-entry__task strong')).toContain('font-size: var(--ws-type-reading-body)')
     expect(declarationsFor('.checkpoint-entry__task strong')).toContain('font-weight: 650')
+    expect(declarationsFor('.checkpoint-history h3')).toContain('font-size: var(--ws-type-reading-body)')
+    expect(declarationsFor('.checkpoint-history h3')).toContain('font-weight: 650')
     // ...while provenance stays smaller and set apart by its own rule.
     const identifiers = declarationsFor('.checkpoint-entry__identifiers')
-    expect(identifiers).toContain('font-size: 9px')
+    expect(identifiers).toContain('font-size: var(--ws-type-reading-meta)')
     expect(identifiers).toContain('border-top:')
+    // Confirm-row inputs and the sibling action share one control height.
+    expect(declarationsFor('.checkpoint-entry__confirm input, .checkpoint-entry__confirm select'))
+      .toContain('min-height: var(--ws-control-min-height)')
+    expect(declarationsFor('.checkpoint-entry__confirm .button'))
+      .toContain('min-height: var(--ws-control-min-height)')
     // An absent list is marked as absent by style, not by being hard to read.
     expect(declarationsFor('.checkpoint-facts__none')).toContain('font-style: italic')
   })

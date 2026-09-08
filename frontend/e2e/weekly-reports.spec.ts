@@ -51,7 +51,7 @@ function weeklyReport(page: Page) {
 
 async function gotoReview(page: Page) {
   await page.goto('/?surface=review')
-  await expect(page.getByRole('heading', { name: 'Turn execution into evidence.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Daily Review', exact: true })).toBeVisible()
   await expect(weeklyReport(page).getByRole('button', { name: 'Generate weekly report', exact: true })).toBeVisible()
 }
 

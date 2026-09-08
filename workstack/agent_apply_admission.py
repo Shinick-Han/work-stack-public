@@ -18,6 +18,7 @@ AGENT_APPLY_LIMIT = 32 * 1024
 AGENT_TASK_FIELDS = frozenset({
     "title", "detail", "status", "priority", "due", "scheduled",
     "estimate_minutes", "tags", "objective_ids", "parent_id", "dependencies",
+    "key_result_refs",
 })
 INTENT_PATTERN = re.compile(r"[A-Za-z0-9._:-]{8,128}")
 ApplyFn = Callable[..., int]

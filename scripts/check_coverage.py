@@ -48,6 +48,39 @@ def _check_metrics(label: str, actual: dict[str, float], floors: dict[str, Any],
             errors.append(f"{label} {metric} coverage {value:.2f}% is below {floor:.2f}%")
 
 
+def _check_python_groups(files: dict[str, Any], groups: dict[str, Any], errors: list[str]) -> None:
+    """Keep an extracted module family subject to its original weighted floor."""
+
+    for name, policy in groups.items():
+        paths = policy["files"]
+        if not paths or len(paths) != len(set(paths)):
+            errors.append(f"Python critical group {name} has empty or duplicate members")
+            continue
+        missing = [path for path in paths if path not in files]
+        if missing:
+            errors.append(f"Python critical group {name} missing coverage: {', '.join(missing)}")
+            continue
+        summaries = [files[path]["summary"] for path in paths]
+        covered_lines = sum(item["covered_lines"] for item in summaries)
+        statements = sum(item["num_statements"] for item in summaries)
+        covered_branches = sum(item["covered_branches"] for item in summaries)
+        branches = sum(item["num_branches"] for item in summaries)
+        # Preserve the historical "lines" floor's metric: coverage.py's
+        # percent_covered combines statements and branches in branch mode.
+        total = statements + branches
+        metrics = {
+            "lines": 100.0 * (covered_lines + covered_branches) / total if total else 100.0,
+            "branches": 100.0 * covered_branches / branches if branches else 100.0,
+        }
+        _check_metrics(f"Python critical group {name}", metrics, policy["floors"], errors)
+
+
+def _python_critical_paths(policy: dict[str, Any]) -> set[str]:
+    return set(policy.get("critical", {})) | {
+        path for group in policy.get("critical_groups", {}).values() for path in group["files"]
+    }
+
+
 def evaluate(
     python_report: dict[str, Any],
     frontend_report: dict[str, Any],
@@ -63,7 +96,8 @@ def evaluate(
     python_files = {
         path.replace("\\", "/"): value for path, value in python_report.get("files", {}).items()
     }
-    python_critical = set(python_policy.get("critical", {}))
+    _check_python_groups(python_files, python_policy.get("critical_groups", {}), errors)
+    python_critical = _python_critical_paths(python_policy)
     for path, policy in python_policy.get("critical", {}).items():
         item = python_files.get(path)
         if item is None:
@@ -137,7 +171,7 @@ def evaluate_changed(
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
-    critical = set(floors.get("python", {}).get("critical", {})) | {
+    critical = _python_critical_paths(floors.get("python", {})) | {
         f"frontend/{path}" for path in floors.get("frontend", {}).get("critical", {})
     }
 

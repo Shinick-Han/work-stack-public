@@ -25,6 +25,23 @@ const state = (patch: Partial<AppUrlState> = {}): AppUrlState => ({
 })
 
 describe('URL state canonicalization', () => {
+  test('keeps the explicit Review target separate from an open Task drawer', () => {
+    const selected = readUrlState('?surface=review&reviewTask=T-0033&task=T-0027')
+    expect(selected).toMatchObject({ surface: 'review', reviewTaskId: 'T-0033', taskId: 'T-0027' })
+    writeUrlState(selected, true)
+    expect(readUrlState()).toMatchObject({ reviewTaskId: 'T-0033', taskId: 'T-0027' })
+  })
+
+  test('does not infer a Review target from a legacy drawer URL', () => {
+    expect(readUrlState('?surface=review&task=T-0033').reviewTaskId).toBeUndefined()
+    expect(readUrlState('?surface=review&reviewTask=').reviewTaskId).toBeUndefined()
+  })
+
+  test('clears a Review target when leaving Review so unrelated entry cannot reuse it silently', () => {
+    const normalized = writeUrlState(state({ surface: 'workspace', reviewTaskId: 'T-0033' }), true)
+    expect(normalized.reviewTaskId).toBeUndefined()
+    expect(new URLSearchParams(window.location.search).has('reviewTask')).toBe(false)
+  })
   test('preserves a Focus deep link and removes an incompatible capture drawer', () => {
     expect(readUrlState(
       '?surface=focus&task=T-0001&capture=C-0001&view=board&q=release&status=started&priority=P1&objective=O-1',

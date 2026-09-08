@@ -48,6 +48,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
             "remote_protocol_version": 1,
         }}).encode("utf-8")
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -114,6 +115,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
             root = Path(directory)
             write_remote_profile(root)
             host = object.__new__(MODULE.WorkStackDesktopHost)
+            MODULE.initialize_attempt_resources(host)
             host.state_root = root
             host.active_connection_draft = MODULE.load_connection_draft(root)
             host.remote_profile = MODULE.connection_profile_from_draft(host.active_connection_draft)
@@ -152,6 +154,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
             root = Path(directory)
             write_remote_profile(root)
             first = object.__new__(MODULE.WorkStackDesktopHost)
+            MODULE.initialize_attempt_resources(first)
             first.state_root = root
             first.active_connection_draft = MODULE.load_connection_draft(root)
             first.remote_profile = MODULE.connection_profile_from_draft(first.active_connection_draft)
@@ -198,6 +201,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
 
     def test_remote_monitor_is_started_once_and_stopped_explicitly(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -223,6 +227,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
 
     def test_reconnect_replaces_only_the_owned_tunnel(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -237,6 +242,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
 
     def test_reconnect_failure_is_bounded_and_does_not_raise_to_monitor(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -250,6 +256,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
 
     def test_shutdown_request_prevents_a_late_tunnel_resurrection(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -264,6 +271,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
 
     def test_manual_reconnect_publishes_progress_then_ready_and_reloads(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -282,6 +290,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
 
     def test_manual_reconnect_failure_ends_disconnected_without_reload(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -300,6 +309,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
 
     def test_manual_reconnect_cannot_bypass_authority_recovery_block(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -320,6 +330,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
 
     def test_waiting_manual_reconnect_reuses_a_connection_restored_by_monitor(self) -> None:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_reconnect_lock = MODULE.threading.Lock()
         host._is_remote_process_alive = mock.Mock(return_value=True)
         host._is_remote_session_healthy = mock.Mock(return_value=True)
@@ -333,6 +344,7 @@ class DesktopRemoteResilienceIntegrationTest(unittest.TestCase):
 class DesktopRemoteStartupAttemptTest(unittest.TestCase):
     def _host_with_startup(self) -> object:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -423,6 +435,7 @@ class DesktopRemoteStartupAttemptTest(unittest.TestCase):
 class DesktopRemoteReplaceShutdownSeparationTest(unittest.TestCase):
     def _host(self) -> object:
         host = object.__new__(MODULE.WorkStackDesktopHost)
+        MODULE.initialize_attempt_resources(host)
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -463,6 +476,9 @@ class DesktopRemoteReplaceShutdownSeparationTest(unittest.TestCase):
 
     def test_form_closing_sets_shutdown_before_monitor_teardown(self) -> None:
         host = self._host()
+        # Closing retires any startup recovery page, so the eager lifetime the
+        # constructor builds is stated here instead of being invented lazily.
+        host.startup_recovery = MODULE.StartupRecoveryLifetime()
         host.connection_registry_worker = mock.Mock()
         host.server_started_by_host = False
         host.server_stop_thread = None
@@ -481,6 +497,118 @@ class DesktopRemoteReplaceShutdownSeparationTest(unittest.TestCase):
         self.assertEqual(seen, [True])
         self.assertTrue(host.remote_shutdown_requested.is_set())
         host.connection_registry_worker.stop.assert_called_once_with(timeout=0)
+
+    def test_normal_close_stops_the_owned_token_before_the_tunnel(self) -> None:
+        host = self._host()
+        order: list[str] = []
+        host._request_remote_stop_owned = mock.Mock(
+            side_effect=lambda profile, token: order.append(f"stop-owned:{token}")
+        )
+        host.remote_ssh_process.terminate.side_effect = lambda: order.append("ssh-terminate")
+
+        host._stop_owned_remote_connection()
+
+        self.assertEqual(order, ["stop-owned:owned-token", "ssh-terminate"])
+        self.assertIsNone(host.remote_session_token)
+        self.assertIsNone(host.remote_ssh_process)
+        self.assertEqual(host.remote_startup.state, MODULE.RemoteStartupState.STOPPED)
+        self.assertEqual(host.remote_lifecycle_state, "STOPPED")
+
+    def test_close_after_an_abrupt_tunnel_loss_still_stops_the_remote_owner(self) -> None:
+        host = self._host()
+        host.remote_ssh_process = None
+        host.server_started_by_host = False
+        host.server_pid = None
+        host.server_process = None
+
+        host._stop_owned_server()
+
+        host._request_remote_stop_owned.assert_called_once()
+        self.assertEqual(host._request_remote_stop_owned.call_args.args[1], "owned-token")
+        self.assertIsNone(host.remote_session_token)
+
+    def test_form_closing_schedules_the_stop_when_only_the_token_is_held(self) -> None:
+        host = self._host()
+        host.startup_recovery = MODULE.StartupRecoveryLifetime()
+        host.connection_registry_worker = mock.Mock()
+        host.server_started_by_host = False
+        host.server_stop_thread = None
+        host.remote_ssh_process = None
+        host.remote_monitor = mock.Mock()
+
+        with mock.patch.object(MODULE.threading, "Thread") as thread_type:
+            host._on_form_closing(None, None)
+
+        thread_type.assert_called_once_with(
+            target=host._stop_owned_server_after_window, daemon=False
+        )
+        thread_type.return_value.start.assert_called_once_with()
+
+    def _waiting_host(self) -> tuple[object, object]:
+        host = self._host()
+        host.state_root = Path(".")
+        host._is_ready = mock.Mock(return_value=False)
+        attempt = host._begin_remote_attempt()
+        host.remote_session_token = "owned-token"
+        self.assertTrue(host._advance_remote_startup(attempt, "STARTING_TUNNEL"))
+        self.assertTrue(host._advance_remote_startup(attempt, "WAITING_REMOTE_READY"))
+        resources = MODULE.RemoteAttemptResources(
+            generation=int(attempt),
+            profile=host.remote_profile,
+            token="owned-token",
+            process=host.remote_ssh_process,
+            log=host.remote_ssh_log,
+        )
+        self.assertTrue(host._commit_remote_attempt_resources(resources))
+        return host, resources
+
+    def test_a_tunnel_that_exits_early_releases_the_remote_owner(self) -> None:
+        host, resources = self._waiting_host()
+        host.remote_ssh_process.poll.return_value = 255
+        host.remote_ssh_process.returncode = 255
+
+        with self.assertRaisesRegex(RuntimeError, "exited before becoming ready"):
+            host._wait_for_remote_ready(resources, Path("remote-ssh.log"))
+
+        host._request_remote_stop_owned.assert_called_once()
+        self.assertEqual(host._request_remote_stop_owned.call_args.args[1], "owned-token")
+        self.assertIsNone(host.remote_session_token)
+        self.assertIsNone(host.remote_ssh_process)
+        self.assertEqual(host.remote_startup.state, MODULE.RemoteStartupState.FAILED)
+        self.assertEqual(host.remote_lifecycle_state, "FAILED")
+
+    def test_a_rejected_remote_authority_releases_the_remote_owner(self) -> None:
+        host, resources = self._waiting_host()
+        host._is_ready = mock.Mock(return_value=True)
+        host._verify_remote_workspace = mock.Mock(
+            side_effect=MODULE.RemoteAuthorityMismatch("workspace identity")
+        )
+        tunnel = resources.process
+
+        with self.assertRaisesRegex(RuntimeError, "workspace identity"):
+            host._wait_for_remote_ready(resources, Path("remote-ssh.log"))
+
+        host._request_remote_stop_owned.assert_called_once()
+        self.assertEqual(host._request_remote_stop_owned.call_args.args[1], "owned-token")
+        self.assertIsNone(host.remote_session_token)
+        tunnel.terminate.assert_called_once_with()
+        self.assertIsNone(host.remote_ssh_process)
+        self.assertEqual(host.remote_startup.state, MODULE.RemoteStartupState.FAILED)
+        self.assertEqual(host.remote_lifecycle_state, "FAILED")
+
+    def test_a_superseded_start_releases_only_its_own_token(self) -> None:
+        host = self._host()
+        superseded = host.remote_ssh_process
+        host.remote_session_token = "newer-token"
+        host.remote_ssh_process = mock.Mock()
+        host.remote_ssh_process.poll.return_value = None
+
+        host._release_superseded_remote_start(host.remote_profile, "older-token", superseded)
+
+        self.assertEqual(host._request_remote_stop_owned.call_args.args[1], "older-token")
+        superseded.terminate.assert_called_once_with()
+        self.assertEqual(host.remote_session_token, "newer-token")
+        self.assertIsNotNone(host.remote_ssh_process)
 
     def test_preexisting_shutdown_prevents_a_new_attempt(self) -> None:
         host = self._host()

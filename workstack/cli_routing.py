@@ -18,6 +18,7 @@ from typing import Callable
 
 from workstack import cli_capabilities as caps
 from workstack import cli_reads, cli_writer
+from workstack.cli_read_transport import forward_read
 from workstack.owner_authority import (
     COMMIT_UNKNOWN,
     EXCLUSIVE_LOCAL_HELD,
@@ -351,19 +352,47 @@ def owner_writer(
     return factory(arguments, coordinates_reader, request_json)
 
 
+def owner_reader(
+    arguments: argparse.Namespace,
+    *,
+    coordinates_reader: CoordinatesReader,
+    request_json: RequestJson,
+) -> Callable[[Store, str], object] | None:
+    """Return the owner-route reader for an admitted parity GET, or None."""
+
+    key = caps.command_key_from_parsed(arguments)
+    if key not in cli_reads.OWNER_HTTP_READ_PARITY:
+        return None
+
+    def read(store: Store, owner_state: str) -> object:
+        return forward_read(
+            store,
+            owner_state,
+            key,
+            arguments,
+            coordinates_reader=coordinates_reader,
+            request_json=request_json,
+        )
+
+    return read
+
+
 def _dispatch_owner_route(
     arguments: argparse.Namespace,
     capability: caps.CliCapability,
     store: Store,
     owner_writer_for: Callable[[argparse.Namespace], OwnerWriter | None],
     emit: Emitter,
+    owner_reader_for: Callable[[argparse.Namespace], Callable[[Store, str], object] | None] | None = None,
 ) -> int:
     writer = owner_writer_for(arguments)
     if writer is not None:
         emit(writer(store, cli_writer.owner_metadata_state(store)))
         return 0
-    if cli_reads.owner_read_is_supported(capability):
-        raise cli_reads.owner_read_refusal()
+    reader = owner_reader_for(arguments) if owner_reader_for is not None else None
+    if reader is not None and cli_reads.owner_read_is_supported(capability):
+        emit(reader(store, cli_writer.owner_metadata_state(store)))
+        return 0
     raise cli_reads.owner_read_refusal()
 
 
@@ -374,6 +403,7 @@ def dispatch_ordinary(
     run_local: LocalRunner,
     owner_writer_for: Callable[[argparse.Namespace], OwnerWriter | None],
     emit: Emitter,
+    owner_reader_for: Callable[[argparse.Namespace], Callable[[Store, str], object] | None] | None = None,
 ) -> int:
     """Acquire once, run locally or forward, and release the held lease."""
 
@@ -390,6 +420,11 @@ def dispatch_ordinary(
         if authority.store is None:
             raise refuse_authority_state(OWNER_ROUTE_REQUIRED)
         return _dispatch_owner_route(
-            arguments, capability, authority.store, owner_writer_for, emit
+            arguments,
+            capability,
+            authority.store,
+            owner_writer_for,
+            emit,
+            owner_reader_for,
         )
     raise _refuse_dispatch(capability, authority.state)

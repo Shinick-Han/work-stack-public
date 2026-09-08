@@ -36,6 +36,18 @@ Success exits 0 and emits one JSON object:
 }
 ```
 
+The example above shows the local transport. A healthy GUI-owned workspace
+instead reports `meta.transport: running-server`,
+`running_server_available: true`, and `exclusive_local_available: false`.
+Continue when exit 0, matching workspace identity, supported capability and
+`ready: true` are all present. Do not require both transports to be available
+or close the GUI to make the local flag true.
+
+On Linux with a remote GUI owner, the CLI uses the owner's Linux loopback
+address from runtime metadata. The Windows tunnel port is not the Linux
+client port. The supported CLI supplies session, Origin and CSRF information;
+do not copy credentials into raw curl requests or disable these checks.
+
 If status exits 1, inspect `error.code` and stop. Do not try to open the Store
 or switch authority paths. A normal refusal omits mutation metadata:
 

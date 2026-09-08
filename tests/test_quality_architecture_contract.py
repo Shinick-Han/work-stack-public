@@ -122,7 +122,14 @@ class Classification(unittest.TestCase):
             for item in DESKTOP_DIRECTORY.rglob("*.py")
             if item.is_file()
         )
-        self.assertEqual(len(desktop), 29, desktop)
+        declared = [
+            str(pattern)
+            for rule in PYTHON_LAYERS
+            for pattern in rule.get("globs", [])
+            if str(pattern).startswith("desktop/python-webview-shell/")
+        ]
+        self.assertIn("desktop/python-webview-shell/workstack_desktop.py", desktop)
+        self.assertCountEqual(desktop, declared)
         for path in desktop:
             with self.subTest(path=path):
                 layer, errors = quality_gate._layer_for(path, PYTHON_LAYERS)
@@ -142,7 +149,16 @@ class Classification(unittest.TestCase):
         others = {path for path in desktop} - {
             "desktop/python-webview-shell/local_workspace_rebind.py",
             "desktop/python-webview-shell/profile_inspection.py",
+            "desktop/python-webview-shell/knowledge_registry.py",
+            "desktop/python-webview-shell/knowledge_registry_paths.py",
+            "desktop/python-webview-shell/knowledge_search.py",
+            "desktop/python-webview-shell/knowledge_host.py",
+            "desktop/python-webview-shell/knowledge_host_search.py",
         }
+        for filename in ("knowledge_registry.py", "knowledge_registry_paths.py", "knowledge_search.py"):
+            self.assertEqual(layer_of(f"desktop/python-webview-shell/{filename}"), "py_knowledge_registry")
+        for filename in ("knowledge_host.py", "knowledge_host_search.py"):
+            self.assertEqual(layer_of(f"desktop/python-webview-shell/{filename}"), "py_knowledge_host")
         for path in sorted(others):
             with self.subTest(path=path):
                 self.assertEqual(layer_of(path), "py_desktop")
@@ -498,7 +514,11 @@ class ConfigurationShape(unittest.TestCase):
     def test_the_desktop_layer_enumerates_exact_paths(self) -> None:
         desktop = next(rule for rule in PYTHON_LAYERS if rule["name"] == "py_desktop")
         globs = [str(item) for item in desktop["globs"]]
-        self.assertEqual(len(globs), 27)
+        self.assertEqual(len(globs), len(set(globs)), "duplicate desktop declarations")
+        for path in globs:
+            with self.subTest(path=path):
+                self.assertFalse(any(character in path for character in "*?[]"))
+                self.assertTrue((ROOT / path).is_file(), f"missing declared source: {path}")
         self.assertIn("desktop/python-webview-shell/remote_provision_plan.py", globs)
         self.assertIn("desktop/python-webview-shell/remote_provision_probe.py", globs)
         self.assertNotIn("desktop/python-webview-shell/**", globs)
@@ -891,10 +911,10 @@ def _fixture_config(path: str) -> "dict[str, Any]":
 
 
 # config_digest is excluded so a truthful configuration admission can land.
-# All other fields are pinned at the accepted local Wave 2 baseline. Explicit
-# helper/tooling admission changes populations and measurement metadata; measured
-# debt only decreases. The digest still excludes only config_digest.
-PRESERVED_BASELINE_DIGEST = "d6d897844459b436804fb6f404d62d0cd323bf12b633391b3fec3ef4a9b4107f"
+# Re-pinned after the reviewed 7f8dda0 decrease-only Wave 3 ratchet:
+# zero new/raised debt entries, 37 retired and 11 lowered against c7a7234.
+# Re-measured populations and metadata are pinned; only config_digest is excluded.
+PRESERVED_BASELINE_DIGEST = "4e7048559dcfcba29a8f360a911f581c90ecd911337881a6e9d5e59ce82df8ea"
 
 
 def baseline_preservation_problems(baseline: dict[str, Any]) -> list[str]:
@@ -1044,11 +1064,17 @@ REQUIRED_CONSUMERS = {
     "workstack/cli.py": {"workstack/checkpoint_state_cli.py", "workstack/cli_writer.py"},
     "workstack/checkpoint_state_cli.py": {"workstack/checkpoint_transition.py", "workstack/cli_writer.py"},
     "workstack/service.py": {
-        "workstack/checkpoint_change.py", "workstack/checkpoint_projection.py",
-        "workstack/checkpoint_transition.py", "workstack/context_projection.py",
-        "workstack/outcome_write_invariant.py",
+        "workstack/service_review.py", "workstack/service_checkpoints.py",
+        "workstack/service_task_reads.py", "workstack/service_task_rules.py",
     },
-    "workstack/server.py": {"workstack/sse_events.py"},
+    "workstack/service_review.py": {"workstack/checkpoint_change.py"},
+    "workstack/service_checkpoints.py": {
+        "workstack/checkpoint_projection.py", "workstack/checkpoint_transition.py",
+    },
+    "workstack/service_task_reads.py": {"workstack/context_projection.py"},
+    "workstack/service_task_rules.py": {"workstack/outcome_write_invariant.py"},
+    "workstack/server.py": {"workstack/server_transport.py"},
+    "workstack/server_transport.py": {"workstack/sse_events.py"},
     "workstack/checkpoint_projection.py": {"workstack/checkpoint_transition.py", "workstack/storage/canonical.py"},
     "workstack/checkpoint_change.py": {"workstack/storage/canonical.py"},
     "workstack/context_projection.py": {"workstack/capture.py"},
@@ -1089,18 +1115,17 @@ class ActualConsumerImports(unittest.TestCase):
         }.issubset(targets), targets)
 
     def test_the_service_actually_reaches_its_pure_owners(self) -> None:
-        targets = self.assert_clean("workstack/service.py")
-        self.assertTrue({
-            "workstack/checkpoint_change.py",
-            "workstack/checkpoint_projection.py",
-            "workstack/checkpoint_transition.py",
-            "workstack/context_projection.py",
-            "workstack/outcome_write_invariant.py",
-        }.issubset(targets), targets)
+        # Preserve every required edge at the extracted implementation owner;
+        # the facade must import those owners and each must import its contract.
+        self.assert_clean("workstack/service.py")
+        for path in REQUIRED_CONSUMERS["workstack/service.py"]:
+            with self.subTest(path=path):
+                self.assert_clean(path)
 
     def test_the_server_projection_context_and_writer_stay_clean(self) -> None:
         for path in (
             "workstack/server.py",
+            "workstack/server_transport.py",
             "workstack/checkpoint_projection.py",
             "workstack/context_projection.py",
             "workstack/cli_writer.py",

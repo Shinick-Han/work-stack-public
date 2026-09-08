@@ -121,6 +121,7 @@ test('Quick Add creates one Task and opens its authoritative drawer', async ({ p
   await page.getByRole('button', { name: 'Create task' }).click()
 
   await expect(page.getByRole('complementary', { name: 'Task T-0031' })).toBeVisible()
+  await page.getByRole('complementary', { name: 'Task T-0031' }).getByRole('tab', { name: 'Details', exact: true }).click()
   await expect(page.getByRole('textbox', { name: 'Task title' })).toHaveValue('Browser smoke intent')
   await expect(page).toHaveURL(/task=T-0031/)
 })
@@ -144,13 +145,14 @@ test('Workspace actions downloads an explicitly confirmed verified local backup'
 
 test('Daily Review records Task evidence and updates its deterministic roll-up', async ({ page }) => {
   await page.goto('/?surface=review')
-  await expect(page.getByRole('heading', { name: 'Turn execution into evidence.' })).toBeVisible()
-  await page.getByLabel(/Done/).fill('Playwright verified the review loop')
-  await page.getByLabel(/Next/).fill('Continue product maturation')
-  await page.getByRole('button', { name: 'Add review entry' }).click()
+  await expect(page.getByRole('heading', { name: 'Daily Review', exact: true })).toBeVisible()
+  await page.getByRole('combobox', { name: 'Task', exact: true }).selectOption('T-0001')
+  await page.getByRole('textbox', { name: 'What changed?', exact: true }).fill('Playwright verified the review loop')
+  await page.getByRole('textbox', { name: 'What comes next?', exact: true }).fill('Continue product maturation')
+  await page.getByRole('button', { name: 'Save progress', exact: true }).click()
 
   await expect(page.getByText('Daily review entry added')).toBeVisible()
-  await expect(page.getByText('Playwright verified the review loop')).toBeVisible()
+  await expect(page.locator('.review-task-progress').getByText('Playwright verified the review loop')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Seven-day review' })).toBeVisible()
 })
 
@@ -314,10 +316,12 @@ test('Task detail follows an existing dependency without a planning mutation', a
   await page.goto('/?view=table&task=T-0024')
   const drawer = page.getByRole('complementary', { name: 'Task T-0024' })
   await expect(drawer).toBeVisible()
+  await drawer.getByRole('tab', { name: 'Details', exact: true }).click()
   await drawer.getByRole('button', { name: 'Open dependency T-0019' }).click()
 
   const dependencyDrawer = page.getByRole('complementary', { name: 'Task T-0019' })
   await expect(dependencyDrawer).toBeVisible()
+  await dependencyDrawer.getByRole('tab', { name: 'Details', exact: true }).click()
   await expect(page).toHaveURL(/task=T-0019/)
   await expect(dependencyDrawer.getByRole('button', { name: 'Open child T-0023' })).toBeVisible()
   await dependencyDrawer.getByRole('button', { name: 'Open dependent T-0024' }).click()
@@ -328,6 +332,7 @@ test('Task detail follows an existing dependency without a planning mutation', a
 test('Task detail excludes cyclic choices and edits dependencies from Task options', async ({ page }) => {
   await page.goto('/?view=table&task=T-0019')
   const drawer = page.getByRole('complementary', { name: 'Task T-0019' })
+  await drawer.getByRole('tab', { name: 'Details', exact: true }).click()
   const parent = drawer.getByLabel('Parent')
   const addDependency = drawer.getByLabel('Add dependency')
   await expect(parent).toHaveValue('')
@@ -348,6 +353,7 @@ test('Task detail cannot close across an invalid unsaved title without explicit 
   const taskRow = page.getByRole('row').filter({ hasText: 'T-0024' })
   await taskRow.getByText('T-0024', { exact: true }).click()
   const drawer = page.getByRole('complementary', { name: 'Task T-0024' })
+  await drawer.getByRole('tab', { name: 'Details', exact: true }).click()
   const title = drawer.getByRole('textbox', { name: 'Task title' })
   await expect(title).toHaveValue('Publish insight review')
   await title.fill('')
@@ -686,7 +692,7 @@ test('Focus records a human work session without changing planning status', asyn
   await expect(page.getByText('Worklog ready')).toBeHidden()
 
   await page.goto('/?surface=review')
-  await expect(page.getByRole('heading', { name: 'Turn execution into evidence.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Daily Review', exact: true })).toBeVisible()
   await expect(
     page.getByLabel('entries').getByText(`Playwright completed human session for ${taskId}`, { exact: true }),
   ).toBeVisible()

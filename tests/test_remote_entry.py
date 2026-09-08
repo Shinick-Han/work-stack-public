@@ -19,10 +19,42 @@ if str(SHELL) not in sys.path:
     sys.path.insert(0, str(SHELL))
 
 import remote_entry as ENTRY  # noqa: E402
+import remote_owner as OWNER  # noqa: E402
 
 
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 RUNTIME_SESSION_TOKEN = "r5pending-token-not-enforced-01"
+FIXTURE_HOST_IDENTITY = "b" * 64
+FIXTURE_BOOT_IDENTITY = "c" * 64
+
+
+class FencedFixtureController:
+    """A host and boot identity for a serve run on a machine that has none.
+
+    A receipt may only be written by a process that can say which host and
+    which boot it is, and this host cannot: it has no machine-id, and a
+    nodename is not identity.  The fixture supplies one rather than the product
+    inventing a fallback, so what is under test stays the argv and exec
+    boundary rather than the identity rule.
+    """
+
+    def current_pid(self) -> int:
+        return os.getpid()
+
+    def start_identity(self, pid: int) -> str | None:
+        return "fixture-start" if pid == os.getpid() else None
+
+    def observe(self, pid: int, start_identity: str) -> str:
+        return "live" if pid == os.getpid() else "unknown"
+
+    def open_owned_process(self, pid: int, start_identity: str):
+        raise AssertionError("a serve fixture must never signal anything")
+
+    def host_identity(self) -> str | None:
+        return FIXTURE_HOST_IDENTITY
+
+    def boot_identity(self) -> str | None:
+        return FIXTURE_BOOT_IDENTITY
 
 
 def _valid_probe_payload() -> dict[str, object]:
@@ -114,6 +146,9 @@ def _run_isolated_entry(
 
 
 class RemoteEntryTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        OWNER.set_process_controller(None)
+
     def test_probe_emits_exact_schema_bounded_json(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             app, data = _write_probe_fixture(Path(directory))
@@ -295,6 +330,7 @@ class RemoteEntryTest(unittest.TestCase):
             "--exit-with-parent",
         ]
         parsed = ENTRY.parse_remote_entry_argv(argv)
+        OWNER.set_process_controller(FencedFixtureController())
         with tempfile.TemporaryDirectory() as directory:
             app, data = _write_probe_fixture(Path(directory))
             (app / "run_work_stack.py").write_text("print(1)\n", encoding="utf-8")
@@ -359,6 +395,10 @@ class RemoteEntryTest(unittest.TestCase):
             for marker in markers.values():
                 self.assertFalse(marker.exists(), marker)
 
+    @unittest.skipIf(
+        not sys.platform.startswith("linux") and OWNER.local_host_identity() is None,
+        "this non-Linux host has no machine identity, so no receipt can be written here",
+    )
     def test_isolated_serve_imports_fixture_product_not_lookalike_without_live_serve(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -398,6 +438,91 @@ class RemoteEntryTest(unittest.TestCase):
             self.assertNotIn(RUNTIME_SESSION_TOKEN, owner)
             for marker in markers.values():
                 self.assertFalse(marker.exists(), marker)
+
+    def test_failed_exec_removes_only_the_exact_published_receipt(self) -> None:
+        parsed = ENTRY.parse_remote_entry_argv(
+            [
+                "serve",
+                "--app-dir",
+                "/srv/workstack/app",
+                "--data-dir",
+                "/srv/workstack/ssot",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8765",
+                "--public-port",
+                "18765",
+                "--session-token",
+                RUNTIME_SESSION_TOKEN,
+            ]
+        )
+        OWNER.set_process_controller(FencedFixtureController())
+        with tempfile.TemporaryDirectory() as directory:
+            app, data = _write_probe_fixture(Path(directory))
+            (app / "run_work_stack.py").write_text("print(1)\n", encoding="utf-8")
+            lease = data / ".workstack.lock"
+            lease.write_bytes(b"real writer lease, owned by the store\n")
+            parsed.app_dir = str(app)
+            parsed.data_dir = str(data)
+            with mock.patch.object(
+                ENTRY.os, "execv", side_effect=OSError("deterministic exec failure")
+            ):
+                with self.assertRaises(ENTRY.EntryError) as caught:
+                    ENTRY.run_serve(parsed)
+            message = str(caught.exception)
+            self.assertIn("REMOTE_PROTOCOL_INVALID", message)
+            self.assertIn("could not exec the remote server", message)
+            self.assertNotIn("cleanup is uncertain", message)
+            self.assertFalse((data / OWNER.OWNER_FILENAME).exists())
+            self.assertEqual(list(data.glob(f"{OWNER.OWNER_FILENAME}.*.tmp")), [])
+            self.assertEqual(lease.read_bytes(), b"real writer lease, owned by the store\n")
+
+    def test_failed_exec_does_not_remove_a_replaced_receipt(self) -> None:
+        parsed = ENTRY.parse_remote_entry_argv(
+            [
+                "serve",
+                "--app-dir",
+                "/srv/workstack/app",
+                "--data-dir",
+                "/srv/workstack/ssot",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8765",
+                "--public-port",
+                "18765",
+                "--session-token",
+                RUNTIME_SESSION_TOKEN,
+            ]
+        )
+        OWNER.set_process_controller(FencedFixtureController())
+        with tempfile.TemporaryDirectory() as directory:
+            app, data = _write_probe_fixture(Path(directory))
+            (app / "run_work_stack.py").write_text("print(1)\n", encoding="utf-8")
+            parsed.app_dir = str(app)
+            parsed.data_dir = str(data)
+            replacement = {"bytes": b""}
+
+            def fail_after_replace(*_args: object) -> None:
+                path = data / OWNER.OWNER_FILENAME
+                payload = json.loads(path.read_bytes().decode("utf-8"))
+                payload["pid"] = 5151
+                payload["start_identity"] = "start-9"
+                replacement["bytes"] = (
+                    json.dumps(payload, separators=(",", ":")) + "\n"
+                ).encode("utf-8")
+                path.write_bytes(replacement["bytes"])
+                raise OSError("deterministic exec failure")
+
+            with mock.patch.object(ENTRY.os, "execv", fail_after_replace):
+                with self.assertRaises(ENTRY.EntryError) as caught:
+                    ENTRY.run_serve(parsed)
+            message = str(caught.exception)
+            self.assertIn("REMOTE_PROTOCOL_INVALID", message)
+            self.assertIn("could not exec the remote server", message)
+            self.assertIn("replaced before cleanup", message)
+            self.assertEqual((data / OWNER.OWNER_FILENAME).read_bytes(), replacement["bytes"])
 
 
 if __name__ == "__main__":

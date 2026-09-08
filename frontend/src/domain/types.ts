@@ -512,6 +512,8 @@ export interface AppUrlState {
   outcomeFilter?: OutcomeFilter
   taskId: string | null
   captureId: string | null
+  /** Explicit Review target, independent of the Task drawer coordinate. */
+  reviewTaskId?: string
   /**
    * Durable completed-Task visibility coordinate. Optional on input so every
    * existing state construction stays valid; each normalized reader/writer

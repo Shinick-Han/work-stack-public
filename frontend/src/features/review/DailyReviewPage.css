@@ -1,0 +1,294 @@
+/* Feature-local Review containment. UI-A owns styles.css; these selectors
+   must win over the shared two-column .review-layout at 960px. */
+
+.review-page {
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--ws-type-reading-body, 14px);
+}
+
+.review-page .page-heading {
+  min-width: 0;
+  gap: 16px;
+}
+
+.review-page .page-heading > div:first-child {
+  min-width: 0;
+  max-width: min(720px, 100%);
+}
+
+.review-page .page-heading h1 {
+  overflow-wrap: anywhere;
+}
+
+.review-page .review-date {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.review-page .review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.review-page .review-summary,
+.review-page .review-entry-card,
+.review-page .review-day-card,
+.review-page .review-task-progress,
+.review-page .review-record-details,
+.review-page .weekly-review {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.review-page .review-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.review-page .review-entry-card {
+  box-sizing: border-box;
+}
+
+/* Reading text needs contrast in both themes; the brand accent remains decoration. */
+.review-page .review-entry-card > header > span {
+  color: var(--ws-text-muted);
+}
+
+.review-page .review-task-link {
+  color: var(--ws-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.review-page .review-entry-card select,
+.review-page .review-entry-card textarea {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  font-size: var(--ws-type-reading-control, 13px);
+}
+
+.review-page .review-entry-card label > span {
+  font-size: var(--ws-type-reading-control, 13px);
+}
+
+.review-page .review-bound-target {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 13px;
+  background: var(--ws-surface-sunken);
+  border: 1px solid var(--ws-border-accent);
+  border-radius: 8px;
+}
+
+.review-page .review-bound-target__meta {
+  margin: 0;
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.4;
+}
+
+.review-page .review-bound-target__title {
+  margin: 0;
+  min-width: 0;
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-body, 14px);
+  font-weight: 650;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.review-page .review-stranded {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  min-width: 0;
+  padding: 13px;
+  background: var(--ws-status-warning-surface);
+  border: 1px solid var(--ws-status-warning-border);
+  border-radius: 8px;
+}
+
+.review-page .review-stranded h3 {
+  margin: 0;
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-body, 14px);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.review-page .review-stranded__identity {
+  margin: 0;
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-meta, 12px);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.review-page .review-stranded__explanation {
+  margin: 0;
+  color: var(--ws-status-warning-text);
+  font-size: var(--ws-type-reading-control, 13px);
+  line-height: 1.45;
+}
+
+.review-page .review-stranded__note {
+  margin: 0;
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.45;
+}
+
+.review-page .review-stranded__payload {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+
+.review-page .review-stranded__payload > span {
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 650;
+}
+
+.review-page .review-stranded__payload li {
+  overflow-wrap: anywhere;
+}
+
+.review-page .review-selection-alert {
+  margin: 0;
+  color: var(--ws-status-warning-text);
+  font-size: var(--ws-type-reading-control, 13px);
+  line-height: 1.45;
+}
+
+.review-page .review-task-progress,
+.review-page .review-record-details {
+  background: var(--ws-surface-base);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 9px;
+  padding: 15px;
+}
+
+.review-page .review-task-progress > header,
+.review-page .review-record-details > summary {
+  color: var(--ws-text-primary);
+}
+
+.review-page .review-task-progress > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.review-page .review-task-progress > header span,
+.review-page .review-record-details > summary {
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 650;
+}
+
+.review-page .review-task-progress > header h2,
+.review-page .review-day-card > header h2 {
+  margin: 0;
+  font-size: var(--ws-type-reading-body, 14px);
+}
+
+.review-page .review-record-details > summary {
+  cursor: pointer;
+  list-style-position: outside;
+}
+
+.review-page .review-record-details .checkpoint-history {
+  margin-top: 12px;
+}
+
+.review-page .review-task-progress article > button span,
+.review-page .review-day-card article > button span,
+.review-page .weekly-project-grid article > button span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.review-page .review-guard {
+  max-width: min(28rem, calc(100vw - 24px));
+  padding: 16px;
+  border: 1px solid var(--ws-border-default);
+  border-radius: 9px;
+  background: var(--ws-surface-overlay);
+  color: var(--ws-text-primary);
+}
+
+.review-page .review-guard h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.review-page .review-guard p {
+  margin: 0 0 14px;
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-reading-body, 14px);
+  line-height: 1.5;
+}
+
+.review-page .review-entry-actions,
+.review-page .review-guard__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 960px) {
+  .review-page .review-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .review-page .review-summary > div:nth-child(3) {
+    border-left: 0;
+  }
+
+  .review-page .review-summary > div:nth-child(-n+2) {
+    border-bottom: 1px solid var(--ws-border-subtle);
+  }
+}
+
+@media (max-width: 820px) {
+  .review-page .weekly-project-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .review-page .review-bound-target,
+  .review-page .review-entry-card,
+  .review-page .review-task-progress,
+  .review-page .review-day-card {
+    padding: 13px;
+  }
+}
+
+@media (max-width: 390px) {
+  .review-page .review-summary,
+  .review-page .weekly-project-grid,
+  .review-page .review-summary > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .review-page .review-summary > div + div,
+  .review-page .review-summary > div:nth-child(-n+2) {
+    border-left: 0;
+    border-bottom: 1px solid var(--ws-border-subtle);
+  }
+
+  .review-page .page-heading {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

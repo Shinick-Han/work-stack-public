@@ -179,14 +179,19 @@ class StartupHtmlBrandTest(unittest.TestCase):
 
 
 class RecoveryHostBrandTest(unittest.TestCase):
+    # Every rendered page is bound to the capability minted for that one
+    # render, so the fixture states a synthetic one instead of defaulting it,
+    # and the status advertises the single action the page is allowed to offer.
+    CAPABILITY = "0123456789abcdef" * 4
     STATUS = {
         "activation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "current_registry_digest": "sha256:" + "a" * 64,
+        "can_restore": True,
     }
 
     def _render(self, theme: str, outcome: str = "ready") -> str:
         return RECOVERY.build_startup_recovery_html(
-            dict(self.STATUS), outcome=outcome, theme=theme
+            dict(self.STATUS), capability=self.CAPABILITY, outcome=outcome, theme=theme
         )
 
     def test_recovery_html_uses_the_same_mark_and_keeps_its_actions(self) -> None:
@@ -197,6 +202,7 @@ class RecoveryHostBrandTest(unittest.TestCase):
             self.assertNotIn("|||", html)
             self.assertIn('aria-hidden="true"', html)
             self.assertIn('id="restore"', html)
+            self.assertIn(self.CAPABILITY, html)
             self.assertIn(RECOVERY.theme_color(theme, "bg.app"), html)
 
     def test_the_refused_outcome_keeps_its_copy_and_drops_only_the_restore_action(self) -> None:
@@ -209,7 +215,9 @@ class RecoveryHostBrandTest(unittest.TestCase):
 
     def test_a_non_recoverable_status_is_still_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            RECOVERY.build_startup_recovery_html({"activation_id": "nope"})
+            RECOVERY.build_startup_recovery_html(
+                {"activation_id": "nope"}, capability=self.CAPABILITY
+            )
 
 
 class NativeIconTest(unittest.TestCase):

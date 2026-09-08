@@ -20,7 +20,10 @@ Read these references before issuing a command:
 ## Workflow
 
 1. Run `agent status` with the explicitly configured prefix, data directory,
-   and expected workspace UID. Stop on any refusal or unavailable owner.
+   and expected workspace UID. Continue when it exits 0 with matching identity,
+   supported capability and `ready: true`. `running-server` is a normal
+   transport; `exclusive_local_available: false` is expected while the GUI
+   owns the workspace. Stop on a refusal or unavailable owner.
 2. Ask the user to select or confirm exactly one existing Task.
 3. Run `agent context` for that Task. The default view is `core-v1` and it
    is what you get when the flag is omitted. Apply, if used, requires this
@@ -80,6 +83,9 @@ Read these references before issuing a command:
 ## Safety boundary
 
 - Never edit JSON, NDJSON, database, or SSOT files directly.
+- Never start `graph serve`, stop the GUI owner, remove owner evidence, or use
+  legacy `backlog.py` / `BACKLOG_FILE` writes to work around a refusal. The CLI
+  owns transport selection; agents do not reclaim leases themselves.
 - Never create or delete Tasks, Objectives, or relationships. Never change
   Task status. Never mutate Git or external systems.
 - The only Task write this Skill may issue is optional `agent apply` of

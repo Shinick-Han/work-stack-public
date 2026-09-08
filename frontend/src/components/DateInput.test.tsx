@@ -496,11 +496,11 @@ test('short viewport keeps Close outside the scrolling grid and a later wide res
 })
 
 test('DateInput typography uses shared control tokens without changing the calendar footprint', () => {
-  expect(dateInputCss).toMatch(/\.date-input-control__field input \{[^}]*font-size: var\(--ws-type-control-label\)/)
+  expect(dateInputCss).toMatch(/\.date-input-control__field input \{[^}]*font-size: var\(--ws-type-reading-control\)/)
   expect(dateInputCss).toMatch(/\.date-input-control__field input \{[^}]*min-height: var\(--ws-control-min-height\)/)
-  expect(dateInputCss).toMatch(/\.date-input-control > label \{[^}]*font-size: var\(--ws-type-control-label\)/)
-  expect(dateInputCss).toMatch(/\.date-input-control\.date-input-control--property > label \{[^}]*font-size: var\(--ws-type-eyebrow\)/)
-  expect(dateInputCss).toMatch(/\.date-input-control--property \.date-input-control__field input \{[^}]*font-size: var\(--ws-type-meta\)/)
+  expect(dateInputCss).toMatch(/\.date-input-control > label \{[^}]*font-size: var\(--ws-type-reading-control\)/)
+  expect(dateInputCss).toMatch(/\.date-input-control\.date-input-control--property > label \{[^}]*font-size: var\(--ws-type-reading-label\)/)
+  expect(dateInputCss).toMatch(/\.date-input-control--property \.date-input-control__field input \{[^}]*font-size: var\(--ws-type-reading-control\)/)
   expect(dateInputCss).toMatch(/\.date-input-control button \{[^}]*min-height: var\(--ws-control-min-height\)/)
   expect(dateInputCss).toMatch(/\.date-input-control__calendar \{[^}]*height: 21\.5rem/)
   expect(dateInputCss).toMatch(/\.date-input-control__calendar \{[^}]*width: 19rem/)

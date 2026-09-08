@@ -408,7 +408,7 @@ test('uses 1–8 for views and surfaces and J/K for filtered task navigation', a
   fireEvent.keyDown(window, { key: '6' })
   expect(await screen.findByRole('heading', { name: /turn signal into useful work/i })).toBeInTheDocument()
   fireEvent.keyDown(window, { key: '7' })
-  expect(await screen.findByRole('heading', { name: /turn execution into evidence/i })).toBeInTheDocument()
+  expect(await screen.findByRole('heading', { name: 'Daily Review' })).toBeInTheDocument()
   fireEvent.keyDown(window, { key: '8' })
   expect(await screen.findByRole('heading', { name: /make the goal–work chain explicit/i })).toBeInTheDocument()
   fireEvent.keyDown(window, { key: '1' })
@@ -461,6 +461,8 @@ test('moves from a Capture to Workspace when opening its newly created Task', as
   await userEvent.click(within(captureDrawer).getByRole('button', { name: 'Create linked task' }))
 
   const taskDrawer = await screen.findByRole('complementary', { name: 'Task T-0042' })
+  expect(within(taskDrawer).getByRole('tab', { name: 'Resume' })).toHaveAttribute('aria-selected', 'true')
+  await userEvent.click(within(taskDrawer).getByRole('tab', { name: 'Details' }))
   expect(within(taskDrawer).getByRole('textbox', { name: 'Task title' })).toHaveValue(capture.source.display_title)
   expect(window.location.search).toBe('?task=T-0042')
   expect(screen.getByRole('button', { name: /Workspace 1/ })).toHaveAttribute('aria-current', 'page')
@@ -481,6 +483,8 @@ test('opens a Quick Add Task immediately even when the background Workspace refr
   await submitQuickTask(createdTask.title)
 
   const drawer = await screen.findByRole('complementary', { name: `Task ${createdTask.id}` })
+  expect(within(drawer).getByRole('tab', { name: 'Resume' })).toHaveAttribute('aria-selected', 'true')
+  await userEvent.click(within(drawer).getByRole('tab', { name: 'Details' }))
   expect(await within(drawer).findByRole('textbox', { name: 'Task title' })).toHaveValue(createdTask.title)
   expect(window.location.search).toBe(`?task=${createdTask.id}`)
   expect(screen.getByText(`${createdTask.id} created`)).toBeInTheDocument()
@@ -1157,6 +1161,7 @@ test('resolves every audited surface from the shared type steps instead of raw p
   for (const step of [
     '--ws-type-entity-heading', '--ws-type-metric', '--ws-type-metric-compact', '--ws-type-panel-heading',
     '--ws-type-item-title', '--ws-type-control-label', '--ws-type-meta', '--ws-type-eyebrow',
+    '--ws-type-reading-body', '--ws-type-reading-control', '--ws-type-reading-meta', '--ws-type-reading-label',
     '--ws-control-min-height',
   ]) expect(productStylesheet).toMatch(new RegExp(`${step}:\\s*\\d+px`))
 
@@ -1186,8 +1191,8 @@ test('collapses every Objective Hub metric grid at the 320px reflow width', () =
   expect(narrow).not.toMatch(/repeat\(4/)
 })
 
-test('Daily Review DateInput uses the shared control type steps instead of inherited 16px', () => {
-  expect(productStylesheet).toMatch(/\.review-date input \{[^}]*font-size: var\(--ws-type-control-label\)/)
+test('Daily Review DateInput uses the shared reading control steps instead of inherited 16px', () => {
+  expect(productStylesheet).toMatch(/\.review-date input \{[^}]*font-size: var\(--ws-type-reading-control\)/)
   expect(productStylesheet).toMatch(/\.review-date input \{[^}]*min-height: var\(--ws-control-min-height\)/)
-  expect(productStylesheet).toMatch(/\.review-date > label, \.review-date span, \.review-entry-card label > span \{[^}]*font-size: var\(--ws-type-control-label\)/)
+  expect(productStylesheet).toMatch(/\.review-date > label, \.review-date span, \.review-entry-card label > span \{[^}]*font-size: var\(--ws-type-reading-label\)/)
 })

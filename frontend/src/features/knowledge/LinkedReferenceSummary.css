@@ -1,0 +1,20 @@
+/* Reading sizes come from UI-A's additive reading tokens; the fallbacks keep this file
+   correct on its own until that shared change lands. */
+.linked-summary { display: grid; gap: 9px; min-width: 0; }
+.linked-summary > h4 {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  margin: 0;
+  text-transform: uppercase;
+}
+.linked-summary__note {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.55;
+  margin: 0;
+}
+.linked-summary__list { display: grid; list-style: none; margin: 0; min-width: 0; padding: 0; }
+.linked-summary > .button { justify-content: center; min-height: var(--ws-control-min-height); }
+.linked-summary .inline-error { margin: 0; }

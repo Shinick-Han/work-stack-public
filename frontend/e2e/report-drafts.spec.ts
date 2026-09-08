@@ -34,7 +34,7 @@ function deletePrompt(page: Page) {
 
 async function gotoReviewAndGenerate(page: Page) {
   await page.goto('/?surface=review')
-  await expect(page.getByRole('heading', { name: 'Turn execution into evidence.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Daily Review', exact: true })).toBeVisible()
   const reviewDate = await page.getByRole('textbox', { name: 'Review date' }).inputValue()
   await page.getByRole('button', { name: 'Generate report' }).click()
   await expect(page.getByRole('button', { name: 'Edit local draft' })).toBeVisible()

@@ -128,6 +128,23 @@ function jsonResponseOf(body: unknown, status = 200) {
   })
 }
 
+/**
+ * The Review surface also mounts SavedReportsPanel, which reads its list from
+ * GET /api/v1/reports as soon as it renders. Answering that read from a
+ * catch-all `{}` fails reportListDataSchema, so the panel raises its own
+ * role="alert" beside the checkpoint one. Route-exact and workspace-exact:
+ * anything else stays unanswered here rather than being silently absorbed.
+ */
+function emptySavedReportsPage(url: string, init?: RequestInit) {
+  const parsed = new URL(url, 'https://workstack.test')
+  if (parsed.pathname !== '/api/v1/reports') return null
+  if ((init?.method ?? 'GET').toUpperCase() !== 'GET') return null
+  if (parsed.searchParams.get('workspace_uid') !== workspaceId) return null
+  return jsonResponseOf({
+    data: { workspace_uid: workspaceId, reports: [], omitted_count: 0, cursor: null },
+  })
+}
+
 function setup(plan: Plan) {
   Stream.instances = []
   window.history.replaceState(null, '', '/?surface=review')
@@ -172,6 +189,8 @@ function setup(plan: Plan) {
       if (state.auditIndex < plan.audits.length - 1) state.auditIndex += 1
       return jsonResponseOf({ data: audit })
     }
+    const savedReports = emptySavedReportsPage(url, init)
+    if (savedReports) return savedReports
     if (url.includes('/api/v1/sync/status')) return jsonResponseOf({ data: syncStatus })
     if (url.includes('/api/v1/review')) return jsonResponseOf({ data: review })
     if (url.includes('/api/v1/workspace')) return jsonResponseOf({ data: workspaceBody })
@@ -249,13 +268,23 @@ test('a 409 refusal is shown and no second POST is sent', async () => {
       },
     }, 409),
   })
-  await screen.findByRole('region', { name: 'Checkpoint history' })
+  const history = await screen.findByRole('region', { name: 'Checkpoint history' })
   await confirmSupersede(user)
 
-  await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+  // The refusal is announced by the checkpoint history itself, carrying the
+  // server's own message rather than merely some alert somewhere on the page.
+  await waitFor(() => {
+    expect(within(history).getByRole('alert'))
+      .toHaveTextContent('invalid checkpoint transition input')
+  })
   expect(state.transitionAttempts).toBe(1)
   // No retry control is offered for a determinate refusal.
   expect(screen.queryByRole('button', { name: 'Retry the same request' })).toBeNull()
+  // And the neighbouring Saved reports panel stays quiet: its list read is
+  // answered cleanly, so the refusal is the only alert on the surface.
+  const savedReports = screen.getByRole('region', { name: 'Saved reports' })
+  expect(within(savedReports).queryByRole('alert')).toBeNull()
+  expect(screen.getAllByRole('alert')).toHaveLength(1)
 })
 
 test('ambiguity offers an explicit retry that reuses the same body and key', async () => {
@@ -379,11 +408,13 @@ test('StrictMode replay keeps one live stream and one notice', async () => {
   const audits = [auditAt(1)]
   const state = { transitionAttempts: 0 }
   vi.stubGlobal('EventSource', Stream)
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) {
       return jsonResponseOf({ data: { csrf_token: 'csrf-token-for-test' } })
     }
+    const savedReports = emptySavedReportsPage(url, init)
+    if (savedReports) return savedReports
     if (url.includes('/api/v1/sync/status')) return jsonResponseOf({ data: syncStatus })
     if (url.endsWith('/api/v1/review/checkpoints')) return jsonResponseOf({ data: audits[0] })
     if (url.includes('/api/v1/review')) {
@@ -449,11 +480,13 @@ test('a failed authoritative read is contained and a later valid hint still work
   Stream.instances = []
   window.history.replaceState(null, '', '/?surface=review')
   vi.stubGlobal('EventSource', Stream)
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/v1/session')) {
       return jsonResponseOf({ data: { csrf_token: 'csrf-token-for-test' } })
     }
+    const savedReports = emptySavedReportsPage(url, init)
+    if (savedReports) return savedReports
     if (url.includes('/api/v1/sync/status')) return jsonResponseOf({ data: syncStatus })
     if (url.endsWith('/api/v1/review/checkpoints')) {
       auditCalls += 1

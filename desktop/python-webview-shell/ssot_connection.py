@@ -278,12 +278,15 @@ def build_ssh_tunnel_command(
 
 
 def build_ssh_check_command(
-    profile: RemoteConnectionProfile, ssh_executable: str
+    profile: RemoteConnectionProfile,
+    ssh_executable: str,
+    session_token: object = None,
 ) -> list[str]:
     remote_check = join_probe_command(
         remote_python=profile.remote_python,
         remote_app_dir=profile.remote_app_dir,
         remote_data_dir=profile.remote_data_dir,
+        session_token=session_token,
     )
     return [
         ssh_executable,
@@ -326,8 +329,41 @@ def build_ssh_stop_owned_command(
     ]
 
 
-def run_remote_connection_check(profile: RemoteConnectionProfile) -> None:
-    command = build_ssh_check_command(profile, find_ssh_executable())
+def owned_execution_identity(profile: RemoteConnectionProfile) -> tuple[object, ...]:
+    """Alias, install root, data root and the exact interpreter that would run."""
+
+    return (
+        profile.ssh_host_alias,
+        profile.remote_app_dir,
+        profile.remote_data_dir,
+        profile.remote_python,
+    )
+
+
+def session_token_for_self_probe(
+    active: RemoteConnectionProfile | None,
+    target: RemoteConnectionProfile,
+    session_token: object,
+) -> str | None:
+    """Return the live session token only when the probe target is the owned one.
+
+    A probe of any other alias, install root, data root or interpreter is a
+    foreign session, so it carries no token and the remote keeps it locked out.
+    """
+
+    if not isinstance(session_token, str) or not session_token or active is None:
+        return None
+    if owned_execution_identity(active) != owned_execution_identity(target):
+        return None
+    return session_token
+
+
+def run_remote_connection_check(
+    profile: RemoteConnectionProfile, session_token: object = None
+) -> None:
+    """Probe one profile read-only, admitting only this session's own live owner."""
+
+    command = build_ssh_check_command(profile, find_ssh_executable(), session_token)
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run(

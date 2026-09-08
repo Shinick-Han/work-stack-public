@@ -50,6 +50,26 @@ from workstack_update import (
     parse_update_manifest,
     save_update_preferences,
 )
+from remote_attempt_resources import (
+    CLEANUP_STALE,
+    MonitorLease,
+    RemoteAttemptResources,
+    attempt_is_current,
+    begin_remote_attempt,
+    cleanup_captured,
+    commit_remote_ready,
+    commit_resources,
+    ensure_remote_server,
+    fail_remote_attempt,
+    fire_generation_barrier,
+    initialize_attempt_resources,
+    initialize_remote_attempt_state,
+    monitor_slot_occupied,
+    publish_monitor_lease,
+    stop_owned_connection,
+    take_published_monitor,
+    wait_until_ready,
+)
 from remote_connection_monitor import RemoteConnectionMonitor
 from remote_startup_state import RemoteStartupState, RemoteStartupStateMachine
 from bounded_request_worker import BoundedRequestWorker
@@ -77,7 +97,6 @@ from connection_registry_mutations import (
     registry_digest,
 )
 from connection_registry_activation_recovery import (
-    ActivationRecoveryRefusedError,
     ConnectionRegistryActivationRecoveryService,
     activation_recovery_status_to_document,
 )
@@ -94,6 +113,7 @@ from connection_registry_host_contract import (
     RegistryHostErrorResponse,
     encode_registry_host_response,
 )
+from knowledge_desktop import KnowledgeDesktopMixin, post_workstack_web_message
 from ssot_connection import (
     REMOTE_CONNECTION_FILE,
     RemoteConnectionProfile,
@@ -109,13 +129,17 @@ from ssot_connection import (
     profile_with_runtime_forward_port,
     resolve_runtime_forward_port,
     run_remote_connection_check,
+    session_token_for_self_probe,
     save_connection_draft,
     token_hash,
     validate_connection_draft,
 )
 from startup_recovery_host import (
+    STARTUP_RECOVERY_DOCUMENT_SOURCES,
+    StartupRecoveryLifetime,
+    apply_startup_recovery_action,
     build_startup_recovery_html,
-    parse_startup_recovery_request,
+    mint_startup_recovery_capability,
 )
 
 
@@ -657,7 +681,7 @@ class NativeStartupSplash:
                     gdi32.DeleteObject(handle)
 
 
-class WorkStackDesktopHost:
+class WorkStackDesktopHost(KnowledgeDesktopMixin):
     def __init__(self, options: argparse.Namespace) -> None:
         self.options = options
         self.install_root = options.install_root.resolve()
@@ -690,8 +714,7 @@ class WorkStackDesktopHost:
             self.state_root,
             mutation_service=self.connection_registry_mutations,
         )
-        self.startup_recovery_status: dict[str, object] | None = None
-        self.startup_recovery_in_progress = False
+        self.startup_recovery = StartupRecoveryLifetime()
         self.connection_registry_snapshot: ConnectionRegistry | None = None
         self.connection_registry_digest = registry_digest(None)
         self.runtime_connection_profile_id = ""
@@ -734,26 +757,12 @@ class WorkStackDesktopHost:
         self.startup_thread: threading.Thread | None = None
         self.startup_ready = threading.Event()
         self.startup_error: BaseException | None = None
-        self.remote_ssh_process: subprocess.Popen | None = None
-        self.remote_ssh_log = None
-        self.remote_session_token: str | None = None
-        self.remote_session_token_hash: str | None = None
-        self.remote_attempt_id = 0
-        self.remote_ready_attempt_id = 0
-        self.remote_lifecycle_state = "IDLE"
-        self.remote_startup = RemoteStartupStateMachine(observer=self._publish_remote_startup_state)
-        self.remote_monitor_attempt_id = ""
-        self._stop_owned_runner = None
-        self.remote_monitor: RemoteConnectionMonitor | None = None
-        self.remote_reconnect_lock = threading.Lock()
-        self.remote_shutdown_requested = threading.Event()
-        self.remote_authority_lock = threading.RLock()
-        self.remote_rebind_target = ""
-        self.remote_rebind_deadline = 0.0
-        self.remote_recovery_required = threading.Event()
-        self.remote_recovery_message = ""
-        self.remote_product_version = ""
-        self.remote_protocol_version: int | None = None
+        # One cohesive remote initialization: the lifecycle lock and gate, the
+        # attempt identity fields, the monitor slot and the coordination
+        # primitives, all published before any remote callback or thread.
+        initialize_remote_attempt_state(
+            self, RemoteStartupStateMachine(observer=self._publish_remote_startup_state)
+        )
         self.server_stop_thread: threading.Thread | None = None
         self.instance_mutex = None
         self.window: webview.Window | None = None
@@ -783,6 +792,7 @@ class WorkStackDesktopHost:
             return 0
         try:
             self.connection_registry_worker.start()
+            self._start_knowledge_desktop()
             self.startup_splash.start()
             self.startup_thread = threading.Thread(target=self._prepare_server, daemon=False)
             self.startup_thread.start()
@@ -808,6 +818,7 @@ class WorkStackDesktopHost:
         finally:
             self.startup_splash.close()
             self.connection_registry_worker.stop(timeout=5)
+            self._stop_knowledge_desktop(timeout=5)
             if self.startup_thread is not None:
                 self.startup_thread.join(timeout=20)
             self.remote_shutdown_requested.set()
@@ -1029,83 +1040,80 @@ class WorkStackDesktopHost:
     def _show_startup_activation_recovery(self) -> bool:
         if not getattr(self, "connection_registry_startup_enabled", False):
             return False
+        generation = self.startup_recovery.active_generation()
+        if generation is None:
+            return False
         try:
-            status = self.connection_activation_recovery.inspect()
-            document = activation_recovery_status_to_document(status)
-            if document["state"] != "recovery_required" or not document["can_restore"]:
+            document = activation_recovery_status_to_document(self.connection_activation_recovery.inspect())
+            if not (document["can_restore"] or document["can_reconcile"]):
                 return False
-            html_document = build_startup_recovery_html(document, theme=self.current_theme)
+            capability = mint_startup_recovery_capability()
+            page = build_startup_recovery_html(document, capability=capability, theme=self.current_theme)
         except Exception:
             return False
         write_startup_error_log(self.startup_error or RuntimeError("Startup failed"))
-        self.startup_recovery_status = document
-        self.startup_recovery_in_progress = False
-        try:
-            self.window.load_html(html_document)
-        except Exception:
-            self.startup_recovery_status = None
-            return False
-        return True
+        return self._publish_startup_recovery_page(generation, document, capability, page, accepts=True)
+
+    def _publish_startup_recovery_page(self, generation: int, status: dict[str, object], capability: str, page: str, accepts: bool) -> bool:
+        """Arm one freshly rendered page and show exactly it; ``accepts`` if it still offers a click."""
+
+        return self.startup_recovery.publish(
+            generation, status, capability, page, self._load_startup_recovery_page, accepts_next_action=accepts)
+
+    def _load_startup_recovery_page(self, page: str) -> None:
+        """Render exactly the page the lifetime armed, or fail so nothing stays armed."""
+
+        if self.window is None:
+            raise RuntimeError("The native Work Stack window is gone")
+        self.window.load_html(page)
 
     def _dispatch_startup_recovery_message(self, message: str) -> bool:
-        status = getattr(self, "startup_recovery_status", None)
-        if status is None:
-            return False
-        request = parse_startup_recovery_request(message)
-        if request is None or request.activation_id != status.get("activation_id"):
-            return False
-        if request.operation == "exit":
+        admitted = self.startup_recovery.admit_request(message)
+        if admitted.outcome == "exit" and self.window is not None:
             self.window.destroy()
-            return True
-        if self.startup_recovery_in_progress:
-            return True
-        if request.expected_registry_digest != status.get("current_registry_digest"):
-            return True
-        self.startup_recovery_in_progress = True
-        threading.Thread(
-            target=self._restore_previous_startup_connection,
-            args=(request.activation_id, request.expected_registry_digest),
-            daemon=True,
-        ).start()
+        if admitted.outcome != "action":
+            return admitted.outcome != "unbound"
+        status, generation, request = admitted.status, admitted.generation, admitted.request
+        action = (request.operation, request.activation_id, request.expected_registry_digest, generation)
+        try:
+            threading.Thread(target=self._apply_startup_recovery_action, args=action, daemon=True).start()
+        except Exception:
+            retry = mint_startup_recovery_capability()
+            page = build_startup_recovery_html(status, capability=retry, outcome="refused", theme=self.current_theme)
+            self._publish_startup_recovery_page(generation, status, retry, page, accepts=True)
         return True
 
-    def _restore_previous_startup_connection(
-        self, activation_id: str, expected_registry_digest: str
-    ) -> None:
-        status = self.startup_recovery_status
+    def _apply_startup_recovery_action(self, operation: str, activation_id: str, expected_registry_digest: str, generation: int) -> None:
+        """Reconcile or restore explicitly, then show the page that follows.
+
+        The service call cannot be recalled once it starts, so a page retired
+        while it runs does not undo what was already committed: the superseded
+        page is never published, and no second action is started in its place.
+        """
+
+        status = self.startup_recovery.status_for(generation)
         if status is None:
             return
-        try:
-            self.connection_activation_recovery.restore(
-                activation_id,
-                expected_registry_digest=expected_registry_digest,
-            )
-            html_document = build_startup_recovery_html(
-                status,
-                outcome="restored",
-                theme=self.current_theme,
-            )
-        except ActivationRecoveryRefusedError as error:
-            html_document = build_startup_recovery_html(
-                status,
-                outcome="refused",
-                safe_message=error.safe_message,
-                theme=self.current_theme,
-            )
-        except Exception:
-            html_document = build_startup_recovery_html(
-                status,
-                outcome="refused",
-                theme=self.current_theme,
-            )
-        if self.window is not None:
-            self.window.load_html(html_document)
+        capability = mint_startup_recovery_capability()
+        outcome = apply_startup_recovery_action(
+            self.connection_activation_recovery,
+            status,
+            operation=operation,
+            activation_id=activation_id,
+            expected_registry_digest=expected_registry_digest,
+            capability=capability,
+            theme=self.current_theme,
+        )
+        self._publish_startup_recovery_page(generation, outcome.status, capability, outcome.page, outcome.accepts_next_action)
 
     def _on_form_closing(self, _sender, _event_args) -> None:
+        self.startup_recovery.retire(closed=True)
         self.remote_shutdown_requested.set()
         self.connection_registry_worker.stop(timeout=0)
+        self._stop_knowledge_desktop(timeout=0)
         self._stop_remote_monitor()
-        if (self.server_started_by_host or self.remote_ssh_process is not None) and self.server_stop_thread is None:
+        owns_remote = self.remote_ssh_process is not None or bool(getattr(self, "remote_session_token", None))
+        if (self.server_started_by_host or owns_remote) and self.server_stop_thread is None:
             self.server_stop_thread = threading.Thread(
                 target=self._stop_owned_server_after_window,
                 daemon=False,
@@ -1278,11 +1286,13 @@ class WorkStackDesktopHost:
     def _on_workstack_message(self, _sender, event_args) -> None:
         try:
             message = str(event_args.TryGetWebMessageAsString())
+            source = str(event_args.Source)
         except Exception:
             return
-        if self._dispatch_startup_recovery_message(message):
+        if source in STARTUP_RECOVERY_DOCUMENT_SOURCES:
+            self._dispatch_startup_recovery_message(message)
             return
-        if self._origin(str(event_args.Source)) != self.workstack_origin:
+        if self._origin(source) != self.workstack_origin:
             return
         if self._dispatch_workstack_host_message(message):
             return
@@ -1297,6 +1307,8 @@ class WorkStackDesktopHost:
     def _dispatch_workstack_host_message(self, message: str) -> bool:
         if _is_connection_registry_host_message(message):
             self._handle_connection_registry_message(message)
+            return True
+        if self._dispatch_knowledge_host_message(message):
             return True
         if message.startswith(f"{UPDATE_HOST_PREFIX}|"):
             self._handle_update_message(message)
@@ -1397,13 +1409,7 @@ class WorkStackDesktopHost:
             self._trace("connection registry response could not be marshalled to the UI thread")
 
     def _post_connection_registry_response(self, response: str) -> None:
-        core = (
-            self.workstack_webview.CoreWebView2
-            if self.workstack_webview is not None
-            else None
-        )
-        if core is not None:
-            core.PostWebMessageAsJson(response)
+        post_workstack_web_message(self, response)
 
     def _choose_local_ssot_directory(self) -> str | None:
         form = self.form
@@ -1617,11 +1623,17 @@ class WorkStackDesktopHost:
         except Exception as error:
             self._trace(f"SSOT status dispatch failed: {type(error).__name__}")
 
-    def _remote_monitor_allowed_attempt(self) -> tuple[object, str] | None:
+    def _remote_monitor_allowed_attempt(
+        self, attempt_id: int | None = None
+    ) -> tuple[object, str] | None:
+        """Revalidate the captured generation after the ready commit released the lock."""
+
         machine = getattr(self, "remote_startup", None)
         if machine is not None:
             current = machine.active_attempt_id
             if current is None or not machine.can_start_monitor(current):
+                return None
+            if attempt_id is not None and current != str(attempt_id):
                 return None
             return machine, current
         lifecycle = getattr(self, "remote_lifecycle_state", None)
@@ -1631,6 +1643,8 @@ class WorkStackDesktopHost:
             self, "remote_attempt_id", 0
         ):
             return None
+        if attempt_id is not None and getattr(self, "remote_ready_attempt_id", 0) != attempt_id:
+            return None
         return None, ""
 
     def _current_attempt_check(self, machine: object, attempt_id: str):
@@ -1638,28 +1652,20 @@ class WorkStackDesktopHost:
             return lambda: True
         return lambda: machine.is_current(attempt_id)
 
-    def _start_remote_monitor(self) -> None:
-        if self.remote_profile is None:
-            return
-        allowed = self._remote_monitor_allowed_attempt()
-        if allowed is None:
-            return
-        machine, attempt_id = allowed
-        current_monitor = self.remote_monitor
-        if current_monitor is not None and current_monitor.is_running:
-            return
+    def _build_remote_monitor(self, machine: object, captured: str):
+        """Construct one monitor for a captured generation, or refuse to."""
+
         recovery = getattr(self, "remote_recovery_required", None)
         if recovery is None:
             recovery = threading.Event()
             self.remote_recovery_required = recovery
         if recovery.is_set():
             self._publish_remote_connection_state("disconnected")
-            return
+            return None
         shutdown = getattr(self, "remote_shutdown_requested", None)
         if shutdown is not None and shutdown.is_set():
-            return
-        captured = attempt_id
-        self.remote_monitor = RemoteConnectionMonitor(
+            return None
+        return RemoteConnectionMonitor(
             is_healthy=self._is_remote_session_healthy,
             is_process_alive=self._is_remote_process_alive,
             reconnect_once=self._reconnect_remote_once,
@@ -1669,16 +1675,51 @@ class WorkStackDesktopHost:
             on_recovery_required=self._fail_closed_remote_authority,
             is_current_attempt=self._current_attempt_check(machine, captured),
         )
-        self.remote_monitor_attempt_id = captured
-        self.remote_monitor.start()
+
+    def _monitor_admission_holds(self, attempt_id: int | None, allowed: object) -> bool:
+        """Re-derive admission for the captured generation, under the lock."""
+
+        return self._remote_monitor_allowed_attempt(attempt_id) == allowed
+
+    def _start_remote_monitor(self, attempt_id: int | None = None) -> None:
+        """Publish and start at most one monitor for the captured generation.
+
+        Admission, construction and the thread start all happen outside the
+        lifecycle lock; only the publication is taken under it, re-checking the
+        captured generation there. A callback whose attempt was closed
+        therefore publishes nothing and starts nothing, so it can neither
+        replace nor orphan a newer generation's monitor.
+        """
+
+        if self.remote_profile is None:
+            return
+        allowed = self._remote_monitor_allowed_attempt(attempt_id)
+        if allowed is None:
+            return
+        machine, captured = allowed
+        if monitor_slot_occupied(self):
+            return
+        fire_generation_barrier(self, "monitor_admitted", captured)
+        monitor = self._build_remote_monitor(machine, captured)
+        if monitor is None:
+            return
+        lease = MonitorLease(monitor, captured)
+        if not publish_monitor_lease(
+            self,
+            lease,
+            still_admitted=lambda: self._monitor_admission_holds(attempt_id, allowed),
+        ):
+            return
+        fire_generation_barrier(self, "monitor_published", captured)
+        if not lease.start_if_live():
+            return
         if machine is not None and captured:
             machine.mark_monitor_started(captured)
 
     def _stop_remote_monitor(self) -> None:
-        monitor = getattr(self, "remote_monitor", None)
-        self.remote_monitor = None
-        started_for = getattr(self, "remote_monitor_attempt_id", "")
-        self.remote_monitor_attempt_id = ""
+        """Detach the published monitor under the lock, then join it outside."""
+
+        monitor, started_for = take_published_monitor(self)
         if monitor is not None:
             monitor.stop(timeout=5)
         machine = getattr(self, "remote_startup", None)
@@ -1977,7 +2018,11 @@ class WorkStackDesktopHost:
         active_draft = getattr(self, "active_connection_draft", draft)
         profile = connection_profile_from_draft(draft)
         if profile is not None:
-            run_remote_connection_check(profile)
+            run_remote_connection_check(profile, session_token=session_token_for_self_probe(
+                getattr(self, "remote_profile", None),
+                profile,
+                getattr(self, "remote_session_token", None),
+            ))
         return self._ssot_status_payload(
             draft,
             "ready",
@@ -2549,12 +2594,13 @@ class WorkStackDesktopHost:
         }, ensure_ascii=False, separators=(",", ":")))
 
     def _on_workstack_navigation_starting(self, _sender, event_args) -> None:
-        if getattr(self, "startup_recovery_status", None) is not None:
-            target = str(event_args.Uri)
-            if target == "about:blank" or target.startswith("data:text/html"):
-                return
-        if self._origin(str(event_args.Uri)) != self.workstack_origin:
+        target = str(event_args.Uri)
+        if self.startup_recovery.admits_navigation(target):
+            return
+        if self._origin(target) != self.workstack_origin:
             event_args.Cancel = True
+            return
+        self.startup_recovery.retire()
 
     def _on_source_navigation_starting(self, provider: str, sender, event_args) -> None:
         target = str(event_args.Uri)
@@ -2861,13 +2907,7 @@ class WorkStackDesktopHost:
                 return
             time.sleep(0.05)
 
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
+        self._terminate_owned_process(process, timeout=3)
         detail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
         raise RuntimeError(f"Work Stack did not start: {detail or 'server readiness timed out'}")
 
@@ -2955,25 +2995,10 @@ class WorkStackDesktopHost:
             candidate.unlink()
 
     def _begin_remote_attempt(self) -> int:
-        machine = getattr(self, "remote_startup", None)
-        if machine is not None:
-            attempt = machine.begin()
-            self.remote_attempt_id = int(attempt)
-            self.remote_lifecycle_state = machine.state.value
-        else:
-            self.remote_attempt_id = int(getattr(self, "remote_attempt_id", 0)) + 1
-            self.remote_lifecycle_state = "PROBING"
-        self.remote_ready_attempt_id = 0
-        token = generate_session_token()
-        self.remote_session_token = token
-        self.remote_session_token_hash = token_hash(token)
-        return self.remote_attempt_id
+        return begin_remote_attempt(self)
 
     def _remote_attempt_current(self, attempt_id: int) -> bool:
-        machine = getattr(self, "remote_startup", None)
-        if machine is not None:
-            return machine.is_current(str(attempt_id))
-        return getattr(self, "remote_attempt_id", 0) == attempt_id
+        return attempt_is_current(self, attempt_id)
 
     def _advance_remote_startup(self, attempt_id: int, state: str) -> bool:
         machine = getattr(self, "remote_startup", None)
@@ -2992,92 +3017,38 @@ class WorkStackDesktopHost:
         self.remote_lifecycle_state = state
 
     def _apply_remote_ready_if_current(self, attempt_id: int) -> bool:
-        if not self._advance_remote_startup(attempt_id, "READY"):
+        """READY and the ready id commit together; the monitor starts after."""
+
+        if not commit_remote_ready(self, attempt_id):
             return False
-        self.remote_ready_attempt_id = attempt_id
-        self._start_remote_monitor()
+        self._start_remote_monitor(attempt_id)
         return True
 
     def _ensure_remote_server(self) -> None:
-        if self.remote_profile is None:
-            raise RuntimeError("Remote server startup requested without an SSH profile")
-        if self._is_ready():
-            raise RuntimeError(
-                f"Local forward port {self.remote_profile.local_forward_port} is already serving Work Stack; "
-                "close that process or choose another local_forward_port"
-            )
-        attempt_id = self._begin_remote_attempt()
-        if not self._advance_remote_startup(attempt_id, "STARTING_TUNNEL"):
-            return
-        ssh_executable = find_ssh_executable()
-        command = build_ssh_tunnel_command(
-            self.remote_profile,
-            ssh_executable,
-            session_token=self.remote_session_token,
-        )
-        launch_root = self.state_root / "desktop-launch"
-        launch_root.mkdir(parents=True, exist_ok=True)
-        log_path = launch_root / "remote-ssh.log"
-        self.remote_ssh_log = log_path.open("a", encoding="utf-8")
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        try:
-            self.remote_ssh_process = subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=self.remote_ssh_log,
-                stderr=subprocess.STDOUT,
-                creationflags=creation_flags,
-            )
-        except OSError as error:
-            self.remote_ssh_log.close()
-            self.remote_ssh_log = None
-            self._fail_remote_attempt(attempt_id)
-            raise RuntimeError(f"Could not start OpenSSH: {error}") from error
-        if not self._advance_remote_startup(attempt_id, "WAITING_REMOTE_READY"):
-            return
-        self._wait_for_remote_ready(attempt_id, log_path)
+        ensure_remote_server(self)
 
-    def _fail_remote_attempt(self, attempt_id: int) -> None:
-        machine = getattr(self, "remote_startup", None)
-        if machine is not None:
-            machine.fail(str(attempt_id))
-            self.remote_lifecycle_state = machine.state.value
-        elif getattr(self, "remote_attempt_id", 0) == attempt_id:
-            self.remote_lifecycle_state = "FAILED"
+    def _commit_remote_attempt_resources(
+        self, resources: RemoteAttemptResources, next_state: str | None = None
+    ) -> bool:
+        return commit_resources(self, resources, next_state)
 
-    def _wait_for_remote_ready(self, attempt_id: int, log_path: Path) -> None:
-        deadline = time.monotonic() + 25
-        while time.monotonic() < deadline:
-            if not self._remote_attempt_current(attempt_id):
-                return
-            if self.remote_ssh_process.poll() is not None:
-                returncode = self.remote_ssh_process.returncode
-                self._close_remote_log()
-                self.remote_ssh_process = None
-                self._fail_remote_attempt(attempt_id)
-                raise RuntimeError(
-                    f"SSH remote Work Stack exited before becoming ready (exit {returncode}). "
-                    f"Review {log_path} and run --check-remote-connection."
-                )
-            if self._is_ready():
-                if not self._advance_remote_startup(attempt_id, "VERIFYING_AUTHORITY"):
-                    return
-                self._verify_remote_workspace()
-                if not self._apply_remote_ready_if_current(attempt_id):
-                    return
-                self._trace(
-                    f"SSH remote Work Stack is ready through local port {self.remote_profile.local_forward_port}"
-                )
-                return
-            time.sleep(0.25)
-        if not self._remote_attempt_current(attempt_id):
-            return
-        self._fail_remote_attempt(attempt_id)
-        self._stop_owned_remote_connection()
-        raise RuntimeError(
-            f"SSH remote Work Stack did not become ready within 25 seconds. "
-            f"Review {log_path} and run --check-remote-connection."
+    def _release_superseded_remote_start(self, profile, token: str, process) -> None:
+        """Release only this start. Never reread a newer host token or process."""
+
+        cleanup_captured(
+            self, RemoteAttemptResources(0, profile, token, process, None), CLEANUP_STALE
         )
+
+    def _fail_remote_attempt(self, attempt_id: int, error: object = None) -> None:
+        fail_remote_attempt(self, attempt_id, error)
+
+    def _wait_for_remote_ready(self, resources: RemoteAttemptResources, log_path: Path) -> None:
+        wait_until_ready(self, resources, log_path)
+
+    def _cleanup_captured_remote_resources(
+        self, resources: RemoteAttemptResources, terminal: str
+    ) -> None:
+        cleanup_captured(self, resources, terminal)
 
     def _read_remote_storage_metadata(self, *, timeout: float = 3.0) -> dict[str, object]:
         if self.remote_profile is None:
@@ -3157,7 +3128,7 @@ class WorkStackDesktopHost:
         self._remember_remote_metadata(metadata)
 
     def _stop_owned_server(self) -> None:
-        if self.remote_ssh_process is not None:
+        if self.remote_ssh_process is not None or getattr(self, "remote_session_token", None):
             self._stop_owned_remote_connection()
             return
         if not self.server_started_by_host or self.server_pid is None:
@@ -3170,39 +3141,20 @@ class WorkStackDesktopHost:
         self.server_pid = None
         self._trace(f"stopping server owned by desktop host (PID {owned_pid})")
         if process is not None and process.pid == owned_pid:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+            self._terminate_owned_process(process)
             return
         stopper = self.install_root / "scripts" / "windows" / "Stop-WorkStack.ps1"
         if not stopper.is_file():
             return
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
             result = subprocess.run(
                 [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-WindowStyle",
-                    "Hidden",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    str(stopper),
-                    "-InstallRoot",
-                    str(self.install_root),
-                    "-ProcessId",
-                    str(owned_pid),
+                    "powershell.exe", "-NoProfile", "-WindowStyle", "Hidden",
+                    "-ExecutionPolicy", "Bypass", "-File", str(stopper),
+                    "-InstallRoot", str(self.install_root), "-ProcessId", str(owned_pid),
                 ],
-                check=False,
-                timeout=10,
-                creationflags=creation_flags,
-                capture_output=True,
-                text=True,
+                check=False, timeout=10, capture_output=True, text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             self._trace(f"owned server stop command completed with exit {result.returncode}")
             if result.stdout.strip():
@@ -3211,7 +3163,6 @@ class WorkStackDesktopHost:
                 self._trace(result.stderr.strip())
         except (OSError, subprocess.SubprocessError):
             self._trace("owned server stop command failed")
-            pass
 
     def _request_remote_stop_owned(self, profile: RemoteConnectionProfile, token: str) -> None:
         runner = getattr(self, "_stop_owned_runner", None)
@@ -3220,51 +3171,24 @@ class WorkStackDesktopHost:
         if runner is not None:
             runner(command)
             return
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         subprocess.run(
-            command,
-            check=False,
-            timeout=10,
-            creationflags=creation_flags,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
+            command, check=False, timeout=10, stdin=subprocess.DEVNULL, capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
     def _stop_owned_remote_connection(self) -> None:
-        machine = getattr(self, "remote_startup", None)
-        if machine is not None:
-            machine.stop()
-            self.remote_lifecycle_state = machine.state.value
-            self.remote_attempt_id = 0
-        elif getattr(self, "remote_lifecycle_state", None) is not None:
-            self.remote_lifecycle_state = "IDLE"
-        self._stop_remote_monitor()
-        token = getattr(self, "remote_session_token", None)
-        profile = getattr(self, "remote_profile", None)
-        self.remote_session_token = None
-        self.remote_session_token_hash = None
-        self.remote_ready_attempt_id = 0
-        if token and profile is not None:
-            try:
-                self._request_remote_stop_owned(profile, token)
-            except (OSError, subprocess.SubprocessError, RuntimeError):
-                self._trace("stop-owned request failed")
-        process = self.remote_ssh_process
-        self.remote_ssh_process = None
-        if process is not None and process.poll() is None:
-            self._trace(f"stopping SSH connection owned by desktop host (PID {process.pid})")
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        self._close_remote_log()
+        stop_owned_connection(self)
 
-    def _close_remote_log(self) -> None:
-        if self.remote_ssh_log is not None:
-            self.remote_ssh_log.close()
-            self.remote_ssh_log = None
+    @staticmethod
+    def _terminate_owned_process(process, timeout: float = 5) -> None:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=timeout)
 
     def _is_ready(self) -> bool:
         health_url = urllib.parse.urljoin(self.workstack_url, "/api/v1/health")

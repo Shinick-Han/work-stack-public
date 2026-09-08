@@ -1,0 +1,78 @@
+/* Saving the edited report to the workspace. Sits inside the local draft editor
+   and uses the same tokens, so the two saves read as one screen rather than two
+   visual languages — the difference between them is stated in words, not colour. */
+
+.report-promotion {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px 12px;
+  background: var(--ws-surface-sunken);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 8px;
+  color: var(--ws-text-primary);
+  font: inherit;
+}
+
+.report-promotion__title {
+  margin: 0;
+  font-size: 0.9375rem;
+}
+
+.report-promotion__description {
+  margin: 0;
+  color: var(--ws-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.report-promotion__coordinate {
+  margin: 0;
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-meta, 0.75rem);
+  overflow-wrap: anywhere;
+}
+
+.report-promotion__stale,
+.report-promotion__notice,
+.report-promotion__unsettled,
+.report-promotion__saved {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.report-promotion__stale,
+.report-promotion__unsettled {
+  background: var(--ws-status-warning-surface);
+  border-color: var(--ws-status-warning-border);
+  color: var(--ws-status-warning-text);
+}
+
+.report-promotion__notice {
+  background: var(--ws-status-danger-surface);
+  border-color: var(--ws-status-danger-border);
+  color: var(--ws-status-danger-text);
+}
+
+.report-promotion__saved {
+  background: var(--ws-status-success-surface);
+  border-color: var(--ws-status-success-border);
+  color: var(--ws-status-success-text);
+}
+
+.report-promotion__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.report-promotion__progress {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-meta, 0.75rem);
+}

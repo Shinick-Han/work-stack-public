@@ -5,15 +5,18 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime
+import hashlib
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable
+from typing import Callable, Iterator
 from unittest.mock import patch
 
 from workstack import cli
@@ -30,10 +33,12 @@ from workstack.agent_commands import COMMANDS
 from workstack.agent_local_backend import create_local_backend
 from workstack.agent_runtime import run_agent_command
 from workstack.agent_transport import create_running_server_backend
+from workstack.file_lease import _FileLease
 from workstack.service import WorkStack
-from workstack.store import Store
+from workstack.store import JOURNAL_NAME, LOCK_NAME, Store
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = "workstack.cli.v1"
 WORKSPACE_UID = "11111111-1111-4111-8111-111111111111"
 OTHER_UID = "22222222-2222-4222-8222-222222222222"
@@ -303,9 +308,111 @@ def command_args(
     return Namespace(**values)
 
 
+_OWNER_PROCESS_SOURCE = """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[2])
+
+from workstack.file_lease import _FileLease
+
+lease = _FileLease(Path(sys.argv[1]))
+lease.acquire()
+print("held", flush=True)
+sys.stdin.readline()
+lease.release()
+"""
+
+
+@contextlib.contextmanager
+def owner_process(lock_path: Path) -> Iterator["subprocess.Popen[str]"]:
+    """Run a real second process that owns the canonical writer lease.
+
+    Runtime metadata is only an advertisement. The running-server route is
+    lawful exactly while another compliant writer actually holds
+    ``.workstack.lock``, so these tests contend with a genuine foreign process
+    rather than with a file that merely exists.
+    """
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", _OWNER_PROCESS_SOURCE, str(lock_path), str(REPOSITORY_ROOT)],
+        cwd=str(REPOSITORY_ROOT),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        ready = process.stdout.readline().strip()
+        if ready != "held":
+            raise AssertionError(
+                "owner process did not take the lease: {!r} {!r}".format(
+                    ready, process.stderr.read()
+                )
+            )
+        yield process
+    finally:
+        try:
+            print("release", file=process.stdin, flush=True)
+        except (OSError, ValueError):
+            pass
+        try:
+            process.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=60)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+@contextlib.contextmanager
+def count_lease_attempts() -> Iterator[list[Path]]:
+    """Record every real writer-lease acquisition attempted inside the block.
+
+    Both outcomes are recorded, so one entry proves the single non-blocking
+    attempt and any further entry proves a forbidden second acquisition.
+    """
+
+    attempts: list[Path] = []
+    real = _FileLease.acquire
+
+    def counting(lease: _FileLease) -> None:
+        attempts.append(lease.path)
+        real(lease)
+
+    with patch.object(_FileLease, "acquire", counting):
+        yield attempts
+
+
+def _blocked_journal(*, value: dict[str, object]) -> dict[str, object]:
+    body = json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return {
+        "created_at": "2026-09-02T10:00:00Z",
+        "operation_id": "agent-e2e-operation-1",
+        "version": 1,
+        "writes": [
+            {
+                "name": "backlog.json",
+                "sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+                "value": value,
+            }
+        ],
+    }
+
+
 class IsolatedAuthorityTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
+        # Cleanups run last-in-first-out, so a per-test owner process entered
+        # with enterContext releases the lock file before the directory that
+        # holds it is removed.
+        self.addCleanup(self.temporary.cleanup)
         self.home = Path(self.temporary.name)
         self.data_dir = self.home / "data"
         self.runtime_dir = self.home / "runtime"
@@ -315,13 +422,10 @@ class IsolatedAuthorityTest(unittest.TestCase):
             clear=False,
         )
         self.env.start()
+        self.addCleanup(self.env.stop)
         self.events: list[tuple[object, ...]] = []
         self.local_calls: list[AuthorityAdmission] = []
         self.online_calls: list[Path] = []
-
-    def tearDown(self) -> None:
-        self.env.stop()
-        self.temporary.cleanup()
 
     def make_v3(self, *, uid: str = WORKSPACE_UID, title: str = "Ship agent E2E") -> str:
         store = Store(self.data_dir)
@@ -362,6 +466,22 @@ class IsolatedAuthorityTest(unittest.TestCase):
         owner = store if store is not None else Store(self.data_dir)
         owner.write_server_info(HOST, PORT)
         return owner
+
+    def lock_path(self) -> Path:
+        return Store(self.data_dir).root / LOCK_NAME
+
+    def held_owner(self):
+        """Contend with a real foreign writer that owns the real lease."""
+
+        return owner_process(self.lock_path())
+
+    def assert_lease_released(self) -> None:
+        """The retained handle is released exactly once, at command end."""
+
+        store = Store(self.data_dir)
+        lease = store.try_acquire_writer_lease()
+        self.assertIsNotNone(lease)
+        store.release_writer_lease(lease)
 
     def store_factory(self, *, root: Path) -> Store:
         return TraceStore(root, events=self.events)
@@ -911,6 +1031,7 @@ class AgentBackendSelectionTests(IsolatedAuthorityTest):
     def test_live_owner_selects_http_without_store_transaction(self) -> None:
         task_id = self.make_v3()
         self.write_owner()
+        self.enterContext(self.held_owner())
         requester = RecordingRequester(SESSION, STORAGE)
         backend = RecordingBackend(
             status=_status_payload(),
@@ -1022,18 +1143,20 @@ class AgentBackendSelectionTests(IsolatedAuthorityTest):
                 self.assertFalse(any(event[0] == "online-backend" for event in self.events))
                 self.assertIn("data", envelope)
 
-    def test_dead_owner_fails_without_local_backend_or_fallback(self) -> None:
+    def test_held_owner_http_failure_never_falls_back_or_reacquires(self) -> None:
         self.make_v3()
         self.write_owner()
+        self.enterContext(self.held_owner())
         requester = RecordingRequester(OSError("connection refused"))
         dependencies = self.dependencies(
             request_json=requester,
             create_local_backend=self.forbidden_local,
         )
-        code, stdout, stderr = self.run_command(
-            STATUS_COMMAND,
-            dependencies=dependencies,
-        )
+        with count_lease_attempts() as attempts:
+            code, stdout, stderr = self.run_command(
+                STATUS_COMMAND,
+                dependencies=dependencies,
+            )
         envelope = self.assert_failure(
             code,
             stdout,
@@ -1046,19 +1169,24 @@ class AgentBackendSelectionTests(IsolatedAuthorityTest):
         self.assertFalse(any(event[0] == "local-backend" for event in self.events))
         self.assertFalse(any(event[0] == "transaction-enter" for event in self.events))
         self.assertEqual(len(requester.calls), 1)
+        # Exactly one refused attempt: a dead HTTP endpoint is never evidence
+        # that the retained foreign lease may be taken.
+        self.assertEqual(attempts, [self.lock_path()])
 
         self.events.clear()
         invalid = Store(self.data_dir)
         invalid.server_info_path.write_text("{}", encoding="utf-8")
-        code, stdout, stderr = self.run_command(
-            CHECKPOINT_COMMAND,
-            dependencies=self.dependencies(
-                request_json=RecordingRequester(),
-                create_local_backend=self.forbidden_local,
-            ),
-            intent_id=INTENT_ID,
-            checkpoint_raw=_checkpoint_bytes(),
-        )
+        blind = RecordingRequester()
+        with count_lease_attempts() as attempts:
+            code, stdout, stderr = self.run_command(
+                CHECKPOINT_COMMAND,
+                dependencies=self.dependencies(
+                    request_json=blind,
+                    create_local_backend=self.forbidden_local,
+                ),
+                intent_id=INTENT_ID,
+                checkpoint_raw=_checkpoint_bytes(),
+            )
         self.assert_failure(
             code,
             stdout,
@@ -1068,6 +1196,39 @@ class AgentBackendSelectionTests(IsolatedAuthorityTest):
         )
         self.assertEqual(self.local_calls, [])
         self.assertFalse(any(event[0] == "transaction-enter" for event in self.events))
+        self.assertEqual(blind.calls, [])
+        self.assertEqual(attempts, [self.lock_path()])
+
+    def test_held_owner_without_advertisement_refuses_before_any_probe(self) -> None:
+        self.make_v3()
+        self.enterContext(self.held_owner())
+        self.assertFalse(Store(self.data_dir).server_info_path.exists())
+        requester = RecordingRequester()
+        with count_lease_attempts() as attempts:
+            code, stdout, stderr = self.run_command(
+                CHECKPOINT_COMMAND,
+                dependencies=self.dependencies(
+                    request_json=requester,
+                    create_local_backend=self.forbidden_local,
+                    create_running_server_backend=lambda **kwargs: (
+                        _ for _ in ()
+                    ).throw(AssertionError("no advertised owner may be routed to")),
+                ),
+                intent_id=INTENT_ID,
+                checkpoint_raw=_checkpoint_bytes(),
+            )
+        self.assert_failure(
+            code,
+            stdout,
+            stderr,
+            error_code="owner_unavailable",
+            command="agent.checkpoint",
+        )
+        self.assertEqual(requester.calls, [])
+        self.assertEqual(self.local_calls, [])
+        self.assertFalse(any(event[0] == "online-backend" for event in self.events))
+        self.assertFalse(any(event[0] == "transaction-enter" for event in self.events))
+        self.assertEqual(attempts, [self.lock_path()])
 
 
 class AgentCommandEnvelopeTests(IsolatedAuthorityTest):
@@ -1124,6 +1285,7 @@ class AgentCommandEnvelopeTests(IsolatedAuthorityTest):
         )
         self.make_v3()
         self.write_owner()
+        self.enterContext(self.held_owner())
         dependencies = self.dependencies(
             create_local_backend=self.forbidden_local,
             create_running_server_backend=lambda **kwargs: self.fake_online(
@@ -1181,6 +1343,7 @@ class AgentCheckpointSemanticsTests(IsolatedAuthorityTest):
     def test_checkpoint_preserves_exact_body_and_intent_and_rejects_foreign_uid(self) -> None:
         task_id = self.make_v3()
         self.write_owner()
+        self.enterContext(self.held_owner())
         captured: list[object] = []
 
         class CapturingBackend(RecordingBackend):
@@ -1349,6 +1512,7 @@ class AgentCheckpointSemanticsTests(IsolatedAuthorityTest):
     def test_lost_response_follows_bounded_identical_replay_state_machine(self) -> None:
         task_id = self.make_v3()
         self.write_owner()
+        self.enterContext(self.held_owner())
         lost_after_commit = RecordingRequester(
             SESSION,
             STORAGE,
@@ -1468,6 +1632,466 @@ class AgentCheckpointSemanticsTests(IsolatedAuthorityTest):
         self.assertEqual(len(session_failure.calls), 1)
         self.assertFalse(any(call["method"] == "POST" for call in session_failure.calls))
         self.assertEqual(self.local_calls, [])
+
+
+class AgentLeaseFirstRecoveryTests(IsolatedAuthorityTest):
+    """The retained writer lease, never runtime metadata, selects the backend."""
+
+    def _forbid_online(self, **kwargs):
+        self.events.append(("online-backend", Path(kwargs["server_info_path"])))
+        raise AssertionError("a free writer lease must never route to HTTP")
+
+    def _local_dependencies(self, requester: RecordingRequester) -> RuntimeDependencies:
+        return self.dependencies(
+            request_json=requester,
+            create_running_server_backend=self._forbid_online,
+        )
+
+    def test_stale_advertisement_over_free_lease_stays_local_without_probe(self) -> None:
+        task_id = self.make_v3()
+        owner = self.write_owner()
+        advertisement = owner.server_info_path.read_bytes()
+        requester = RecordingRequester()
+        dependencies = self._local_dependencies(requester)
+        for action, kwargs in (
+            (STATUS_COMMAND, {}),
+            (CONTEXT_COMMAND, {"task": task_id}),
+            (
+                CHECKPOINT_COMMAND,
+                {
+                    "intent_id": INTENT_ID,
+                    "checkpoint_raw": _checkpoint_bytes(task_id=task_id),
+                },
+            ),
+        ):
+            with self.subTest(action=action):
+                self.events.clear()
+                with count_lease_attempts() as attempts:
+                    code, stdout, stderr = self.run_command(
+                        action,
+                        dependencies=dependencies,
+                        **kwargs,
+                    )
+                self.assert_success(
+                    code,
+                    stdout,
+                    stderr,
+                    command="agent.{}".format(action),
+                    transport="exclusive-local",
+                )
+                self.assertFalse(
+                    any(event[0] == "online-backend" for event in self.events)
+                )
+                self.assertIn(("transaction-enter", self.data_dir.resolve()), self.events)
+                # One non-blocking attempt for the whole command: the handle taken
+                # before the backend exists is the one every transaction reuses.
+                self.assertEqual(attempts, [self.lock_path()])
+                self.assertEqual(requester.calls, [])
+                self.assert_lease_released()
+        # A stale advertisement is diagnostic evidence, never authority; recovery
+        # neither deletes nor rewrites it.
+        self.assertEqual(owner.server_info_path.read_bytes(), advertisement)
+
+    def test_corrupted_advertisement_over_free_lease_stays_local(self) -> None:
+        self.make_v3()
+        store = Store(self.data_dir)
+        store.server_info_path.parent.mkdir(parents=True, exist_ok=True)
+        store.server_info_path.write_text("{}", encoding="utf-8")
+        requester = RecordingRequester()
+        with count_lease_attempts() as attempts:
+            code, stdout, stderr = self.run_command(
+                STATUS_COMMAND,
+                dependencies=self._local_dependencies(requester),
+            )
+        envelope = self.assert_success(
+            code,
+            stdout,
+            stderr,
+            command="agent.status",
+            transport="exclusive-local",
+        )
+        self.assertIs(envelope["data"]["exclusive_local_available"], True)
+        self.assertIs(envelope["data"]["running_server_available"], False)
+        self.assertEqual(requester.calls, [])
+        self.assertEqual(attempts, [self.lock_path()])
+        self.assertEqual(store.server_info_path.read_text(encoding="utf-8"), "{}")
+        self.assert_lease_released()
+
+    def test_local_checkpoint_commits_under_the_retained_handle(self) -> None:
+        task_id = self.make_v3()
+        self.write_owner()
+        code, stdout, stderr = self.run_command(
+            CHECKPOINT_COMMAND,
+            dependencies=self._local_dependencies(RecordingRequester()),
+            intent_id=INTENT_ID,
+            checkpoint_raw=_checkpoint_bytes(task_id=task_id),
+        )
+        envelope = self.assert_success(
+            code,
+            stdout,
+            stderr,
+            command="agent.checkpoint",
+            transport="exclusive-local",
+        )
+        self.assertEqual(envelope["meta"]["commit_state"], "committed")
+        days = Store(self.data_dir).load("worklog.json")["days"]
+        matching = [
+            entry
+            for entry in days["2026-09-02"]["entries"]
+            if entry["task_id"] == task_id
+        ]
+        self.assertEqual(len(matching), 1)
+        self.assert_lease_released()
+
+    def test_out_of_sync_store_keeps_the_existing_local_status_envelope(self) -> None:
+        self.make_v3()
+        self.write_owner()
+        store = Store(self.data_dir)
+        backlog = store.path("backlog.json")
+        backlog.write_bytes(backlog.read_bytes() + b" ")
+        requester = RecordingRequester()
+        code, stdout, stderr = self.run_command(
+            STATUS_COMMAND,
+            dependencies=self._local_dependencies(requester),
+        )
+        envelope = self.assert_success(
+            code,
+            stdout,
+            stderr,
+            command="agent.status",
+            transport="exclusive-local",
+        )
+        # An unsynchronized store is still exclusively local: the advertisement
+        # does not turn it into an owner route and it does not become a refusal.
+        self.assertIs(envelope["data"]["ready"], False)
+        self.assertEqual(envelope["data"]["capability_reason"], "store_sync_required")
+        self.assertIs(envelope["data"]["capability_supported"], True)
+        self.assertIs(envelope["data"]["exclusive_local_available"], True)
+        self.assertIs(envelope["data"]["running_server_available"], False)
+        self.assertEqual(requester.calls, [])
+        self.assert_lease_released()
+
+    def test_blocked_recovery_journal_refuses_and_preserves_the_evidence(self) -> None:
+        self.make_v3()
+        store = Store(self.data_dir)
+        backlog = store.path("backlog.json")
+        backlog.write_bytes(backlog.read_bytes() + b" ")
+        unowned = backlog.read_bytes()
+        journal_path = self.data_dir.resolve() / JOURNAL_NAME
+        journal_path.write_text(
+            json.dumps(
+                _blocked_journal(value={"items": [], "version": 3}),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        journal = journal_path.read_bytes()
+        requester = RecordingRequester()
+        with count_lease_attempts() as attempts:
+            code, stdout, stderr = self.run_command(
+                CHECKPOINT_COMMAND,
+                dependencies=self._local_dependencies(requester),
+                intent_id=INTENT_ID,
+                checkpoint_raw=_checkpoint_bytes(),
+            )
+        self.assert_failure(
+            code,
+            stdout,
+            stderr,
+            error_code="internal_error",
+            command="agent.checkpoint",
+        )
+        self.assertEqual(requester.calls, [])
+        # The refusal now precedes the writer lease instead of trailing it: an
+        # unreplayable journal never reaches Store construction at all.
+        self.assertEqual(attempts, [])
+        self.assertEqual([event[0] for event in self.events], ["admit"])
+        self.assertEqual(self.local_calls, [])
+        # The pending journal and the unowned bytes are retained, not laundered.
+        self.assertEqual(journal_path.read_bytes(), journal)
+        self.assertEqual(backlog.read_bytes(), unowned)
+        self.assert_lease_released()
+
+    def _tree_bytes(self, *, exclude: frozenset[str] = frozenset()) -> dict[str, bytes]:
+        """Every authoritative and runtime byte, keyed by path.
+
+        Recovery evidence spans both trees: the journal and the documents live
+        under the data directory, while the committed manifest and the owner
+        advertisement live under the runtime directory. Comparing the whole
+        pair is what makes "nothing was replayed" a byte claim rather than a
+        claim about the one file the test happened to remember.
+        """
+
+        snapshot: dict[str, bytes] = {}
+        for base in (self.data_dir, self.runtime_dir):
+            if not base.exists():
+                continue
+            for path in sorted(base.rglob("*")):
+                if path.is_file() and path.name not in exclude:
+                    snapshot[str(path)] = path.read_bytes()
+        return snapshot
+
+    def _valid_journal_bytes(self) -> bytes:
+        """A journal whose intended value is exactly the committed baseline.
+
+        Every field, digest and target of this journal is valid, so storage
+        recovery would replay it, rewrite ``backlog.json`` and advance the
+        manifest. That is precisely the case the agent path must refuse: the
+        replay is safe *as storage*, and still unauthorized as the side effect
+        of answering ``agent status``.
+        """
+
+        backlog = Store(self.data_dir).path("backlog.json")
+        value = json.loads(backlog.read_text(encoding="utf-8"))
+        return json.dumps(
+            _blocked_journal(value=value),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+
+    def test_valid_recovery_journal_refuses_all_commands_before_any_route(self) -> None:
+        task_id = self.make_v3()
+        store = Store(self.data_dir)
+        journal_path = store.journal_path
+        journal = self._valid_journal_bytes()
+        journal_path.write_bytes(journal)
+
+        def absent() -> None:
+            self.assertFalse(store.server_info_path.exists())
+
+        def stale() -> None:
+            self.write_owner(store)
+
+        def corrupt() -> None:
+            store.server_info_path.write_text("{}", encoding="utf-8")
+
+        commands = (
+            (STATUS_COMMAND, {}),
+            (CONTEXT_COMMAND, {"task": task_id}),
+            (
+                CHECKPOINT_COMMAND,
+                {
+                    "intent_id": INTENT_ID,
+                    "checkpoint_raw": _checkpoint_bytes(task_id=task_id),
+                },
+            ),
+        )
+        for metadata, prepare in (
+            ("absent", absent),
+            ("stale", stale),
+            ("corrupt", corrupt),
+        ):
+            prepare()
+            for action, kwargs in commands:
+                with self.subTest(metadata=metadata, action=action):
+                    self.events.clear()
+                    self.local_calls.clear()
+                    self.online_calls.clear()
+                    requester = RecordingRequester()
+                    before = self._tree_bytes()
+                    with count_lease_attempts() as attempts:
+                        code, stdout, stderr = self.run_command(
+                            action,
+                            dependencies=self.dependencies(
+                                request_json=requester,
+                                store_factory=self.forbidden_store,
+                                create_local_backend=self.forbidden_local,
+                                create_running_server_backend=self._forbid_online,
+                            ),
+                            **kwargs,
+                        )
+                    self.assert_failure(
+                        code,
+                        stdout,
+                        stderr,
+                        error_code="internal_error",
+                        command="agent.{}".format(action),
+                    )
+                    # Admission is the only thing that ran: no Store, no
+                    # backend of either kind, no HTTP, no lease attempt.
+                    self.assertEqual([event[0] for event in self.events], ["admit"])
+                    self.assertEqual(self.local_calls, [])
+                    self.assertEqual(self.online_calls, [])
+                    self.assertEqual(requester.calls, [])
+                    self.assertEqual(attempts, [])
+                    self.assertEqual(self._tree_bytes(), before)
+                    self.assertEqual(journal_path.read_bytes(), journal)
+        self.assert_lease_released()
+        # The refusals above are not vacuous. The producer's own storage layer
+        # still replays this exact journal when a Store is initialized directly,
+        # which is lawful storage behaviour; the guard withholds that recovery
+        # from agent commands, it does not depend on the journal being broken.
+        WorkStack(Store(self.data_dir))
+        self.assertFalse(journal_path.exists())
+
+    def test_journal_landing_before_acquisition_is_caught_under_the_lease(self) -> None:
+        self.make_v3()
+        self.write_owner()
+        store = Store(self.data_dir)
+        journal_path = store.journal_path
+        journal = self._valid_journal_bytes()
+        self.assertFalse(journal_path.exists())
+        releases: list[Path] = []
+        acquire = _FileLease.acquire
+        release = _FileLease.release
+
+        def barrier(lease: _FileLease) -> None:
+            # The window a preflight can never cover: an interrupted writer
+            # lands a pending journal after admission read the directory and
+            # before this process owns the lease.
+            journal_path.write_bytes(journal)
+            acquire(lease)
+
+        def counting_release(lease: _FileLease) -> None:
+            releases.append(lease.path)
+            release(lease)
+
+        requester = RecordingRequester()
+        with patch.object(_FileLease, "acquire", barrier):
+            with patch.object(_FileLease, "release", counting_release):
+                code, stdout, stderr = self.run_command(
+                    STATUS_COMMAND,
+                    dependencies=self.dependencies(
+                        request_json=requester,
+                        create_local_backend=self.forbidden_local,
+                        create_running_server_backend=self._forbid_online,
+                    ),
+                )
+        self.assert_failure(
+            code,
+            stdout,
+            stderr,
+            error_code="internal_error",
+            command="agent.status",
+        )
+        # The recheck happens while the lease is genuinely retained, so the
+        # answer cannot go stale, and the handle taken for the decision is
+        # given back exactly once instead of being released and reacquired.
+        self.assertEqual(releases, [self.lock_path()])
+        self.assertEqual(self.local_calls, [])
+        self.assertEqual(requester.calls, [])
+        self.assertFalse(any(event[0] == "transaction-enter" for event in self.events))
+        self.assertFalse(any(event[0] == "local-backend" for event in self.events))
+        self.assertEqual(journal_path.read_bytes(), journal)
+        self.assert_lease_released()
+
+    def test_backend_construction_and_command_failures_release_the_lease(self) -> None:
+        self.make_v3()
+        self.write_owner()
+
+        def failing_construction(*, admission: AuthorityAdmission, store_factory):
+            self.local_calls.append(admission)
+            store_factory(root=admission.data_dir)
+            raise RuntimeError("backend construction failed after the lease was taken")
+
+        code, stdout, stderr = self.run_command(
+            STATUS_COMMAND,
+            dependencies=self.dependencies(
+                create_local_backend=failing_construction,
+                create_running_server_backend=self._forbid_online,
+            ),
+        )
+        self.assert_failure(
+            code,
+            stdout,
+            stderr,
+            error_code="internal_error",
+            command="agent.status",
+        )
+        self.assertEqual(len(self.local_calls), 1)
+        self.assert_lease_released()
+
+        exploding = RecordingBackend(error=RuntimeError("command failed mid-flight"))
+        code, stdout, stderr = self.run_command(
+            CONTEXT_COMMAND,
+            dependencies=self.dependencies(
+                create_local_backend=lambda **kwargs: self.fake_local(
+                    exploding, **kwargs
+                ),
+                create_running_server_backend=self._forbid_online,
+            ),
+            task="T-0001",
+        )
+        self.assert_failure(
+            code,
+            stdout,
+            stderr,
+            error_code="internal_error",
+            command="agent.context",
+        )
+        self.assert_lease_released()
+
+    def test_held_owner_identity_mismatch_never_falls_back_locally(self) -> None:
+        self.make_v3()
+        self.write_owner()
+        self.enterContext(self.held_owner())
+        foreign = RecordingRequester(
+            SESSION,
+            (200, {"data": {"store_schema_version": 3, "workspace_id": OTHER_UID}}),
+        )
+        with count_lease_attempts() as attempts:
+            code, stdout, stderr = self.run_command(
+                STATUS_COMMAND,
+                dependencies=self.dependencies(
+                    request_json=foreign,
+                    create_local_backend=self.forbidden_local,
+                ),
+            )
+        self.assert_failure(
+            code,
+            stdout,
+            stderr,
+            error_code="workspace_mismatch",
+            command="agent.status",
+        )
+        self.assertEqual(self.local_calls, [])
+        self.assertFalse(any(event[0] == "transaction-enter" for event in self.events))
+        self.assertEqual(attempts, [self.lock_path()])
+
+    def test_commit_unknown_never_reacquires_or_falls_back_locally(self) -> None:
+        task_id = self.make_v3()
+        self.write_owner()
+        self.enterContext(self.held_owner())
+        unverifiable = RecordingRequester(
+            SESSION,
+            STORAGE,
+            OSError("first response lost"),
+            TimeoutError("replay response lost"),
+        )
+        with count_lease_attempts() as attempts:
+            code, stdout, stderr = self.run_command(
+                CHECKPOINT_COMMAND,
+                dependencies=self.dependencies(
+                    request_json=unverifiable,
+                    create_local_backend=self.forbidden_local,
+                ),
+                intent_id=INTENT_ID,
+                checkpoint_raw=_checkpoint_bytes(task_id=task_id),
+            )
+        envelope = self.assert_failure(
+            code,
+            stdout,
+            stderr,
+            error_code="commit_unknown",
+            command="agent.checkpoint",
+        )
+        self.assertEqual(envelope["meta"]["commit_state"], "unknown")
+        self.assertEqual(envelope["meta"]["transport"], "running-server")
+        self.assertEqual(self.local_calls, [])
+        self.assertFalse(any(event[0] == "transaction-enter" for event in self.events))
+        # No second acquisition, no local backend, no new intent after an
+        # unverifiable send.
+        self.assertEqual(attempts, [self.lock_path()])
+        posts = [call for call in unverifiable.calls if call["method"] == "POST"]
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(posts[0]["body"], posts[1]["body"])
+        self.assertEqual(
+            posts[0]["headers"]["Idempotency-Key"],
+            posts[1]["headers"]["Idempotency-Key"],
+        )
 
 
 if __name__ == "__main__":

@@ -27,7 +27,8 @@ from workstack.agent_command_context import handle_context
 from workstack.agent_command_status import handle_status
 from workstack.agent_local_backend import create_local_backend
 from workstack.agent_transport import create_running_server_backend
-from workstack.store import Store
+from workstack.owner_authority import EXCLUSIVE_LOCAL_HELD, OwnerAuthority
+from workstack.store import JOURNAL_NAME, Store
 
 
 __all__ = ["run_agent_command"]
@@ -166,6 +167,35 @@ def _admission_error(error: BaseException) -> str:
     return "internal_error"
 
 
+class _OwnerUnavailable(Exception):
+    """No compliant owner answers: the lease is held and no route is advertised."""
+
+
+class _RecoveryBlocked(Exception):
+    """A pending recovery journal is present: no agent command may consume it."""
+
+
+def _pending_journal_present(path: pathlib.Path) -> bool:
+    """Report a pending recovery journal fail-closed, without following links.
+
+    ``lstat`` answers about the journal name itself, so a dangling symlink and
+    an entry of any other type are still evidence and never read as absence.
+    Only a definite "this name does not exist" is absence: every other
+    inspection failure (permission, name-resolution, an unreadable parent)
+    leaves the presence of authoritative recovery evidence unknown, and unknown
+    is treated as pending. Refusing a command costs nothing; silently replaying
+    a journal Work Stack could not even inspect would consume the evidence.
+    """
+
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def _owner_metadata_present(path: pathlib.Path) -> bool:
     try:
         path.lstat()
@@ -181,20 +211,71 @@ def _select_backend(
     admission: AuthorityAdmission,
     expected_workspace_uid: str,
     dependencies: RuntimeDependencies,
-):
+) -> tuple[object, OwnerAuthority | None]:
+    """Select one backend from the real writer lease, never from metadata.
+
+    The canonical ``.workstack.lock`` lease is attempted exactly once. A
+    retained handle is the only positive evidence that no compliant owner
+    exists, so it is kept on this exact Store for the whole command: the local
+    backend joins it instead of taking a second lease. A refused attempt means
+    a compliant writer already owns the data directory; the only lawful route
+    is then the advertised loopback owner, and a missing advertisement refuses
+    rather than probing, reclaiming, or retrying the acquisition.
+
+    Selecting local backend construction is not read-only: it initializes the
+    Store, and a depth-zero transaction replays a pending recovery journal.
+    A journal may therefore appear in the window between the caller's preflight
+    and this acquisition, so presence is rechecked once the lease is actually
+    retained, while the writer is this process and the answer cannot go stale.
+    The retained handle is released and the command refuses; the lease is never
+    released and reacquired to look again, because that would hand the data
+    directory to another writer mid-decision.
+    """
+
     store = dependencies.store_factory(root=admission.data_dir)
-    if _owner_metadata_present(store.server_info_path):
-        return _RunningBackendFailureRecorder(
-            dependencies.create_running_server_backend(
-                server_info_path=store.server_info_path,
-                expected_workspace_uid=expected_workspace_uid,
-                request_json=dependencies.request_json,
-            )
+    lease = store.try_acquire_writer_lease()
+    if lease is None:
+        if not _owner_metadata_present(store.server_info_path):
+            raise _OwnerUnavailable()
+        return (
+            _RunningBackendFailureRecorder(
+                dependencies.create_running_server_backend(
+                    server_info_path=store.server_info_path,
+                    expected_workspace_uid=expected_workspace_uid,
+                    request_json=dependencies.request_json,
+                )
+            ),
+            None,
         )
-    return dependencies.create_local_backend(
-        admission=admission,
-        store_factory=_AdmittedStoreFactory(admission=admission, store=store),
+    authority = OwnerAuthority(
+        state=EXCLUSIVE_LOCAL_HELD,
+        store=store,
+        lease=lease,
+        workspace_uid=admission.workspace_uid,
+        data_dir=admission.data_dir,
     )
+    try:
+        if _pending_journal_present(store.journal_path):
+            raise _RecoveryBlocked()
+        backend = dependencies.create_local_backend(
+            admission=admission,
+            store_factory=_AdmittedStoreFactory(admission=admission, store=store),
+        )
+    except BaseException:
+        _release_authority(authority)
+        raise
+    return backend, authority
+
+
+def _release_authority(authority: OwnerAuthority | None) -> None:
+    """Release the retained lease exactly once, without masking the outcome."""
+
+    if authority is None:
+        return
+    try:
+        authority.release()
+    except Exception:
+        pass
 
 
 def _handle_command(
@@ -250,8 +331,21 @@ def _dispatch(
     except Exception as error:
         return _failure(command=command, code=_admission_error(error))
 
+    # A pending recovery journal is authoritative evidence of an interrupted
+    # commit, and the ordinary owner-authority contract refuses every idle
+    # mutation while one exists. Status, context and checkpoint are refused
+    # here for the same reason and one step earlier: before any Store is
+    # constructed, before the writer lease is attempted, and before any owner
+    # route is chosen. Storage-level replay is a lawful storage behaviour, but
+    # it is not an authorization for an agent command -- least of all for a
+    # nominally read-only `status` -- to rewrite authoritative documents and
+    # delete the recovery marker on the way to answering.
+    if _pending_journal_present(admission.data_dir / JOURNAL_NAME):
+        return _failure(command=command, code="internal_error")
+
+    authority: OwnerAuthority | None = None
     try:
-        backend = _select_backend(
+        backend, authority = _select_backend(
             admission=admission,
             expected_workspace_uid=expected_workspace_uid,
             dependencies=dependencies,
@@ -269,8 +363,14 @@ def _dispatch(
         }:
             return _failure(command=command, code=classified)
         return outcome
+    except _OwnerUnavailable:
+        return _failure(command=command, code="owner_unavailable")
+    except _RecoveryBlocked:
+        return _failure(command=command, code="internal_error")
     except Exception:
         return _failure(command=command, code="internal_error")
+    finally:
+        _release_authority(authority)
 
 
 def _emit_rendered_bytes(*, stdout: typing.TextIO, rendered: bytes) -> None:

@@ -20,9 +20,15 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 SHELL = ROOT / "desktop" / "python-webview-shell"
 LINUX_PATH = SHELL / "remote_provision_installer_linux.py"
 INSTALLER_PATH = SHELL / "remote_provision_installer.py"
+
+from workstack.service import WorkStack
+from workstack.store import Store, StoreCorruptError
+from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES
 
 COMMIT = "a" * 40
 TREE = "b" * 40
@@ -50,6 +56,9 @@ STORE_META = {
     "store_schema_version": 3,
     "version": 2,
 }
+OTHER_UID = "22222222-2222-4222-8222-222222222222"
+NIL_UID = "00000000-0000-0000-0000-000000000000"
+LETTER_UID = "abcdefab-cdef-4abc-8def-abcdefabcdef"
 EVENTS = (
     "admit_runtime",
     "open_roots",
@@ -1159,6 +1168,187 @@ class StoreMetaExactTypeTests(unittest.TestCase):
         self.assertFalse(LINUX._store_meta_ok(schema_float))
 
 
+def _authority_bytes(value: object) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def disposable_v5_authority():
+    temporary = tempfile.TemporaryDirectory(prefix="ws-install-v5-")
+    store = Store(Path(temporary.name))
+    readiness = store.initialize()
+    values = {
+        name: json.loads((store.root / name).read_text(encoding="utf-8"))
+        for name in V5_DOCUMENT_NAMES
+    }
+    oracle = Store.validate_document_values(values, schema_version=5)
+    if oracle.workspace_uid != readiness.workspace_uid:
+        raise AssertionError("initialize UID and oracle UID diverged")
+    meta = (store.root / "store-meta.json").read_bytes()
+    workspace = (store.root / "workspace.json").read_bytes()
+    return temporary, oracle, values, meta, workspace
+
+
+def genuine_v3_authority():
+    temporary, _v5, values, _meta, workspace = disposable_v5_authority()
+    v3 = {name: values[name] for name in V3_DOCUMENT_NAMES}
+    metadata = json.loads(json.dumps(v3["store-meta.json"]))
+    metadata["store_schema_version"] = 3
+    del metadata["migrations"]["reports"]
+    v3["store-meta.json"] = metadata
+    oracle = Store.validate_document_values(v3, schema_version=3)
+    return temporary, oracle, v3, _authority_bytes(metadata), workspace
+
+
+class RemoteSchemaAdmissionTests(unittest.TestCase):
+    """Installer metadata predicate admits exact v3/v5; 10-document oracle stays in tests."""
+
+    def decode(self, meta: bytes, workspace: bytes):
+        return LINUX._data_object(meta), LINUX._data_object(workspace)
+
+    def mutated_meta(self, values: dict[str, object], mutator) -> bytes:
+        metadata = json.loads(json.dumps(values["store-meta.json"]))
+        mutator(metadata)
+        return _authority_bytes(metadata)
+
+    def test_genuine_v5_bytes_admit_and_bind_oracle_uid(self) -> None:
+        temporary, oracle, _values, meta, workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+        parsed_meta, parsed_space = self.decode(meta, workspace)
+        self.assertTrue(LINUX._store_meta_ok(parsed_meta))
+        self.assertEqual(LINUX._data_uid(parsed_space), oracle.workspace_uid)
+        self.assertEqual(oracle.schema_version, 5)
+
+    def test_genuine_v3_fixture_still_admits(self) -> None:
+        temporary, oracle, _values, meta, workspace = genuine_v3_authority()
+        self.addCleanup(temporary.cleanup)
+        parsed_meta, parsed_space = self.decode(meta, workspace)
+        self.assertTrue(LINUX._store_meta_ok(parsed_meta))
+        self.assertEqual(LINUX._data_uid(parsed_space), oracle.workspace_uid)
+        self.assertEqual(oracle.schema_version, 3)
+
+    def test_migrated_reports_evidence_is_admitted(self) -> None:
+        temporary, oracle, values, _meta, workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+        parsed_space = LINUX._data_object(workspace)
+        for origin in ("migrated_v1", "migrated_v2", "migrated_v3"):
+            with self.subTest(origin=origin):
+                def mutate(metadata, chosen=origin):
+                    metadata["migrations"]["reports"] = {
+                        "id": "workstack.reports.v3-to-v5",
+                        "origin": chosen,
+                        "source_sha256": LOCK,
+                    }
+
+                meta = self.mutated_meta(values, mutate)
+                Store.validate_document_values(
+                    {**values, "store-meta.json": json.loads(meta.decode("utf-8"))},
+                    schema_version=5,
+                )
+                parsed_meta = LINUX._data_object(meta)
+                self.assertTrue(LINUX._store_meta_ok(parsed_meta))
+                self.assertEqual(LINUX._data_uid(parsed_space), oracle.workspace_uid)
+
+    def test_bool_float_and_unsupported_schema_versions_are_refused(self) -> None:
+        temporary, _oracle, values, _meta, _workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+        cases = (
+            ("version_bool", lambda metadata: metadata.__setitem__("version", True)),
+            ("version_float", lambda metadata: metadata.__setitem__("version", 2.0)),
+            ("schema_bool", lambda metadata: metadata.__setitem__("store_schema_version", True)),
+            ("schema_float", lambda metadata: metadata.__setitem__("store_schema_version", 5.0)),
+            ("schema_1", lambda metadata: metadata.__setitem__("store_schema_version", 1)),
+            ("schema_2", lambda metadata: metadata.__setitem__("store_schema_version", 2)),
+            ("schema_4", lambda metadata: metadata.__setitem__("store_schema_version", 4)),
+            ("schema_future", lambda metadata: metadata.__setitem__("store_schema_version", 6)),
+        )
+        for name, mutator in cases:
+            with self.subTest(name=name):
+                parsed = LINUX._data_object(self.mutated_meta(values, mutator))
+                self.assertFalse(LINUX._store_meta_ok(parsed))
+
+    def test_partial_mixed_and_extra_migration_records_are_refused(self) -> None:
+        temporary, _oracle, values, _meta, _workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+
+        def drop_reports(metadata):
+            del metadata["migrations"]["reports"]
+
+        def extra_record(metadata):
+            metadata["migrations"]["ssot"] = metadata["migrations"]["identity"]
+
+        def mixed_v3_reports(metadata):
+            metadata["store_schema_version"] = 3
+
+        def extra_top(metadata):
+            metadata["extra"] = 1
+
+        for name, mutator in (
+            ("partial_v5", drop_reports),
+            ("extra_record", extra_record),
+            ("v3_with_reports", mixed_v3_reports),
+            ("extra_top_field", extra_top),
+        ):
+            with self.subTest(name=name):
+                parsed = LINUX._data_object(self.mutated_meta(values, mutator))
+                self.assertFalse(LINUX._store_meta_ok(parsed))
+
+    def test_invalid_reports_evidence_is_refused(self) -> None:
+        temporary, _oracle, values, _meta, _workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+
+        def set_reports(metadata, **fields):
+            metadata["migrations"]["reports"].update(fields)
+
+        cases = (
+            ("fresh_digest", {"source_sha256": LOCK}),
+            ("wrong_fresh_id", {"id": "workstack.reports.v3-to-v5"}),
+            ("unknown_origin", {"origin": "migrated_v4", "id": "workstack.reports.v3-to-v5", "source_sha256": LOCK}),
+            ("migrated_null_digest", {"origin": "migrated_v3", "id": "workstack.reports.v3-to-v5", "source_sha256": None}),
+            ("migrated_wrong_id", {"origin": "migrated_v3", "id": "workstack.reports.v5", "source_sha256": LOCK}),
+            ("uppercase_digest", {"origin": "migrated_v3", "id": "workstack.reports.v3-to-v5", "source_sha256": LOCK.replace("c", "C")}),
+        )
+        for name, fields in cases:
+            with self.subTest(name=name):
+                meta = self.mutated_meta(values, lambda metadata, payload=fields: set_reports(metadata, **payload))
+                self.assertFalse(LINUX._store_meta_ok(LINUX._data_object(meta)))
+
+    def test_noncanonical_nil_and_different_expected_uid(self) -> None:
+        temporary, oracle, _values, meta, workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+        parsed_meta = LINUX._data_object(meta)
+        self.assertTrue(LINUX._store_meta_ok(parsed_meta))
+        self.assertIsNone(LINUX._data_uid({"id": LETTER_UID.upper()}))
+        self.assertIsNone(LINUX._data_uid({"id": NIL_UID}))
+        self.assertIsNone(LINUX._data_uid({"id": "urn:uuid:" + LETTER_UID}))
+        actual = LINUX._data_uid(LINUX._data_object(workspace))
+        self.assertEqual(actual, oracle.workspace_uid)
+        self.assertNotEqual(actual, OTHER_UID)
+
+    def test_uid_swap_oracle_rejects_mixed_authority_metadata_still_admits(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="ws-install-swap-")
+        self.addCleanup(temporary.cleanup)
+        service = WorkStack(Store(Path(temporary.name)))
+        service.add_task("Held task")
+        values = {
+            name: json.loads((Path(temporary.name) / name).read_text(encoding="utf-8"))
+            for name in V5_DOCUMENT_NAMES
+        }
+        original = Store.validate_document_values(values, schema_version=5)
+        task_uid = values["backlog.json"]["tasks"][0]["uid"]
+        mixed = json.loads(json.dumps(values))
+        mixed["workspace.json"]["id"] = task_uid
+        with self.assertRaises(StoreCorruptError):
+            Store.validate_document_values(mixed, schema_version=5)
+        parsed_meta = LINUX._data_object((Path(temporary.name) / "store-meta.json").read_bytes())
+        parsed_space = LINUX._data_object(_authority_bytes(mixed["workspace.json"]))
+        self.assertTrue(LINUX._store_meta_ok(parsed_meta))
+        self.assertEqual(LINUX._data_uid(parsed_space), task_uid)
+        self.assertNotEqual(LINUX._data_uid(parsed_space), original.workspace_uid)
+        self.assertNotEqual(LINUX._data_uid(parsed_space), OTHER_UID)
+
+
 class QualityBudgetTests(unittest.TestCase):
     def test_owned_modules_stay_within_limits(self) -> None:
         def complexity(function: ast.AST) -> int:
@@ -1277,6 +1467,16 @@ def put_named(ops, name, payload):
         os.close(fd)
 
 
+def file_hashes(path):
+    out = {}
+    for name in os.listdir(path):
+        full = os.path.join(path, name)
+        if os.path.isfile(full):
+            with open(full, "rb") as handle:
+                out[name] = hashlib.sha256(handle.read()).hexdigest()
+    return out
+
+
 def write_store(ops, uid):
     meta = {
         "migrations": {
@@ -1371,6 +1571,81 @@ def main():
         except linux.InstallerError as error:
             code = error.code
         record(report, "open_roots_partial_close", missing.parent_fd == -1 and code == "DATA_STATE_UNKNOWN", code=code)
+
+        v5_meta = {
+            "migrations": {
+                "identity": {"id": "workstack.store.v2", "origin": "fresh", "source_sha256": None},
+                "planning_status": {"id": "workstack.planning-status.v1", "origin": "fresh", "source_sha256": None},
+                "reports": {"id": "workstack.reports.v5", "origin": "fresh", "source_sha256": None},
+            },
+            "store_schema_version": 5,
+            "version": 2,
+        }
+
+        data_v5 = os.path.join(base, "data-v5")
+        os.mkdir(data_v5, 0o755)
+        ops = linux._LinuxInstallerOperations(install, data_v5, "owner", uid)
+        ops.open_roots()
+        put_named(ops, "store-meta.json", json.dumps(v5_meta, separators=(",", ":")).encode("utf-8"))
+        put_named(ops, "workspace.json", json.dumps({"id": uid}, separators=(",", ":")).encode("utf-8"))
+        before = file_hashes(data_v5)
+        v5_code = ""
+        try:
+            ops.admit_data()
+        except linux.InstallerError as error:
+            v5_code = error.code
+        record(report, "v5_admit_data", v5_code == "" and file_hashes(data_v5) == before, code=v5_code)
+        ops.close_fds()
+
+        data_v3 = os.path.join(base, "data-v3")
+        os.mkdir(data_v3, 0o755)
+        ops = linux._LinuxInstallerOperations(install, data_v3, "owner", uid)
+        ops.open_roots()
+        write_store(ops, uid)
+        before = file_hashes(data_v3)
+        v3_code = ""
+        try:
+            ops.admit_data()
+        except linux.InstallerError as error:
+            v3_code = error.code
+        record(report, "v3_admit_data", v3_code == "" and file_hashes(data_v3) == before, code=v3_code)
+        ops.close_fds()
+
+        data_v4 = os.path.join(base, "data-v4")
+        os.mkdir(data_v4, 0o755)
+        ops = linux._LinuxInstallerOperations(install, data_v4, "owner", uid)
+        ops.open_roots()
+        v4_meta = json.loads(json.dumps(v5_meta))
+        v4_meta["store_schema_version"] = 4
+        put_named(ops, "store-meta.json", json.dumps(v4_meta, separators=(",", ":")).encode("utf-8"))
+        put_named(ops, "workspace.json", json.dumps({"id": uid}, separators=(",", ":")).encode("utf-8"))
+        before = file_hashes(data_v4)
+        v4_code = ""
+        try:
+            ops.admit_data()
+            v4_ok = False
+        except linux.InstallerError as error:
+            v4_code = error.code
+            v4_ok = v4_code == "DATA_STATE_UNKNOWN"
+        record(report, "v4_schema_refuse", v4_ok and file_hashes(data_v4) == before, code=v4_code)
+        ops.close_fds()
+
+        data_mis = os.path.join(base, "data-mis")
+        os.mkdir(data_mis, 0o755)
+        ops = linux._LinuxInstallerOperations(install, data_mis, "owner", "22222222-2222-4222-8222-222222222222")
+        ops.open_roots()
+        put_named(ops, "store-meta.json", json.dumps(v5_meta, separators=(",", ":")).encode("utf-8"))
+        put_named(ops, "workspace.json", json.dumps({"id": uid}, separators=(",", ":")).encode("utf-8"))
+        before = file_hashes(data_mis)
+        mis_code = ""
+        try:
+            ops.admit_data()
+            mis_ok = False
+        except linux.InstallerError as error:
+            mis_code = error.code
+            mis_ok = mis_code == "REMOTE_WORKSPACE_MISMATCH"
+        record(report, "v5_expected_uid_mismatch", mis_ok and file_hashes(data_mis) == before, code=mis_code)
+        ops.close_fds()
 
         ops = linux._LinuxInstallerOperations(install, data, "owner", uid)
         ops.open_roots()
@@ -1927,6 +2202,10 @@ class LinuxFilesystemPrimitiveTests(unittest.TestCase):
             names = {item["name"]: item for item in report["results"]}
             expected = (
                 "open_roots_partial_close",
+                "v5_admit_data",
+                "v3_admit_data",
+                "v4_schema_refuse",
+                "v5_expected_uid_mismatch",
                 "shared_dir_extract",
                 "bind_before_swap",
                 "stage_swap_bind",

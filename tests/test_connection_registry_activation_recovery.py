@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import sys
 import tempfile
 import unittest
@@ -52,6 +53,94 @@ def ssh_profile():
 
 def registry(active: str, *profiles: object):
     return REGISTRY.ConnectionRegistry(1, active, tuple(profiles))
+
+
+def plant_duplicate_pending_receipt(root: Path, receipt):
+    """Write the extra pending receipt a build before this repair could leave.
+
+    Its rollback is the already-activated registry, which is exactly the shape a
+    same-candidate retry used to persist next to the first attempt.
+    """
+
+    activation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, receipt.activation_id))
+    duplicate = MUTATIONS.ActivationReceipt(
+        activation_id=activation_id,
+        state="pending",
+        previous_registry_digest=receipt.activated_registry_digest,
+        activated_registry_digest=receipt.activated_registry_digest,
+        profile_id=receipt.profile_id,
+        profile_digest=receipt.profile_digest,
+        proof_digest=receipt.proof_digest,
+        rollback_file=f"{activation_id}.rollback.json",
+    )
+    records = root / MUTATIONS.ACTIVATION_DIRECTORY
+    (records / duplicate.rollback_file).write_bytes(
+        (root / REGISTRY.REGISTRY_FILE).read_bytes()
+    )
+    (records / f"{activation_id}.receipt.json").write_bytes(
+        MUTATIONS._receipt_bytes(duplicate)
+    )
+    return duplicate
+
+
+def plant_second_duplicate_pending_receipt(root: Path, receipt):
+    """Write a second provably no-op receipt so one reconciliation writes twice."""
+
+    activation_id = str(uuid.uuid5(uuid.NAMESPACE_OID, receipt.activation_id))
+    duplicate = MUTATIONS.ActivationReceipt(
+        activation_id=activation_id,
+        state="pending",
+        previous_registry_digest=receipt.activated_registry_digest,
+        activated_registry_digest=receipt.activated_registry_digest,
+        profile_id=receipt.profile_id,
+        profile_digest=receipt.profile_digest,
+        proof_digest=receipt.proof_digest,
+        rollback_file=f"{activation_id}.rollback.json",
+    )
+    records = root / MUTATIONS.ACTIVATION_DIRECTORY
+    (records / duplicate.rollback_file).write_bytes(
+        (root / REGISTRY.REGISTRY_FILE).read_bytes()
+    )
+    (records / f"{activation_id}.receipt.json").write_bytes(
+        MUTATIONS._receipt_bytes(duplicate)
+    )
+    return duplicate
+
+
+def plant_foreign_pending_receipt(root: Path, receipt):
+    """Write unconfirmed evidence that neither rolls back to nor activated now.
+
+    Nothing proves this attempt failed, so no plan may close it and no page may
+    offer an action while it is present.
+    """
+
+    activation_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, receipt.activation_id))
+    foreign = MUTATIONS.ActivationReceipt(
+        activation_id=activation_id,
+        state="pending",
+        previous_registry_digest="sha256:" + "a" * 64,
+        activated_registry_digest="sha256:" + "b" * 64,
+        profile_id=receipt.profile_id,
+        profile_digest=receipt.profile_digest,
+        proof_digest=receipt.proof_digest,
+        rollback_file=f"{activation_id}.rollback.json",
+    )
+    records = root / MUTATIONS.ACTIVATION_DIRECTORY
+    (records / foreign.rollback_file).write_bytes(b"{}")
+    (records / f"{activation_id}.receipt.json").write_bytes(
+        MUTATIONS._receipt_bytes(foreign)
+    )
+    return foreign
+
+
+def byte_tree(root: Path) -> dict[str, bytes]:
+    """Snapshot every file under the state root for an exact no-write oracle."""
+
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 def ready_result(profile: object):
@@ -107,6 +196,7 @@ class ActivationRecoveryTest(unittest.TestCase):
                     "code": "no_recovery",
                     "message": "No connection activation requires recovery.",
                     "can_restore": False,
+                    "can_reconcile": False,
                     "activation_id": None,
                     "profile_id": None,
                     "current_registry_digest": None,
@@ -261,29 +351,22 @@ class ActivationRecoveryTest(unittest.TestCase):
                         expected_registry_digest=MUTATIONS.registry_digest(candidate),
                     )
 
-    def test_multiple_pending_activations_are_blocked(self) -> None:
+    def test_historical_duplicates_reconcile_then_restore_original_ancestry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            _old, candidate, mutations, first = self._activate(root)
-            remote = ssh_profile()
+            original, candidate, _mutations, first = self._activate(root)
             current_digest = MUTATIONS.registry_digest(candidate)
-            proof = mutations.issue_successful_test_proof(
-                remote,
-                ready_result(remote),
-                base_registry_digest=current_digest,
-            )
-            second = mutations.activate(
-                candidate,
-                PROFILE_B,
-                proof.proof_id,
-                expected_registry_digest=current_digest,
-            )
+            second = plant_duplicate_pending_receipt(root, first)
             recovery = RECOVERY.ConnectionRegistryActivationRecoveryService(root)
 
             status = recovery.inspect()
 
-            self.assertEqual("blocked", status.state)
-            self.assertEqual("multiple_pending_activations", status.code)
+            self.assertEqual("can_reconcile", status.state)
+            self.assertEqual("reconcile_required", status.code)
+            self.assertFalse(status.can_restore)
+            self.assertTrue(status.can_reconcile)
+            self.assertEqual(first.activation_id, status.activation_id)
+            self.assertEqual(current_digest, status.current_registry_digest)
             for receipt in (first, second):
                 with self.assertRaises(RECOVERY.ActivationRecoveryRefusedError):
                     recovery.restore(
@@ -291,26 +374,130 @@ class ActivationRecoveryTest(unittest.TestCase):
                         expected_registry_digest=current_digest,
                     )
 
+            report = recovery.reconcile(
+                first.activation_id, expected_registry_digest=current_digest
+            )
+            refreshed = report.status
+
+            self.assertEqual("resumed", report.state)
+            self.assertEqual("recovery_required", refreshed.state)
+            self.assertTrue(refreshed.can_restore)
+            self.assertFalse(refreshed.can_reconcile)
+            self.assertEqual(first.activation_id, refreshed.activation_id)
+            self.assertEqual(
+                "superseded",
+                MUTATIONS.load_activation_receipt(root, second.activation_id).state,
+            )
+            self.assertEqual(candidate, REGISTRY.load_connection_registry(root))
+
+            result = recovery.restore(
+                first.activation_id, expected_registry_digest=current_digest
+            )
+
+            self.assertEqual("restored", result.state)
+            self.assertEqual(original, REGISTRY.load_connection_registry(root))
+            self.assertEqual(
+                first.previous_registry_digest, result.restored_registry_digest
+            )
+
+    def test_unprovable_duplicate_evidence_exposes_no_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _old, candidate, _mutations, first = self._activate(root)
+            current_digest = MUTATIONS.registry_digest(candidate)
+            plant_duplicate_pending_receipt(root, first)
+            plant_foreign_pending_receipt(root, first)
+            recovery = RECOVERY.ConnectionRegistryActivationRecoveryService(root)
+            before = byte_tree(root)
+
+            status = recovery.inspect()
+
+            self.assertEqual("blocked", status.state)
+            self.assertEqual("multiple_pending_activations", status.code)
+            self.assertFalse(status.can_restore)
+            self.assertFalse(status.can_reconcile)
+            self.assertEqual(
+                {
+                    "state": "blocked",
+                    "code": "multiple_pending_activations",
+                    "message": "Multiple connection activations require manual review.",
+                    "can_restore": False,
+                    "can_reconcile": False,
+                    "activation_id": None,
+                    "profile_id": None,
+                    "current_registry_digest": None,
+                },
+                RECOVERY.activation_recovery_status_to_document(status),
+            )
+
+            with self.assertRaises(RECOVERY.ActivationRecoveryRefusedError) as caught:
+                recovery.reconcile(
+                    first.activation_id, expected_registry_digest=current_digest
+                )
+
+            self.assertEqual("multiple_pending_activations", caught.exception.code)
+            self.assertEqual(before, byte_tree(root))
+            self.assertEqual(candidate, REGISTRY.load_connection_registry(root))
+
+    def test_evidence_arriving_between_render_and_click_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _old, candidate, mutations, first = self._activate(root)
+            plant_duplicate_pending_receipt(root, first)
+            rendered = RECOVERY.ConnectionRegistryActivationRecoveryService(root).inspect()
+            self.assertTrue(rendered.can_reconcile)
+
+            class RacingMutationService:
+                def reconcile_activations(self, **request: object):
+                    plant_foreign_pending_receipt(root, first)
+                    return mutations.reconcile_activations(**request)
+
+            recovery = RECOVERY.ConnectionRegistryActivationRecoveryService(
+                root, mutation_service=RacingMutationService()
+            )
+            before = byte_tree(root)
+
+            with self.assertRaises(RECOVERY.ActivationRecoveryRefusedError) as caught:
+                recovery.reconcile(
+                    rendered.activation_id,
+                    expected_registry_digest=rendered.current_registry_digest,
+                )
+
+            after = byte_tree(root)
+
+            self.assertEqual("recovery_conflict", caught.exception.code)
+            self.assertEqual(candidate, REGISTRY.load_connection_registry(root))
+            self.assertEqual(before, {path: after[path] for path in before})
+            self.assertEqual("pending", MUTATIONS.load_activation_receipt(root, first.activation_id).state)
+
+    def test_stale_registry_digest_from_a_stale_page_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _old, candidate, _mutations, first = self._activate(root)
+            plant_duplicate_pending_receipt(root, first)
+            recovery = RECOVERY.ConnectionRegistryActivationRecoveryService(root)
+            self.assertTrue(recovery.inspect().can_reconcile)
+            before = byte_tree(root)
+
+            with self.assertRaises(RECOVERY.ActivationRecoveryRefusedError) as caught:
+                recovery.reconcile(
+                    first.activation_id,
+                    expected_registry_digest="sha256:" + "9" * 64,
+                )
+
+            self.assertEqual("recovery_conflict", caught.exception.code)
+            self.assertEqual(before, byte_tree(root))
+            self.assertEqual(candidate, REGISTRY.load_connection_registry(root))
+
     def test_new_pending_activation_between_inspect_and_restore_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _old, candidate, mutations, first = self._activate(root)
             current_digest = MUTATIONS.registry_digest(candidate)
-            remote = ssh_profile()
 
             class RacingMutationService:
                 def restore(self, activation_id: str, *, expected_registry_digest: str):
-                    proof = mutations.issue_successful_test_proof(
-                        remote,
-                        ready_result(remote),
-                        base_registry_digest=current_digest,
-                    )
-                    mutations.activate(
-                        candidate,
-                        PROFILE_B,
-                        proof.proof_id,
-                        expected_registry_digest=current_digest,
-                    )
+                    plant_duplicate_pending_receipt(root, first)
                     return mutations.restore(
                         activation_id,
                         expected_registry_digest=expected_registry_digest,
@@ -408,6 +595,310 @@ class ActivationRecoveryTest(unittest.TestCase):
 
             self.assertEqual("blocked", status.state)
             self.assertEqual("invalid_recovery_evidence", status.code)
+
+
+class ReconciliationOutcomeBoundaryTest(unittest.TestCase):
+    """Every completed reconciliation is described from re-read evidence."""
+
+    def _duplicates(self, root: Path):
+        """Activate once, then leave two provably no-op duplicate receipts."""
+
+        _original, candidate, mutations, kept = ActivationRecoveryTest()._activate(root)
+        first = plant_duplicate_pending_receipt(root, kept)
+        second = plant_second_duplicate_pending_receipt(root, kept)
+        return candidate, mutations, kept, (first, second)
+
+    def _counted(self, service):
+        """Count how many times one reconciliation inspects the records."""
+
+        calls: list[str] = []
+        inspect = service.inspect
+
+        def counting_inspect():
+            calls.append("inspect")
+            return inspect()
+
+        service.inspect = counting_inspect
+        return calls
+
+    def _fault_on_second_receipt(self):
+        write = MUTATIONS._replace_receipt_if_digest
+        calls: list[str] = []
+
+        def faulted(path, receipt, expected_digest):
+            calls.append(receipt.activation_id)
+            if len(calls) == 2:
+                raise MUTATIONS.RegistryConflictError("Activation receipt changed")
+            return write(path, receipt, expected_digest)
+
+        return mock.patch.object(
+            MUTATIONS, "_replace_receipt_if_digest", side_effect=faulted
+        )
+
+    def test_an_incomplete_outcome_is_inspected_again_without_offering_action(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, mutations, kept, planted = self._duplicates(root)
+            service = RECOVERY.ConnectionRegistryActivationRecoveryService(
+                root, mutation_service=mutations
+            )
+            advertised = service.inspect()
+            inspections = self._counted(service)
+
+            with self._fault_on_second_receipt():
+                report = service.reconcile(
+                    advertised.activation_id,
+                    expected_registry_digest=advertised.current_registry_digest,
+                )
+
+            # The pre-action inspection, then the required fresh one after the
+            # partial write.  Skipping the second one was the reported defect.
+            self.assertEqual(2, len(inspections))
+            self.assertEqual("incomplete", report.state)
+            # The exact current status is retained, but an incomplete report is
+            # never the one state a click may follow.
+            self.assertIsNotNone(report.status)
+            self.assertNotEqual("resumed", report.state)
+            states = [
+                MUTATIONS.load_activation_receipt(root, item.activation_id).state
+                for item in planted
+            ]
+            self.assertEqual(1, states.count("superseded"))
+            self.assertEqual(1, states.count("pending"))
+            self.assertEqual(
+                "pending",
+                MUTATIONS.load_activation_receipt(root, kept.activation_id).state,
+            )
+            self.assertEqual(candidate, REGISTRY.load_connection_registry(root))
+
+    def test_an_uncertain_outcome_is_inspected_again_and_stays_uncertain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _candidate, mutations, _kept, _planted = self._duplicates(root)
+            service = RECOVERY.ConnectionRegistryActivationRecoveryService(
+                root, mutation_service=mutations
+            )
+            advertised = service.inspect()
+            inspections = self._counted(service)
+            write = MUTATIONS._replace_receipt_if_digest
+            read = MUTATIONS.load_activation_receipt
+            committed: list[str] = []
+
+            def record(path, receipt, expected_digest):
+                write(path, receipt, expected_digest)
+                committed.append(receipt.activation_id)
+
+            def unreadable_after_the_write(state_root, activation_id):
+                if committed:
+                    raise RuntimeError("Could not inspect activation records")
+                return read(state_root, activation_id)
+
+            with (
+                mock.patch.object(
+                    MUTATIONS, "_replace_receipt_if_digest", side_effect=record
+                ),
+                mock.patch.object(
+                    MUTATIONS,
+                    "load_activation_receipt",
+                    side_effect=unreadable_after_the_write,
+                ),
+            ):
+                report = service.reconcile(
+                    advertised.activation_id,
+                    expected_registry_digest=advertised.current_registry_digest,
+                )
+
+            # The core could not read its own targets back, and the fresh
+            # inspection that follows still has to be attempted.
+            self.assertEqual(2, len(inspections))
+            self.assertEqual("uncertain", report.state)
+
+    def test_an_unexpected_post_write_failure_is_uncertain_not_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _candidate, mutations, _kept, planted = self._duplicates(root)
+
+            class UnexpectedFailureAfterTheWrites:
+                def reconcile_activations(self, **fields: object):
+                    mutations.reconcile_activations(**fields)
+                    raise KeyError("activation_id")
+
+            service = RECOVERY.ConnectionRegistryActivationRecoveryService(
+                root, mutation_service=UnexpectedFailureAfterTheWrites()
+            )
+            advertised = service.inspect()
+
+            report = service.reconcile(
+                advertised.activation_id,
+                expected_registry_digest=advertised.current_registry_digest,
+            )
+
+            # Records really moved, so this may never be reported as the
+            # refusal class whose invariant is that nothing was written.
+            self.assertEqual("uncertain", report.state)
+            self.assertIsNone(report.status)
+            for item in planted:
+                self.assertEqual(
+                    "superseded",
+                    MUTATIONS.load_activation_receipt(root, item.activation_id).state,
+                )
+
+    def test_an_unexpected_committed_path_inspection_failure_is_uncertain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _candidate, mutations, _kept, planted = self._duplicates(root)
+            service = RECOVERY.ConnectionRegistryActivationRecoveryService(
+                root, mutation_service=mutations
+            )
+            advertised = service.inspect()
+            inspect = service.inspect
+            calls: list[str] = []
+
+            def unavailable_after_the_write():
+                calls.append("inspect")
+                if len(calls) > 1:
+                    raise KeyError("activation_id")
+                return inspect()
+
+            service.inspect = unavailable_after_the_write
+
+            report = service.reconcile(
+                advertised.activation_id,
+                expected_registry_digest=advertised.current_registry_digest,
+            )
+
+            self.assertEqual(2, len(calls))
+            self.assertEqual("uncertain", report.state)
+            self.assertIsNone(report.status)
+            for item in planted:
+                self.assertEqual(
+                    "superseded",
+                    MUTATIONS.load_activation_receipt(root, item.activation_id).state,
+                )
+
+
+    def _lock_that_fails_to_release(self, error: BaseException):
+        """Fail while the core's mutation lock exits, after it has written."""
+
+        real = MUTATIONS.connection_registry_mutation_lock
+
+        @contextlib.contextmanager
+        def failing_lock(state_root):
+            with real(state_root):
+                try:
+                    yield
+                finally:
+                    raise error
+
+        return mock.patch.object(
+            MUTATIONS, "connection_registry_mutation_lock", failing_lock
+        )
+
+    def test_a_lock_exit_failure_after_a_commit_is_never_a_refusal(self) -> None:
+        """An OSError from the lock's exit is not proof that nothing moved."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, mutations, kept, planted = self._duplicates(root)
+            service = RECOVERY.ConnectionRegistryActivationRecoveryService(
+                root, mutation_service=mutations
+            )
+            advertised = service.inspect()
+            inspections = self._counted(service)
+
+            with self._lock_that_fails_to_release(
+                OSError("Could not release the connection registry mutation lock")
+            ):
+                report = service.reconcile(
+                    advertised.activation_id,
+                    expected_registry_digest=advertised.current_registry_digest,
+                )
+
+            # The duplicates really did move, so the expected-family error may
+            # not be told to the caller as the zero-write refusal class.
+            self.assertEqual("uncertain", report.state)
+            self.assertNotEqual("resumed", report.state)
+            self.assertEqual(2, len(inspections))
+            for item in planted:
+                self.assertEqual(
+                    "superseded",
+                    MUTATIONS.load_activation_receipt(root, item.activation_id).state,
+                )
+                self.assertTrue(
+                    (root / MUTATIONS.ACTIVATION_DIRECTORY / item.rollback_file).is_file()
+                )
+            self.assertEqual(
+                "pending",
+                MUTATIONS.load_activation_receipt(root, kept.activation_id).state,
+            )
+            self.assertEqual(candidate, REGISTRY.load_connection_registry(root))
+
+    def test_an_expected_family_without_the_core_proof_is_uncertain(self) -> None:
+        """Membership of an expected family is not itself a zero-write proof."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _candidate, mutations, _kept, planted = self._duplicates(root)
+
+            class ExpectedFamilyAfterTheWrites:
+                def reconcile_activations(self, **fields: object):
+                    mutations.reconcile_activations(**fields)
+                    raise OSError("Could not release the lock")
+
+            service = RECOVERY.ConnectionRegistryActivationRecoveryService(
+                root, mutation_service=ExpectedFamilyAfterTheWrites()
+            )
+            advertised = service.inspect()
+
+            report = service.reconcile(
+                advertised.activation_id,
+                expected_registry_digest=advertised.current_registry_digest,
+            )
+
+            self.assertEqual("uncertain", report.state)
+            for item in planted:
+                self.assertEqual(
+                    "superseded",
+                    MUTATIONS.load_activation_receipt(root, item.activation_id).state,
+                )
+
+    def test_a_proven_pre_write_refusal_is_still_raised_precisely(self) -> None:
+        """Narrowing the refusal class may not blunt a real zero-write refusal."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, mutations, kept, planted = self._duplicates(root)
+            advertised = RECOVERY.ConnectionRegistryActivationRecoveryService(
+                root, mutation_service=mutations
+            ).inspect()
+            before = byte_tree(root)
+
+            class EvidenceArrivesBeforeTheCoreWrites:
+                def reconcile_activations(self, **fields: object):
+                    plant_foreign_pending_receipt(root, kept)
+                    return mutations.reconcile_activations(**fields)
+
+            service = RECOVERY.ConnectionRegistryActivationRecoveryService(
+                root, mutation_service=EvidenceArrivesBeforeTheCoreWrites()
+            )
+
+            with self.assertRaises(RECOVERY.ActivationRecoveryRefusedError) as refused:
+                service.reconcile(
+                    advertised.activation_id,
+                    expected_registry_digest=advertised.current_registry_digest,
+                )
+
+            after = byte_tree(root)
+            self.assertEqual("recovery_conflict", refused.exception.code)
+            self.assertEqual(before, {path: after[path] for path in before})
+            for item in planted:
+                self.assertEqual(
+                    "pending",
+                    MUTATIONS.load_activation_receipt(root, item.activation_id).state,
+                )
+            self.assertEqual(candidate, REGISTRY.load_connection_registry(root))
 
 
 if __name__ == "__main__":

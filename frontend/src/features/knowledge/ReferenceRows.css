@@ -1,0 +1,80 @@
+/* Reading sizes come from UI-A's additive reading tokens; the fallbacks keep this file
+   correct on its own until that shared change lands. */
+.reference-row {
+  border-top: 1px solid var(--ws-border-subtle);
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 11px 0;
+}
+.reference-row:first-child { border-top: 0; padding-top: 0; }
+.reference-row__choice {
+  align-items: start;
+  cursor: pointer;
+  display: flex;
+  gap: 9px;
+  min-width: 0;
+}
+.reference-row__choice input { flex: 0 0 auto; margin: 3px 0 0; }
+.reference-row__choice input:disabled { cursor: not-allowed; }
+.reference-row__body { display: grid; gap: 4px; min-width: 0; }
+.reference-row__identity { display: grid; gap: 2px; min-width: 0; }
+.reference-row__title {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-body, 14px);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.reference-row__origin {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.reference-row__reason {
+  color: var(--ws-text-secondary);
+  display: block;
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.reference-row__reason-label {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  margin-right: 7px;
+  text-transform: uppercase;
+}
+.reference-row__reason-text { overflow-wrap: anywhere; }
+.reference-row__extra { display: grid; gap: 8px; min-width: 0; padding-left: 25px; }
+.reference-row--summary .reference-row__body { padding-left: 0; }
+
+.reference-excerpt {
+  background: var(--ws-surface-raised);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px;
+}
+.reference-excerpt header { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; }
+.reference-excerpt__body {
+  background: var(--ws-surface-sunken);
+  border: 1px solid var(--ws-border-default);
+  border-left: 2px solid var(--ws-brand-accent);
+  border-radius: 9px;
+  color: var(--ws-text-secondary);
+  font-family: inherit;
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.6;
+  margin: 0;
+  max-height: 14rem;
+  min-width: 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 9px 10px;
+  white-space: pre-wrap;
+}

@@ -1,0 +1,238 @@
+.detail-drawer.detail-drawer--resume {
+  grid-template-rows: 54px auto minmax(0, 1fr) auto;
+}
+
+.detail-drawer.detail-drawer--subview {
+  grid-template-rows: 54px minmax(0, 1fr);
+}
+
+.detail-drawer.detail-drawer--resume .drawer-body,
+.detail-drawer.detail-drawer--subview .drawer-body {
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 28px;
+  scroll-padding-bottom: 72px;
+}
+
+.task-drawer-tabs {
+  display: flex;
+  gap: 0;
+}
+
+.task-drawer-tabs [role='tab'] {
+  font-size: 13px;
+}
+
+.task-resume {
+  color: var(--ws-text-primary);
+  display: grid;
+  gap: 18px;
+  font-size: 14px;
+  line-height: 1.5;
+  min-width: 0;
+}
+
+.task-resume h2,
+.task-resume h3,
+.task-resume p,
+.task-resume li {
+  overflow-wrap: anywhere;
+}
+
+.task-resume-title {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.task-resume-title h2 {
+  font: 650 18px/1.35 Inter, Aptos, 'Segoe UI', sans-serif;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.task-resume-title h2.is-clamped {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  display: -webkit-box;
+  overflow: hidden;
+}
+
+.task-resume-title__toggle {
+  background: transparent;
+  border: 0;
+  color: var(--ws-text-muted);
+  font-size: 12px;
+  justify-self: start;
+  min-height: 32px;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.task-resume-title__toggle:hover,
+.task-resume-title__toggle:focus-visible {
+  color: var(--ws-text-primary);
+}
+
+.task-resume-section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-resume-section h3 {
+  color: var(--ws-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.task-resume-section p,
+.task-resume-section li {
+  margin: 0;
+}
+
+.task-resume-section ol,
+.task-resume-section ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 1.15em;
+}
+
+/* A partly readable record has to look unlike an ordinary one at a glance. */
+.task-resume-notice {
+  background: var(--ws-status-warning-surface);
+  border: 1px solid var(--ws-status-warning-border);
+  border-radius: 8px;
+  color: var(--ws-status-warning-text);
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.task-resume-section .task-resume-notice p {
+  color: inherit;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-resume-notice__headline {
+  font-weight: 600;
+}
+
+.task-resume__meta {
+  color: var(--ws-text-muted);
+  font-size: 12px;
+  margin: 0;
+}
+
+.task-resume__note {
+  color: var(--ws-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.task-resume-skeleton {
+  display: grid;
+  gap: 8px;
+}
+
+.task-resume-skeleton span {
+  background: var(--ws-surface-raised);
+  border-radius: 6px;
+  display: block;
+  height: 14px;
+}
+
+.task-resume-skeleton span:first-child { width: 42%; }
+.task-resume-skeleton span:nth-child(2) { width: 88%; }
+.task-resume-skeleton span:nth-child(3) { width: 70%; }
+
+.task-resume-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.task-resume-details {
+  border-top: 1px solid var(--ws-border-subtle);
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.task-resume-details > summary {
+  color: var(--ws-text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  list-style: none;
+  min-height: 34px;
+  padding: 8px 0;
+  text-transform: uppercase;
+}
+
+.task-resume-details > summary::-webkit-details-marker { display: none; }
+
+.task-resume-details[open] > summary {
+  color: var(--ws-text-primary);
+}
+
+.task-resume-details__body {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.task-resume-details__body span {
+  color: var(--ws-text-muted);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.task-resume-details__body code {
+  color: var(--ws-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.task-resume-history {
+  display: grid;
+  gap: 8px;
+}
+
+.task-resume-history pre {
+  background: var(--ws-control-bg);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 8px;
+  color: var(--ws-text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.task-resume-footer {
+  background: linear-gradient(180deg, transparent, var(--ws-surface-base) 18%);
+  border-top: 1px solid var(--ws-border-subtle);
+  display: grid;
+  gap: 8px;
+  padding: 12px 18px 16px;
+}
+
+.task-resume-footer .button {
+  width: 100%;
+}
+
+.task-context-subview {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding-bottom: 24px;
+}

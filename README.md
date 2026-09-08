@@ -1,8 +1,12 @@
 # Work Stack
 
-**Latest manual-install preview: [1.0.8](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.8).**
-See the [Korean installation and upgrade guide](docs/WORKSTACK-1.0.8-INSTALL-UPGRADE.ko.md).
-The stable automatic-update channel remains on 1.0.7 pending the complete release gate.
+**Source snapshot: 1.0.11 (2026-09-08).** This commit updates source code; it does not publish a 1.0.11 installer.
+**Published manual-install preview: [1.0.8](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.8).** See the [installation and upgrade guide](docs/WORKSTACK-1.0.8-INSTALL-UPGRADE.ko.md). That installer does not contain the newer Knowledge/Resume features.
+
+For the current Task/Knowledge capabilities and the remaining OpenDocuments integration
+work, see [Knowledge integration status (2026-09-08, Korean)](docs/KNOWLEDGE-INTEGRATION-STATUS-2026-09-08.ko.md).
+Source snapshots and published installers can have different versions; installing an
+older release does not enable the newer source-only features.
 
 Work Stack is a local-first, goal-aligned personal execution system. It keeps
 objectives, planning tasks, work logs, notes, and sanitized external context in one
@@ -174,6 +178,11 @@ python run_work_stack.py snapshot export T-0001 `
 
 Use the revision and digest printed by `snapshot preview`. If the Task changes between
 review and export, reopen the preview and review the new revision.
+
+On the Windows desktop, the Task drawer's **Resume → View all context** surface can
+keep a read-only pointer to a local Markdown or Obsidian file. That pointer is not a live wiki and is
+not part of the Conduit snapshot. The Korean walkthrough is
+[docs/OBSIDIAN-TASK-CONTEXT-GUIDE.ko.md](docs/OBSIDIAN-TASK-CONTEXT-GUIDE.ko.md).
 
 ## Runtime data
 

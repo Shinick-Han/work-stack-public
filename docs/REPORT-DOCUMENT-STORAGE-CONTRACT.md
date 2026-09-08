@@ -858,9 +858,13 @@ Archive:
 ```
 
 `markdown` is required for create and revise and **forbidden** everywhere else; `note` is
-accepted on revise and archive only. Every mutation response returns the document (without
-`revisions`, per §9.2) plus `"replayed": true|false`, and a revise that reopened a
-finalized document reports `"reopened": true`.
+accepted on revise and archive only. Mutation responses preserve the service receipt
+envelope: `{"data": <document without revisions>, "meta": {"replayed": true|false}}`.
+`replayed` is in `meta`, never a field added to the document. Create and revise include
+`data.content_entry`; revise also includes `data.reopened`. Create, revise and finalize
+include `data.source_stale`. Create returns HTTP 201, including an immutable replay of
+that create receipt; the other mutations return HTTP 200. GET list and read return
+`{"data": <projection>}` without requiring `meta`.
 
 ### 13.1 Markdown inertness
 

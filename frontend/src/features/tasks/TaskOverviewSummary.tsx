@@ -74,8 +74,8 @@ export function TaskOverviewSummary({
       </div>
       <section className="snapshot-launch">
         <div>
-          <strong>Execution handoff</strong>
-          <p>Review and save one immutable planning-task revision for Conduit.</p>
+          <strong>Export to Conduit</strong>
+          <p>Review and save one immutable planning-task revision. This is not the resume brief.</p>
         </div>
         <Button
           disabled={navigationLocked}

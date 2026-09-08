@@ -62,6 +62,36 @@ class CoverageGateTests(unittest.TestCase):
         self.assertEqual([], errors)
         self.assertTrue(any("zero covered lines" in warning for warning in warnings))
 
+    def test_extraction_cannot_hide_uncovered_code_behind_a_small_facade(self) -> None:
+        self.floors["python"]["critical_groups"] = {
+            "core": {"files": ["workstack/core.py", "workstack/extracted.py"],
+                     "floors": {"lines": 70, "branches": 60}}
+        }
+        self.python["files"]["workstack\\core.py"]["summary"].update(
+            covered_lines=10, num_statements=10, covered_branches=2, num_branches=2)
+        self.python["files"]["workstack/extracted.py"] = {"summary": {
+            "covered_lines": 0, "num_statements": 90, "covered_branches": 0, "num_branches": 18}}
+        errors, _ = evaluate(self.python, self.frontend, self.floors)
+        self.assertTrue(any("group core lines coverage 10.00%" in error for error in errors))
+        self.assertTrue(any("group core branches coverage 10.00%" in error for error in errors))
+        self.python["files"]["workstack/extracted.py"]["summary"].update(
+            covered_lines=62, covered_branches=10)
+        self.assertEqual(([], []), evaluate(self.python, self.frontend, self.floors))
+        del self.python["files"]["workstack/extracted.py"]
+        errors, _ = evaluate(self.python, self.frontend, self.floors)
+        self.assertTrue(any("group core missing coverage" in error for error in errors))
+
+    def test_group_preserves_branch_mode_composite_floor(self) -> None:
+        self.floors["python"]["critical_groups"] = {
+            "core": {"files": ["workstack/core.py"],
+                     "floors": {"lines": 82, "branches": 70}}
+        }
+        self.python["files"][r"workstack\core.py"]["summary"].update(
+            covered_lines=82, num_statements=100, covered_branches=70, num_branches=100)
+        errors, _ = evaluate(self.python, self.frontend, self.floors)
+        self.assertTrue(any("group core lines coverage 76.00%" in error for error in errors))
+        self.assertFalse(any("group core branches" in error for error in errors))
+
     def test_changed_critical_file_blocks_but_noncritical_only_warns(self) -> None:
         python = {
             "files": {

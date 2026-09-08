@@ -113,4 +113,83 @@ describe('the shared renderer keeps its established markup', () => {
     render(<TaskContextTimeline context={[]} providerGates={microsoftProviderGates} />)
     expect(screen.getByText('No context yet')).toBeInTheDocument()
   })
+
+  it('renders a plain-text note once and keeps a real source title beside distinct body copy', () => {
+    const note = item({
+      id: 'plain',
+      ref: { kind: 'note', id: 'plain' },
+      text: 'Ship the resume brief without repeating this paragraph.',
+      connections: [],
+    })
+    const titled = item({
+      id: 'titled',
+      ref: { kind: 'capture', id: 'titled' },
+      source: { display_title: 'Mail subject' },
+      text: 'Ship the resume brief without repeating this paragraph.',
+      connections: [],
+    })
+
+    render(<TaskContextTimeline context={[note, titled]} providerGates={microsoftProviderGates} />)
+
+    expect(screen.getAllByText('Ship the resume brief without repeating this paragraph.')).toHaveLength(2)
+    expect(screen.getByRole('heading', { name: 'Ship the resume brief without repeating this paragraph.' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Mail subject' })).toBeInTheDocument()
+    const noteArticle = screen.getByRole('heading', { name: 'Ship the resume brief without repeating this paragraph.' }).closest('article')
+    expect(noteArticle?.querySelector('p')).toBeNull()
+  })
+
+  it('keeps unknown extra fields inspectable without inventing titles', () => {
+    render(<TaskContextTimeline context={[item({
+      id: 'extra',
+      ref: { kind: 'note', id: 'extra' },
+      text: 'Known note',
+      ticket: { id: 'WS-41' },
+      connections: [],
+    })]} providerGates={microsoftProviderGates} />)
+
+    expect(screen.getByRole('heading', { name: 'Known note' })).toBeInTheDocument()
+    expect(screen.getByText('Additional recorded data (1)')).toBeInTheDocument()
+    expect(screen.getByText('ticket')).toBeInTheDocument()
+    expect(screen.getByText('{"id":"WS-41"}')).toBeInTheDocument()
+  })
+
+  it('discloses unrendered recorded provenance, connections, source attributes and tags', () => {
+    render(<TaskContextTimeline context={[item({
+      id: 'recorded',
+      ref: { kind: 'capture', id: 'recorded' },
+      source: {
+        provider: 'microsoft-outlook',
+        display_title: 'Mail subject',
+        web_url: 'https://example.test/thread',
+        resource_type: 'message',
+        fingerprint: 'sha256:abc',
+        extra_attr: 'nested-unknown',
+      },
+      normalized: {
+        context: 'Mail subject',
+        tags: ['resume', 'brief'],
+      },
+      text: 'Reviewed the thread after the heading was reused.',
+      provenance: { capture_mode: 'manual', raw_retained: false },
+      connections: [{ target: { kind: 'task', id: 'T-1' }, reasons: ['capture-link'] }],
+    })]} providerGates={microsoftProviderGates} />)
+
+    expect(screen.getByRole('heading', { name: 'Mail subject' })).toBeInTheDocument()
+    expect(screen.getByText('Reviewed the thread after the heading was reused.')).toBeInTheDocument()
+    expect(screen.getByText('Additional recorded data (7)')).toBeInTheDocument()
+    expect(screen.getByText('provenance.capture_mode')).toBeInTheDocument()
+    expect(screen.getByText('manual')).toBeInTheDocument()
+    expect(screen.getByText('provenance.raw_retained')).toBeInTheDocument()
+    expect(screen.getByText('false')).toBeInTheDocument()
+    expect(screen.getByText('connections')).toBeInTheDocument()
+    expect(screen.getByText('source.resource_type')).toBeInTheDocument()
+    expect(screen.getByText('source.fingerprint')).toBeInTheDocument()
+    expect(screen.getByText('source.extra_attr')).toBeInTheDocument()
+    expect(screen.getByText('nested-unknown')).toBeInTheDocument()
+    expect(screen.getByText('normalized.tags')).toBeInTheDocument()
+    expect(screen.getByText('["resume","brief"]')).toBeInTheDocument()
+    const extras = screen.getByText('Additional recorded data (7)').closest('details')
+    expect(extras?.textContent).not.toContain('Mail subject')
+    expect(screen.getByRole('link', { name: /Open source/ })).toBeInTheDocument()
+  })
 })

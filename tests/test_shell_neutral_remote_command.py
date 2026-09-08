@@ -307,6 +307,95 @@ class ShellNeutralRemoteCommandContractTest(unittest.TestCase):
         self.assertIn(RUNTIME_SESSION_TOKEN, remote)
         self.assertNotIn("00000000000000000000000000000000", remote)
 
+    def test_r6_serve_execs_the_absolute_interpreter_in_every_login_shell(self) -> None:
+        """Without `exec` a csh login shell keeps a forked child between sshd and the
+        server, so PR_SET_PDEATHSIG watches that shell and an abrupt tunnel loss
+        leaves the server running."""
+
+        remote = serve_command()
+        self.assertEqual(forbidden_in(remote), ())
+        for words in (bash_words(remote), csh_words(remote), tcsh_words(remote)):
+            self.assertEqual(words[0], "exec")
+            self.assertEqual(words[1], REQUIRED_REMOTE_PYTHON)
+            self.assertEqual(words.count("exec"), 1)
+        self.assertEqual(bare_python3_tokens(remote), [])
+        self.assertNotIn("exec python3", remote)
+
+    def test_r6_read_only_verbs_carry_no_exec_and_reject_a_misplaced_one(self) -> None:
+        check = SSOT.build_ssh_check_command(ssot_profile(), "ssh")[-1]
+        stop = SSOT.build_ssh_stop_owned_command(ssot_profile(), "ssh", RUNTIME_SESSION_TOKEN)[-1]
+        metadata = META.build_ssh_profile_metadata_command(metadata_profile(), "ssh.exe")[-1]
+        for label, remote in (("check", check), ("stop", stop), ("metadata", metadata)):
+            with self.subTest(command=label):
+                self.assertNotIn("exec", bash_words(remote))
+        contract = sys.modules[SSOT.join_probe_command.__module__]
+        with self.assertRaisesRegex(RuntimeError, "exec"):
+            contract.join_remote_tokens([REQUIRED_REMOTE_PYTHON, "exec", "/etc/passwd"])
+        with self.assertRaisesRegex(RuntimeError, "exec"):
+            contract.join_remote_tokens(["exec", "venv/bin/python"])
+        with self.assertRaisesRegex(RuntimeError, "exec"):
+            contract.join_remote_tokens(["exec"])
+        with self.assertRaisesRegex(RuntimeError, "bare python interpreter"):
+            contract.join_remote_tokens(["exec", "python3"])
+        with self.assertRaisesRegex(RuntimeError, "exec"):
+            contract.join_remote_tokens(["exec", "/usr/bin/id"])
+        with self.assertRaisesRegex(RuntimeError, "exec"):
+            contract.join_exact_serve_tokens(["exec", "/usr/bin/id"])
+        serve = SSOT.build_remote_server_command(ssot_profile(), session_token=RUNTIME_SESSION_TOKEN)
+        self.assertEqual(bash_words(serve)[:2], ["exec", REQUIRED_REMOTE_PYTHON])
+
+    def test_r6_self_probe_token_rides_only_the_owned_target(self) -> None:
+        owned = ssot_profile()
+        remote = SSOT.build_ssh_check_command(owned, "ssh", RUNTIME_SESSION_TOKEN)[-1]
+        self.assertEqual(forbidden_in(remote), ())
+        self.assertIn(" probe ", f" {remote} ")
+        self.assertEqual(bash_words(remote)[-2:], ["--session-token", RUNTIME_SESSION_TOKEN])
+        self.assertEqual(bash_words(remote), csh_words(remote))
+        anonymous = SSOT.build_ssh_check_command(owned, "ssh")[-1]
+        self.assertNotIn("--session-token", anonymous)
+        self.assertNotIn(RUNTIME_SESSION_TOKEN, anonymous)
+        foreign = SSOT.RemoteConnectionProfile(
+            "other-linux", "/srv/other/app", "/srv/other/ssot", 18765,
+            WORKSPACE_ID, 8765, REQUIRED_REMOTE_PYTHON,
+        )
+        foreign_python = SSOT.RemoteConnectionProfile(
+            "work-linux", "/srv/workstack/app", "/srv/workstack/ssot", 18765,
+            WORKSPACE_ID, 8765, "/tmp/foreign-python",
+        )
+        self.assertEqual(
+            SSOT.session_token_for_self_probe(owned, owned, RUNTIME_SESSION_TOKEN),
+            RUNTIME_SESSION_TOKEN,
+        )
+        for label, active, target in (
+            ("foreign-target", owned, foreign),
+            ("foreign-python", owned, foreign_python),
+            ("foreign-active", foreign, owned),
+            ("no-active", None, owned),
+        ):
+            with self.subTest(case=label):
+                self.assertIsNone(
+                    SSOT.session_token_for_self_probe(active, target, RUNTIME_SESSION_TOKEN)
+                )
+        self.assertIsNone(SSOT.session_token_for_self_probe(owned, owned, None))
+        self.assertIsNone(SSOT.session_token_for_self_probe(owned, owned, ""))
+
+    def test_r6_generated_tokens_always_join_into_a_buildable_serve_command(self) -> None:
+        """A hex token ending in `cd` meets the next flag as the forbidden `cd --`."""
+
+        contract = sys.modules[SSOT.join_probe_command.__module__]
+        profile = ssot_profile()
+        with self.assertRaisesRegex(RuntimeError, "cd --"):
+            SSOT.build_remote_server_command(profile, session_token="0" * 30 + "cd")
+        for _attempt in range(2000):
+            token = contract.generate_session_token()
+            self.assertFalse(token.endswith("cd"), token)
+        for _attempt in range(50):
+            remote = SSOT.build_remote_server_command(
+                profile, session_token=contract.generate_session_token()
+            )
+            self.assertEqual(forbidden_in(remote), ())
+            self.assertEqual(bash_words(remote), csh_words(remote))
+
     def test_r2_stop_owned_command_is_login_shell_neutral(self) -> None:
         remote = SSOT.build_ssh_stop_owned_command(
             ssot_profile(), "ssh", RUNTIME_SESSION_TOKEN

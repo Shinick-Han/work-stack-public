@@ -6,35 +6,44 @@ import { WeeklyReportPreview } from './WeeklyReportPreview'
 import { CommitUnknownError, api, createIdempotencyKey } from '../../api/client'
 import { Button, ErrorState, LoadingBlock, Pill } from '../../components/Primitives'
 import { DateInput } from '../../components/DateInput'
-import type { CheckpointAudit, Capture, ReviewEntryInput, ReviewProjection, WorkspaceProjection } from '../../domain/types'
+import type {
+  CheckpointAudit,
+  Capture,
+  ReviewProjection,
+  Task,
+  WorkspaceProjection,
+} from '../../domain/types'
 import { getErrorMessage } from '../../utils/format'
 import { LeadershipSignalsPanel } from './LeadershipSignalsPanel'
+import { SavedReportsPanel } from './SavedReportsPanel'
+import { DailyReviewEntryForm, DayEntries, DraftGuardDialog } from './DailyReviewPageForm'
+import {
+  REVIEW_COPY,
+  buildReviewEntryInput,
+  draftHasContent,
+  draftResolutionActions,
+  formatDuration,
+  frozenAttemptStranded,
+  localTime,
+  progressNavigationLocked,
+  resolveInitialTaskId,
+  sortReviewTasks,
+  type DraftGuard,
+  type FrozenEntryAttempt,
+} from './DailyReviewPageModel'
+import './DailyReviewPage.css'
 
-interface DailyReviewPageProps {
+export interface DailyReviewPageProps {
   onNotice: (message: string, tone?: 'success' | 'error') => void
   onOpenTask: (taskId: string) => void
   onOpenCapture?: (captureId: string) => void
   captures?: Capture[]
   today: string
   workspace: WorkspaceProjection
-}
-
-function localTime() {
-  const now = new Date()
-  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-}
-
-function splitItems(value: string) {
-  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
-}
-
-function formatDuration(totalSeconds: number) {
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  if (hours && minutes) return `${hours}h ${minutes}m`
-  if (hours) return `${hours}h`
-  if (minutes) return `${minutes}m`
-  return `${totalSeconds}s`
+  /** Integrator-owned Review target. This page never reads the URL. */
+  initialTaskId?: string | null
+  /** True while a dirty draft, pending write, or frozen commit_unknown is held. */
+  onNavigationLockChange?: (locked: boolean) => void
 }
 
 function DailyReviewSummary({
@@ -167,23 +176,33 @@ function useCheckpointTransitions(
 }
 
 /** Mounted only once the whole audit is validated; the day filter is inside. */
-function CheckpointHistorySection(
-  { date, transitions }: { date: string; transitions: TransitionOwnership },
-) {
+function CheckpointHistorySection({
+  date,
+  taskId,
+  transitions,
+}: {
+  date: string
+  taskId: string
+  transitions: TransitionOwnership
+}) {
   if (!transitions.audit.data) return null
   return (
-    <CheckpointHistory
-      audit={transitions.audit.data}
-      conflictMessage={transitions.conflictMessage}
-      createIdempotencyKey={createIdempotencyKey}
-      date={date}
-      failedExplanation={transitions.failedExplanation}
-      onClearRetry={transitions.clearRetry}
-      onRetry={transitions.submit}
-      onSubmit={transitions.submit}
-      owner={transitions.owner}
-      pendingRetry={transitions.pendingRetry}
-    />
+    <details className="review-record-details" open>
+      <summary>{REVIEW_COPY.details}</summary>
+      <CheckpointHistory
+        audit={transitions.audit.data}
+        conflictMessage={transitions.conflictMessage}
+        createIdempotencyKey={createIdempotencyKey}
+        date={date}
+        failedExplanation={transitions.failedExplanation}
+        onClearRetry={transitions.clearRetry}
+        onRetry={transitions.submit}
+        onSubmit={transitions.submit}
+        owner={transitions.owner}
+        pendingRetry={transitions.pendingRetry}
+        taskId={taskId || null}
+      />
+    </details>
   )
 }
 
@@ -199,9 +218,8 @@ function DailyReviewHeading({
   return (
     <header className="page-heading">
       <div>
-        <div className="eyebrow"><span className="live-dot" /> Daily review</div>
-        <h1 id="review-heading">Turn execution into evidence.</h1>
-        <p>Capture what moved, what comes next, and what needs help—without inferring execution state.</p>
+        <h1 id="review-heading">{REVIEW_COPY.heading}</h1>
+        <p>{REVIEW_COPY.lead}</p>
       </div>
       <DateInput
         className="review-date"
@@ -214,55 +232,356 @@ function DailyReviewHeading({
   )
 }
 
+function useNonRepeatingOwner(coordinate: string): { owner: string; currentOwner: () => string } {
+  const generation = useRef(0)
+  const last = useRef(coordinate)
+  const identity = useRef(`${coordinate}#0`)
+  if (last.current !== coordinate) {
+    last.current = coordinate
+    generation.current += 1
+    identity.current = `${coordinate}#${generation.current}`
+  }
+  return { owner: identity.current, currentOwner: () => identity.current }
+}
+
+function useProgressNavigationLock(
+  locked: boolean,
+  onNavigationLockChange?: (locked: boolean) => void,
+) {
+  const callbackRef = useRef(onNavigationLockChange)
+  callbackRef.current = onNavigationLockChange
+  const lastLocked = useRef<boolean | undefined>(undefined)
+  useEffect(() => {
+    if (lastLocked.current === locked) return
+    lastLocked.current = locked
+    callbackRef.current?.(locked)
+  }, [locked])
+  useEffect(() => () => { callbackRef.current?.(false) }, [])
+}
+
+function useReviewDraft() {
+  const [done, setDone] = useState('')
+  const [next, setNext] = useState('')
+  const [blockers, setBlockers] = useState('')
+  const [pendingRetry, setPendingRetry] = useState<FrozenEntryAttempt | null>(null)
+  const entryIntentKey = useRef<string | null>(null)
+  const dirty = draftHasContent(done, next, blockers)
+  const resetText = () => {
+    entryIntentKey.current = null
+    setDone('')
+    setNext('')
+    setBlockers('')
+  }
+  const clearDraft = () => {
+    setPendingRetry(null)
+    resetText()
+  }
+  return {
+    blockers, clearDraft, dirty, done, entryIntentKey, next, pendingRetry,
+    resetText, setBlockers, setDone, setNext, setPendingRetry,
+  }
+}
+
+function useBoundReviewTarget(
+  availableTasks: Task[],
+  initialTaskId: string | null | undefined,
+  blocked: boolean,
+) {
+  const initial = resolveInitialTaskId(initialTaskId, availableTasks)
+  const [taskId, setTaskId] = useState(initial.taskId)
+  const [invalidTarget, setInvalidTarget] = useState(initial.invalid)
+  const lastInitial = useRef(initialTaskId)
+  // A target arriving while the draft is blocked is held, never consumed: the
+  // old draft stays bound to the old Task until the block is resolved.
+  const [deferredInitial, setDeferredInitial] = useState<{ taskId: string | null } | null>(null)
+
+  const bindTarget = (value: string | null | undefined) => {
+    const bound = resolveInitialTaskId(value, availableTasks)
+    setTaskId(bound.taskId)
+    setInvalidTarget(bound.invalid)
+  }
+
+  const applyTask = (value: string) => {
+    // An explicit picker choice supersedes any held parent target.
+    setDeferredInitial(null)
+    setInvalidTarget(false)
+    setTaskId(value)
+  }
+
+  useEffect(() => {
+    if (lastInitial.current === initialTaskId) return
+    lastInitial.current = initialTaskId
+    if (blocked) {
+      setDeferredInitial({ taskId: initialTaskId ?? null })
+      return
+    }
+    bindTarget(initialTaskId)
+  }, [availableTasks, blocked, initialTaskId])
+
+  useEffect(() => {
+    if (blocked || !deferredInitial) return
+    setDeferredInitial(null)
+    bindTarget(deferredInitial.taskId)
+  }, [availableTasks, blocked, deferredInitial])
+
+  useEffect(() => {
+    // A held parent target owns the next binding; do not race it to ''.
+    if (deferredInitial) return
+    if (!taskId) return
+    if (availableTasks.some((task) => task.id === taskId)) {
+      setInvalidTarget(false)
+      return
+    }
+    if (blocked) {
+      setInvalidTarget(true)
+      return
+    }
+    setTaskId('')
+  }, [availableTasks, blocked, deferredInitial, taskId])
+
+  return {
+    applyTask,
+    invalidTarget,
+    selectedTask: availableTasks.find((task) => task.id === taskId),
+    taskId,
+  }
+}
+
+function useReviewEntryMutation({
+  clearDraft,
+  currentOwner,
+  onNotice,
+  refresh,
+  setPendingRetry,
+}: {
+  clearDraft: () => void
+  currentOwner: () => string
+  onNotice: (message: string, tone?: 'success' | 'error') => void
+  refresh: () => Promise<void> | void
+  setPendingRetry: (attempt: FrozenEntryAttempt | null) => void
+}) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (attempt: FrozenEntryAttempt) => api.addReviewEntry(attempt.input, attempt.key),
+    onSuccess: async (_result, attempt) => {
+      if (attempt.owner !== currentOwner()) return
+      clearDraft()
+      await refresh()
+      await queryClient.invalidateQueries({ queryKey: ['checkpoint-audit', attempt.workspaceId] })
+      onNotice(REVIEW_COPY.saved)
+    },
+    onError: (error, attempt) => {
+      if (attempt.owner !== currentOwner()) return
+      onNotice(getErrorMessage(error), 'error')
+      if (error instanceof CommitUnknownError) setPendingRetry(attempt)
+    },
+  })
+}
+
+function useDraftTargetGuard({
+  applyTask,
+  blocked,
+  date,
+  frozen,
+  onDate,
+  resetIntent,
+  resetText,
+  taskId,
+}: {
+  applyTask: (value: string) => void
+  blocked: boolean
+  date: string
+  frozen: boolean
+  onDate: (value: string) => void
+  resetIntent: () => void
+  resetText: () => void
+  taskId: string
+}) {
+  const [guard, setGuard] = useState<DraftGuard | null>(null)
+  const requestTaskId = (value: string) => {
+    if (value === taskId) return
+    if (blocked) setGuard({ kind: 'task', value })
+    else {
+      resetIntent()
+      applyTask(value)
+    }
+  }
+  const requestDate = (value: string) => {
+    if (value === date) return
+    if (blocked) setGuard({ kind: 'date', value })
+    else onDate(value)
+  }
+  const confirmGuard = () => {
+    if (!guard || frozen) {
+      setGuard(null)
+      return
+    }
+    const nextGuard = guard
+    setGuard(null)
+    resetText()
+    if (nextGuard.kind === 'task') applyTask(nextGuard.value)
+    else onDate(nextGuard.value)
+  }
+  return {
+    confirmGuard,
+    dismissGuard: () => setGuard(null),
+    guard,
+    requestDate,
+    requestTaskId,
+  }
+}
+
+interface EntrySubmitContext {
+  blockers: string
+  currentOwner: () => string
+  date: string
+  done: string
+  entryIntentKey: { current: string | null }
+  invalidTarget: boolean
+  mutate: (attempt: FrozenEntryAttempt) => void
+  next: string
+  pending: boolean
+  pendingRetry: FrozenEntryAttempt | null
+  taskId: string
+  workspaceId: string
+}
+
+function submitFrozenOrFreshEntry(event: FormEvent, context: EntrySubmitContext) {
+  const { currentOwner, entryIntentKey, mutate, pendingRetry, taskId } = context
+  event.preventDefault()
+  if (pendingRetry) {
+    if (pendingRetry.owner !== currentOwner() || context.pending) return
+    mutate(pendingRetry)
+    return
+  }
+  if (!taskId || context.invalidTarget) return
+  const input = buildReviewEntryInput(context.date, taskId, context.done, context.next, context.blockers)
+  if (!input) return
+  entryIntentKey.current ??= createIdempotencyKey()
+  mutate({ owner: currentOwner(), workspaceId: context.workspaceId, input, key: entryIntentKey.current })
+}
+
+function useReviewEntryWrite({
+  availableTasks,
+  date,
+  initialTaskId,
+  onDate,
+  onNotice,
+  refresh,
+  workspaceId,
+}: {
+  availableTasks: Task[]
+  date: string
+  initialTaskId?: string | null
+  onDate: (value: string) => void
+  onNotice: (message: string, tone?: 'success' | 'error') => void
+  refresh: () => Promise<void> | void
+  workspaceId: string
+}) {
+  const draft = useReviewDraft()
+  const frozen = draft.pendingRetry !== null
+  const blocked = draft.dirty || frozen
+  const target = useBoundReviewTarget(availableTasks, initialTaskId, blocked)
+  const { owner, currentOwner } = useNonRepeatingOwner(`${workspaceId}|${date}|${target.taskId}`)
+  // The frozen attempt outlived its owner (a workspace replacement). It keeps
+  // its own Task, date, workspace and payload, and is never re-POSTed here.
+  const stranded = frozenAttemptStranded(draft.pendingRetry, owner)
+  const mutation = useReviewEntryMutation({
+    clearDraft: draft.clearDraft,
+    currentOwner,
+    onNotice,
+    refresh,
+    setPendingRetry: draft.setPendingRetry,
+  })
+  const actions = draftResolutionActions({
+    clearDraft: draft.clearDraft,
+    frozen,
+    pending: mutation.isPending,
+    reset: mutation.reset,
+    resetText: draft.resetText,
+    stranded,
+  })
+  const targetGuard = useDraftTargetGuard({
+    applyTask: target.applyTask,
+    blocked,
+    date,
+    frozen,
+    onDate,
+    resetIntent: () => { draft.entryIntentKey.current = null },
+    resetText: actions.discardText,
+    taskId: target.taskId,
+  })
+
+  const submitEntry = (event: FormEvent) => submitFrozenOrFreshEntry(event, {
+    blockers: draft.blockers, currentOwner, date, done: draft.done,
+    entryIntentKey: draft.entryIntentKey, invalidTarget: target.invalidTarget,
+    mutate: mutation.mutate, next: draft.next, pending: mutation.isPending,
+    pendingRetry: draft.pendingRetry, taskId: target.taskId, workspaceId,
+  })
+
+  const changeDraft = (setter: (value: string) => void) => (value: string) => {
+    if (draft.pendingRetry) return
+    draft.entryIntentKey.current = null
+    setter(value)
+  }
+
+  return {
+    blockers: draft.blockers,
+    changeDraft,
+    confirmGuard: targetGuard.confirmGuard,
+    discardOrdinaryDraft: actions.discardOrdinaryDraft,
+    dismissGuard: targetGuard.dismissGuard,
+    done: draft.done,
+    entryError: mutation.error,
+    entryPending: mutation.isPending,
+    guard: targetGuard.guard,
+    invalidTarget: target.invalidTarget,
+    locked: progressNavigationLocked(draft.dirty, mutation.isPending, frozen),
+    next: draft.next,
+    pendingRetry: draft.pendingRetry,
+    releaseStrandedAttempt: actions.releaseStrandedAttempt,
+    requestDate: targetGuard.requestDate,
+    requestTaskId: targetGuard.requestTaskId,
+    selectedTask: target.selectedTask,
+    stranded,
+    setBlockers: draft.setBlockers,
+    setDone: draft.setDone,
+    setNext: draft.setNext,
+    submitEntry,
+    taskId: target.taskId,
+  }
+}
+
 function DailyReviewLoaded({
   availableTasks,
-  blockers,
   captures,
   checkinError,
   checkinPending,
   date,
-  done,
-  entryError,
-  entryPending,
-  next,
-  onBlockers,
+  entry,
   onCheckin,
-  onDone,
-  onNext,
   onNotice,
   onOpenCapture,
   onOpenTask,
-  onSubmitEntry,
-  onTaskId,
   review,
-  selectedTask,
-  taskId,
   transitions,
 }: {
-  availableTasks: WorkspaceProjection['tasks']
-  blockers: string
+  availableTasks: Task[]
   captures: Capture[]
   checkinError: boolean
   checkinPending: boolean
   date: string
-  done: string
-  entryError: unknown
-  entryPending: boolean
-  next: string
-  onBlockers: (value: string) => void
+  entry: ReturnType<typeof useReviewEntryWrite>
   onCheckin: () => void
-  onDone: (value: string) => void
-  onNext: (value: string) => void
   onNotice: (message: string, tone?: 'success' | 'error') => void
   onOpenCapture?: (captureId: string) => void
   onOpenTask: (taskId: string) => void
-  onSubmitEntry: (event: FormEvent) => void
-  onTaskId: (value: string) => void
   review: ReviewProjection
-  selectedTask: WorkspaceProjection['tasks'][number] | undefined
-  taskId: string
   transitions: TransitionOwnership
 }) {
+  const taskEntries = entry.taskId
+    ? review.day.entries.filter((item) => item.task_id === entry.taskId)
+    : []
   return (
     <>
       <DailyReviewSummary
@@ -272,52 +591,76 @@ function DailyReviewLoaded({
         review={review}
       />
       <div className="review-layout">
-        <form className="review-entry-card" onSubmit={onSubmitEntry}>
-          <header><span>New evidence</span><strong>{date}</strong></header>
-          <label><span>Task</span><select disabled={entryPending} onChange={(event) => onTaskId(event.target.value)} value={taskId}>{availableTasks.map((task) => <option key={task.id} value={task.id}>{task.id} · {task.title}</option>)}</select></label>
-          {selectedTask ? <button className="review-task-link" onClick={() => onOpenTask(selectedTask.id)} type="button">Open {selectedTask.id} planning detail</button> : null}
-          <label><span>Done <small>one item per line</small></span><textarea disabled={entryPending} onChange={(event) => onDone(event.target.value)} rows={4} value={done} /></label>
-          <label><span>Next <small>one item per line</small></span><textarea disabled={entryPending} onChange={(event) => onNext(event.target.value)} rows={4} value={next} /></label>
-          <label><span>Blockers <small>one item per line</small></span><textarea disabled={entryPending} onChange={(event) => onBlockers(event.target.value)} rows={3} value={blockers} /></label>
-          <Button disabled={entryPending || !taskId || ![done, next, blockers].some((value) => value.trim())} type="submit" variant="primary">{entryPending ? 'Saving…' : entryError ? 'Retry unchanged entry' : 'Add review entry'}</Button>
-          {entryError ? <p className="form-error" role="alert">{getErrorMessage(entryError)}</p> : null}
-        </form>
-        <CheckpointHistorySection date={date} transitions={transitions} />
-        <section className="review-day-card" aria-labelledby="review-day-heading">
-          <header><span>Day record</span><strong id="review-day-heading">{review.day.entries.length ? `${review.day.entries.length} entries` : 'No entries yet'}</strong></header>
-          {review.day.entries.length ? <div className="review-entry-list">{review.day.entries.map((entry, index) => (
-            <article key={`${entry.task_id}-${index}`}>
-              <button onClick={() => onOpenTask(entry.task_id)} type="button"><strong>{entry.task_id}</strong><span>{entry.task}</span></button>
-              {entry.session_id && entry.duration_seconds !== undefined ? <small className="review-entry-duration">{formatDuration(entry.duration_seconds)} focused · {entry.session_id}</small> : null}
-              {(['done', 'next', 'blockers'] as const).map((field) => entry[field].length ? <div className={`review-facts review-facts--${field}`} key={field}><span>{field}</span><ul>{entry[field].map((item) => <li key={item}>{item}</li>)}</ul></div> : null)}
-            </article>
-          ))}</div> : <p className="review-empty">Record a concrete Done, Next, or Blocker item for a Task.</p>}
-        </section>
+        <DailyReviewEntryForm
+          availableTasks={availableTasks}
+          blockers={entry.blockers}
+          date={date}
+          done={entry.done}
+          entryError={entry.entryError}
+          entryPending={entry.entryPending}
+          frozen={entry.pendingRetry !== null}
+          invalidTarget={entry.invalidTarget}
+          next={entry.next}
+          onBlockers={entry.changeDraft(entry.setBlockers)}
+          onDiscardDraft={entry.discardOrdinaryDraft}
+          onDone={entry.changeDraft(entry.setDone)}
+          onNext={entry.changeDraft(entry.setNext)}
+          onOpenTask={onOpenTask}
+          onReleaseStranded={entry.releaseStrandedAttempt}
+          onSubmitEntry={entry.submitEntry}
+          onTaskId={entry.requestTaskId}
+          selectedTask={entry.selectedTask}
+          stranded={entry.stranded}
+          strandedAttempt={entry.stranded ? entry.pendingRetry : null}
+          taskId={entry.taskId}
+        />
+        {entry.taskId ? (
+          <DayEntries
+            empty="No progress recorded for this task on this day."
+            entries={taskEntries}
+            heading={REVIEW_COPY.recent}
+            headingId="review-task-progress-heading"
+            label={entry.taskId}
+            onOpenTask={onOpenTask}
+            variant="task"
+          />
+        ) : null}
+        <CheckpointHistorySection date={date} taskId={entry.taskId} transitions={transitions} />
+        <DayEntries
+          empty="Record a concrete Done, Next, or Blocker item for a Task."
+          entries={review.day.entries}
+          heading={review.day.entries.length ? `${review.day.entries.length} entries` : 'No entries yet'}
+          headingId="review-day-heading"
+          label="Day record"
+          onOpenTask={onOpenTask}
+          variant="day"
+        />
       </div>
       <DailyReviewWeekly onOpenTask={onOpenTask} review={review} />
       {onOpenCapture ? <LeadershipSignalsPanel captures={captures} onNotice={onNotice} onOpenCapture={onOpenCapture} /> : null}
+      {entry.guard ? (
+        <DraftGuardDialog
+          frozen={entry.pendingRetry !== null}
+          onDiscard={entry.confirmGuard}
+          onKeep={entry.dismissGuard}
+          stranded={entry.stranded}
+        />
+      ) : null}
     </>
   )
 }
 
-function useDailyReviewPage({ onNotice, today, workspace }: DailyReviewPageProps) {
+function useDailyReviewPage({
+  initialTaskId,
+  onNavigationLockChange,
+  onNotice,
+  today,
+  workspace,
+}: DailyReviewPageProps) {
   const queryClient = useQueryClient()
-  const availableTasks = useMemo(() => [...workspace.tasks].sort((left, right) => (
-    left.status === 'done' || left.status === 'dropped' ? 1 : -1
-  ) - (right.status === 'done' || right.status === 'dropped' ? 1 : -1) || left.id.localeCompare(right.id)), [workspace.tasks])
+  const availableTasks = useMemo(() => sortReviewTasks(workspace.tasks), [workspace.tasks])
   const [date, setDate] = useState(today)
-  const [taskId, setTaskId] = useState(availableTasks[0]?.id ?? '')
-  const [done, setDone] = useState('')
-  const [next, setNext] = useState('')
-  const [blockers, setBlockers] = useState('')
   const checkinIntent = useRef<{ date: string; time: string; key: string } | null>(null)
-  const entryIntentKey = useRef<string | null>(null)
-
-  useEffect(() => {
-    if (!availableTasks.some((task) => task.id === taskId)) {
-      setTaskId(availableTasks[0]?.id ?? '')
-    }
-  }, [availableTasks, taskId])
 
   const reviewQuery = useQuery({
     queryKey: ['review', date, 7],
@@ -325,6 +668,20 @@ function useDailyReviewPage({ onNotice, today, workspace }: DailyReviewPageProps
   })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['review', date, 7] })
   const transitions = useCheckpointTransitions(workspace.workspace.id, date, refresh)
+  const changeDate = (value: string) => {
+    setDate(value)
+    checkinIntent.current = null
+  }
+  const entry = useReviewEntryWrite({
+    availableTasks,
+    date,
+    initialTaskId,
+    onDate: changeDate,
+    onNotice,
+    refresh,
+    workspaceId: workspace.workspace.id,
+  })
+  useProgressNavigationLock(entry.locked, onNavigationLockChange)
 
   const checkinMutation = useMutation({
     mutationFn: ({ date: intentDate, time, key }: { date: string; time: string; key: string }) => (
@@ -338,25 +695,6 @@ function useDailyReviewPage({ onNotice, today, workspace }: DailyReviewPageProps
     onError: (error) => onNotice(getErrorMessage(error), 'error'),
   })
 
-  const entryMutation = useMutation({
-    mutationFn: ({ input, key }: { input: ReviewEntryInput; key: string }) => api.addReviewEntry(input, key),
-    onSuccess: async () => {
-      entryIntentKey.current = null
-      setDone('')
-      setNext('')
-      setBlockers('')
-      await refresh()
-      onNotice('Daily review entry added')
-    },
-    onError: (error) => onNotice(getErrorMessage(error), 'error'),
-  })
-
-  const changeDate = (value: string) => {
-    setDate(value)
-    checkinIntent.current = null
-    entryIntentKey.current = null
-  }
-
   const startCheckin = () => {
     if (!checkinIntent.current || checkinIntent.current.date !== date) {
       checkinIntent.current = { date, time: localTime(), key: createIdempotencyKey() }
@@ -364,68 +702,59 @@ function useDailyReviewPage({ onNotice, today, workspace }: DailyReviewPageProps
     checkinMutation.mutate(checkinIntent.current)
   }
 
-  const submitEntry = (event: FormEvent) => {
-    event.preventDefault()
-    const input = {
-      date,
-      task_id: taskId,
-      done: splitItems(done),
-      next: splitItems(next),
-      blockers: splitItems(blockers),
-    }
-    if (!input.done.length && !input.next.length && !input.blockers.length) return
-    entryIntentKey.current ??= createIdempotencyKey()
-    entryMutation.mutate({ input, key: entryIntentKey.current })
-  }
-
-  const changeDraft = (setter: (value: string) => void) => (value: string) => {
-    entryIntentKey.current = null
-    setter(value)
-  }
-
   const review = reviewQuery.data
   return {
-    availableTasks, blockers, changeDate, changeDraft, checkinMutation, date, done,
-    entryMutation, next, review, reviewQuery, startCheckin, submitEntry, taskId, transitions,
-    selectedTask: workspace.tasks.find((task) => task.id === taskId),
-    setBlockers, setDone, setNext,
-    setTaskId: (value: string) => { entryIntentKey.current = null; setTaskId(value) },
+    availableTasks,
+    checkinMutation,
+    date,
+    entry,
+    review,
+    reviewQuery,
+    startCheckin,
+    transitions,
     sourceAvailable: Boolean(review) && !reviewQuery.isError && !reviewQuery.isPending,
     workspaceId: workspace.workspace.id,
   }
 }
 
-export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpenTask, today, workspace }: DailyReviewPageProps) {
-  const page = useDailyReviewPage({ captures, onNotice, onOpenCapture, onOpenTask, today, workspace })
+export function DailyReviewPage({
+  captures = [],
+  initialTaskId = null,
+  onNavigationLockChange,
+  onNotice,
+  onOpenCapture,
+  onOpenTask,
+  today,
+  workspace,
+}: DailyReviewPageProps) {
+  const page = useDailyReviewPage({
+    captures,
+    initialTaskId,
+    onNavigationLockChange,
+    onNotice,
+    onOpenCapture,
+    onOpenTask,
+    today,
+    workspace,
+  })
   return (
     <section className="review-page" aria-labelledby="review-heading">
-      <DailyReviewHeading date={page.date} onDate={page.changeDate} today={today} />
+      <DailyReviewHeading date={page.date} onDate={page.entry.requestDate} today={today} />
       {page.reviewQuery.isPending ? <LoadingBlock label="Opening the review…" /> : page.reviewQuery.isError || !page.review ? (
         <ErrorState message={getErrorMessage(page.reviewQuery.error)} onRetry={() => void page.reviewQuery.refetch()} />
       ) : (
         <DailyReviewLoaded
           availableTasks={page.availableTasks}
-          blockers={page.blockers}
           captures={captures}
           checkinError={page.checkinMutation.isError}
           checkinPending={page.checkinMutation.isPending}
           date={page.date}
-          done={page.done}
-          entryError={page.entryMutation.error}
-          entryPending={page.entryMutation.isPending}
-          next={page.next}
-          onBlockers={page.changeDraft(page.setBlockers)}
+          entry={page.entry}
           onCheckin={page.startCheckin}
-          onDone={page.changeDraft(page.setDone)}
-          onNext={page.changeDraft(page.setNext)}
           onNotice={onNotice}
           onOpenCapture={onOpenCapture}
           onOpenTask={onOpenTask}
-          onSubmitEntry={page.submitEntry}
-          onTaskId={page.setTaskId}
           review={page.review}
-          selectedTask={page.selectedTask}
-          taskId={page.taskId}
           transitions={page.transitions}
         />
       )}
@@ -441,6 +770,7 @@ export function DailyReviewPage({ captures = [], onNotice, onOpenCapture, onOpen
         sourceUpdatedAt={reviewWeeklySourceToken(page.review)}
         workspaceId={page.workspaceId}
       />
+      <SavedReportsPanel workspaceId={page.workspaceId} />
     </section>
   )
 }

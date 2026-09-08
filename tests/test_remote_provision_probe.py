@@ -24,6 +24,10 @@ if str(ROOT) not in sys.path:
 if str(SHELL) not in sys.path:
     sys.path.insert(0, str(SHELL))
 
+from workstack.service import WorkStack
+from workstack.store import Store, StoreCorruptError
+from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES
+
 PROBE_PATH = SHELL / "remote_provision_probe.py"
 COLLECTOR_PATH = SHELL / "remote_provision_collector.py"
 PLAN_PATH = SHELL / "remote_provision_plan.py"
@@ -85,6 +89,42 @@ STORE_META = {
     "store_schema_version": 3,
     "version": 2,
 }
+OTHER_UID = "22222222-2222-4222-8222-222222222222"
+NIL_UID = "00000000-0000-0000-0000-000000000000"
+LETTER_UID = "abcdefab-cdef-4abc-8def-abcdefabcdef"
+
+
+def _authority_bytes(value: object) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def disposable_v5_authority():
+    temporary = tempfile.TemporaryDirectory(prefix="ws-remote-v5-")
+    store = Store(Path(temporary.name))
+    readiness = store.initialize()
+    values = {
+        name: json.loads((store.root / name).read_text(encoding="utf-8"))
+        for name in V5_DOCUMENT_NAMES
+    }
+    oracle = Store.validate_document_values(values, schema_version=5)
+    if oracle.workspace_uid != readiness.workspace_uid:
+        raise AssertionError("initialize UID and oracle UID diverged")
+    meta = (store.root / "store-meta.json").read_bytes()
+    workspace = (store.root / "workspace.json").read_bytes()
+    return temporary, oracle, values, meta, workspace
+
+
+def genuine_v3_authority():
+    temporary, _v5, values, _meta, workspace = disposable_v5_authority()
+    v3 = {name: values[name] for name in V3_DOCUMENT_NAMES}
+    metadata = json.loads(json.dumps(v3["store-meta.json"]))
+    metadata["store_schema_version"] = 3
+    del metadata["migrations"]["reports"]
+    v3["store-meta.json"] = metadata
+    oracle = Store.validate_document_values(v3, schema_version=3)
+    return temporary, oracle, v3, _authority_bytes(metadata), workspace
 
 
 def load_profile(**overrides: object):
@@ -1208,6 +1248,94 @@ class RemoteProvisionReceiptProjectionTest(unittest.TestCase):
         self.assertIsNone(facts["install"]["digest"])
 
 
+class RemoteProvisionRuntimeTargetGateTest(unittest.TestCase):
+    """The runtime gate must short-circuit before it ever touches the C library."""
+
+    def refusing_glibc(self) -> mock._patch:
+        return mock.patch.object(
+            COLLECTOR,
+            "_glibc_version",
+            side_effect=AssertionError("glibc probed before the earlier gates refused"),
+        )
+
+    def test_non_linux_host_refuses_without_probing_glibc(self) -> None:
+        with mock.patch.object(COLLECTOR, "_running_on_linux", return_value=False):
+            with self.refusing_glibc() as glibc:
+                self.assertFalse(COLLECTOR._runtime_target_ok())
+        glibc.assert_not_called()
+
+    def test_wrong_implementation_refuses_without_probing_glibc(self) -> None:
+        with mock.patch.object(COLLECTOR, "_running_on_linux", return_value=True):
+            with mock.patch.object(sys, "implementation", SimpleNamespace(name="pypy")):
+                with self.refusing_glibc() as glibc:
+                    self.assertFalse(COLLECTOR._runtime_target_ok())
+        glibc.assert_not_called()
+
+    def test_wrong_interpreter_version_refuses_without_probing_glibc(self) -> None:
+        with mock.patch.object(COLLECTOR, "_running_on_linux", return_value=True):
+            with mock.patch.object(sys, "implementation", SimpleNamespace(name="cpython")):
+                with mock.patch.object(sys, "version_info", (3, 13, 0, "final", 0)):
+                    with self.refusing_glibc() as glibc:
+                        self.assertFalse(COLLECTOR._runtime_target_ok())
+        glibc.assert_not_called()
+
+    def test_wrong_machine_refuses_without_probing_glibc(self) -> None:
+        with mock.patch.object(COLLECTOR, "_running_on_linux", return_value=True):
+            with mock.patch.object(sys, "implementation", SimpleNamespace(name="cpython")):
+                with mock.patch.object(sys, "version_info", (3, 12, 10, "final", 0)):
+                    with mock.patch.object(
+                        COLLECTOR, "_normalized_machine", return_value="aarch64"
+                    ):
+                        with self.refusing_glibc() as glibc:
+                            self.assertFalse(COLLECTOR._runtime_target_ok())
+        glibc.assert_not_called()
+
+    def test_wrong_soabi_refuses_without_probing_glibc(self) -> None:
+        with mock.patch.object(COLLECTOR, "_running_on_linux", return_value=True):
+            with mock.patch.object(sys, "implementation", SimpleNamespace(name="cpython")):
+                with mock.patch.object(sys, "version_info", (3, 12, 10, "final", 0)):
+                    with mock.patch.object(
+                        COLLECTOR, "_normalized_machine", return_value="x86_64"
+                    ):
+                        with mock.patch.object(
+                            COLLECTOR, "_soabi", return_value="cpython-312-aarch64-linux-gnu"
+                        ):
+                            with self.refusing_glibc() as glibc:
+                                self.assertFalse(COLLECTOR._runtime_target_ok())
+        glibc.assert_not_called()
+
+    def test_raising_glibc_probe_never_escapes_a_non_linux_refusal(self) -> None:
+        with mock.patch.object(COLLECTOR, "_running_on_linux", return_value=False):
+            with mock.patch.object(
+                COLLECTOR, "_glibc_version", side_effect=RuntimeError("no libc here")
+            ):
+                self.assertFalse(COLLECTOR._runtime_target_ok())
+
+    def test_matching_linux_host_still_admits_and_probes_glibc(self) -> None:
+        with mock.patch.object(COLLECTOR, "_running_on_linux", return_value=True):
+            with mock.patch.object(sys, "implementation", SimpleNamespace(name="cpython")):
+                with mock.patch.object(sys, "version_info", (3, 12, 10, "final", 0)):
+                    with mock.patch.object(
+                        COLLECTOR, "_normalized_machine", return_value="x86_64"
+                    ):
+                        with mock.patch.object(
+                            COLLECTOR, "_soabi", return_value="cpython-312-x86_64-linux-gnu"
+                        ):
+                            with mock.patch.object(
+                                COLLECTOR, "_glibc_version", return_value=(2, 17)
+                            ) as glibc:
+                                self.assertTrue(COLLECTOR._runtime_target_ok())
+                            self.assertEqual(glibc.call_count, 1)
+                            with mock.patch.object(
+                                COLLECTOR, "_glibc_version", return_value=(2, 16)
+                            ):
+                                self.assertFalse(COLLECTOR._runtime_target_ok())
+                            with mock.patch.object(
+                                COLLECTOR, "_glibc_version", return_value=None
+                            ):
+                                self.assertFalse(COLLECTOR._runtime_target_ok())
+
+
 class RemoteProvisionIsolationAndRaceTest(unittest.TestCase):
     def test_streamed_isolated_collector_runs_without_workstack(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1377,6 +1505,173 @@ class RemoteProvisionIsolationAndRaceTest(unittest.TestCase):
         self.assertIsNone(facts["install"]["digest"])
         expected = COLLECTOR._open_flags("O_NOFOLLOW", "O_NONBLOCK")
         self.assertIn(expected, mapped.open_flags.get(posix, []))
+
+
+class RemoteProvisionSchemaAdmissionTest(unittest.TestCase):
+    """Collector admits exact v3/v5 metadata+workspace; the 10-document oracle stays in tests."""
+
+    def plant(self, meta_bytes: bytes, workspace_bytes: bytes) -> tuple[Path, MappedFS]:
+        root, mapped = make_tree(existing_data=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        mapped.local(f"{POSIX_DATA}/store-meta.json").write_bytes(meta_bytes)
+        mapped.local(f"{POSIX_DATA}/workspace.json").write_bytes(workspace_bytes)
+        bind_linux(self)
+        bind_fs(self, mapped)
+        return root, mapped
+
+    def facts_unwritten(self, root: Path) -> dict[str, object]:
+        before = tree_hashes(root)
+        facts = MODULE.collect_provision_facts(POSIX_INSTALL, POSIX_DATA, OWNER)
+        self.assertEqual(tree_hashes(root), before)
+        return facts
+
+    def mutated_meta(self, values: dict[str, object], mutator) -> bytes:
+        metadata = json.loads(json.dumps(values["store-meta.json"]))
+        mutator(metadata)
+        return _authority_bytes(metadata)
+
+    def test_genuine_v5_initialize_bytes_return_oracle_uid(self) -> None:
+        temporary, oracle, _values, meta, workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+        root, _mapped = self.plant(meta, workspace)
+        facts = self.facts_unwritten(root)
+        self.assertEqual(facts["data"]["workspace_id"], oracle.workspace_uid)
+        self.assertEqual(oracle.schema_version, 5)
+
+    def test_genuine_v3_fixture_still_returns_uid(self) -> None:
+        temporary, oracle, _values, meta, workspace = genuine_v3_authority()
+        self.addCleanup(temporary.cleanup)
+        root, _mapped = self.plant(meta, workspace)
+        facts = self.facts_unwritten(root)
+        self.assertEqual(facts["data"]["workspace_id"], oracle.workspace_uid)
+        self.assertEqual(oracle.schema_version, 3)
+
+    def test_migrated_reports_evidence_is_admitted(self) -> None:
+        temporary, oracle, values, _meta, workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+        for origin in ("migrated_v1", "migrated_v2", "migrated_v3"):
+            with self.subTest(origin=origin):
+                def mutate(metadata, chosen=origin):
+                    metadata["migrations"]["reports"] = {
+                        "id": "workstack.reports.v3-to-v5",
+                        "origin": chosen,
+                        "source_sha256": ARTIFACT_DIGEST,
+                    }
+
+                meta = self.mutated_meta(values, mutate)
+                Store.validate_document_values(
+                    {**values, "store-meta.json": json.loads(meta.decode("utf-8"))},
+                    schema_version=5,
+                )
+                root, _mapped = self.plant(meta, workspace)
+                facts = self.facts_unwritten(root)
+                self.assertEqual(facts["data"]["workspace_id"], oracle.workspace_uid)
+
+    def test_bool_float_and_unsupported_schema_versions_null_without_writes(self) -> None:
+        temporary, _oracle, values, _meta, workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+        cases = (
+            ("version_bool", lambda metadata: metadata.__setitem__("version", True)),
+            ("version_float", lambda metadata: metadata.__setitem__("version", 2.0)),
+            ("schema_bool", lambda metadata: metadata.__setitem__("store_schema_version", True)),
+            ("schema_float", lambda metadata: metadata.__setitem__("store_schema_version", 5.0)),
+            ("schema_1", lambda metadata: metadata.__setitem__("store_schema_version", 1)),
+            ("schema_2", lambda metadata: metadata.__setitem__("store_schema_version", 2)),
+            ("schema_4", lambda metadata: metadata.__setitem__("store_schema_version", 4)),
+            ("schema_future", lambda metadata: metadata.__setitem__("store_schema_version", 6)),
+        )
+        for name, mutator in cases:
+            with self.subTest(name=name):
+                root, _mapped = self.plant(self.mutated_meta(values, mutator), workspace)
+                facts = self.facts_unwritten(root)
+                self.assertIsNone(facts["data"]["workspace_id"])
+
+    def test_partial_mixed_and_extra_migration_records_null_without_writes(self) -> None:
+        temporary, _oracle, values, _meta, workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+
+        def drop_reports(metadata):
+            del metadata["migrations"]["reports"]
+
+        def extra_record(metadata):
+            metadata["migrations"]["ssot"] = metadata["migrations"]["identity"]
+
+        def mixed_v3_reports(metadata):
+            metadata["store_schema_version"] = 3
+
+        def extra_top(metadata):
+            metadata["extra"] = 1
+
+        for name, mutator in (
+            ("partial_v5", drop_reports),
+            ("extra_record", extra_record),
+            ("v3_with_reports", mixed_v3_reports),
+            ("extra_top_field", extra_top),
+        ):
+            with self.subTest(name=name):
+                root, _mapped = self.plant(self.mutated_meta(values, mutator), workspace)
+                facts = self.facts_unwritten(root)
+                self.assertIsNone(facts["data"]["workspace_id"])
+
+    def test_invalid_reports_evidence_null_without_writes(self) -> None:
+        temporary, _oracle, values, _meta, workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+
+        def set_reports(metadata, **fields):
+            metadata["migrations"]["reports"].update(fields)
+
+        cases = (
+            ("fresh_digest", {"source_sha256": ARTIFACT_DIGEST}),
+            ("wrong_fresh_id", {"id": "workstack.reports.v3-to-v5"}),
+            ("unknown_origin", {"origin": "migrated_v4", "id": "workstack.reports.v3-to-v5", "source_sha256": ARTIFACT_DIGEST}),
+            ("migrated_null_digest", {"origin": "migrated_v3", "id": "workstack.reports.v3-to-v5", "source_sha256": None}),
+            ("migrated_wrong_id", {"origin": "migrated_v3", "id": "workstack.reports.v5", "source_sha256": ARTIFACT_DIGEST}),
+            ("uppercase_digest", {"origin": "migrated_v3", "id": "workstack.reports.v3-to-v5", "source_sha256": ARTIFACT_DIGEST.replace("abcdef", "ABCDEF")}),
+        )
+        for name, fields in cases:
+            with self.subTest(name=name):
+                root, _mapped = self.plant(
+                    self.mutated_meta(values, lambda metadata, payload=fields: set_reports(metadata, **payload)),
+                    workspace,
+                )
+                facts = self.facts_unwritten(root)
+                self.assertIsNone(facts["data"]["workspace_id"])
+
+    def test_noncanonical_and_nil_uid_null_without_writes(self) -> None:
+        temporary, _oracle, _values, meta, _workspace = disposable_v5_authority()
+        self.addCleanup(temporary.cleanup)
+        for name, uid in (
+            ("uppercase", LETTER_UID.upper()),
+            ("nil", NIL_UID),
+            ("urn", "urn:uuid:" + LETTER_UID),
+        ):
+            with self.subTest(name=name):
+                workspace = _authority_bytes({"id": uid, "name": "Fixture", "version": 2})
+                root, _mapped = self.plant(meta, workspace)
+                facts = self.facts_unwritten(root)
+                self.assertIsNone(facts["data"]["workspace_id"])
+
+    def test_uid_swap_oracle_rejects_mixed_authority_collector_sees_workspace_only(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="ws-remote-swap-")
+        self.addCleanup(temporary.cleanup)
+        service = WorkStack(Store(Path(temporary.name)))
+        service.add_task("Held task")
+        values = {
+            name: json.loads((Path(temporary.name) / name).read_text(encoding="utf-8"))
+            for name in V5_DOCUMENT_NAMES
+        }
+        original = Store.validate_document_values(values, schema_version=5)
+        task_uid = values["backlog.json"]["tasks"][0]["uid"]
+        mixed = json.loads(json.dumps(values))
+        mixed["workspace.json"]["id"] = task_uid
+        with self.assertRaises(StoreCorruptError):
+            Store.validate_document_values(mixed, schema_version=5)
+        meta = (Path(temporary.name) / "store-meta.json").read_bytes()
+        workspace = _authority_bytes(mixed["workspace.json"])
+        root, _mapped = self.plant(meta, workspace)
+        facts = self.facts_unwritten(root)
+        self.assertEqual(facts["data"]["workspace_id"], task_uid)
+        self.assertNotEqual(facts["data"]["workspace_id"], original.workspace_uid)
 
 
 if __name__ == "__main__":
