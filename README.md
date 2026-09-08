@@ -401,3 +401,18 @@ python scripts/audit_export.py <runtime-or-export-directory> --mode tree
 - `data/`: tracked synthetic demo fixtures
 - `scripts/`: export audit and reversible packaging tools
 - `tests/`: Python domain, recovery, capture, and HTTP boundary tests
+
+## License
+
+Work Stack's original code and documentation are available under the
+[MIT License](LICENSE). Commercial use, modification, and redistribution are
+permitted subject to its copyright and license notice requirements.
+
+Third-party components retain their own licenses; the MIT license does not
+relicense those components. See [Third-party notices](THIRD_PARTY_NOTICES.md),
+[frontend notices](frontend/THIRD_PARTY_NOTICES.md), and the bundled `licenses/`
+directory. In particular, elkjs is distributed under EPL-2.0.
+
+The open-source application may be complemented by separately offered paid
+hosting, integration, or support services. No such service is required to use
+the local application, and this statement does not change the MIT license.

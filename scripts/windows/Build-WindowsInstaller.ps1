@@ -80,7 +80,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $payload 'frontend'), (Join-Path $payload 'scripts') | Out-Null
     Copy-Item -LiteralPath (Join-Path $sourcePath 'frontend\dist') -Destination (Join-Path $payload 'frontend\dist') -Recurse
     Copy-Item -LiteralPath (Join-Path $sourcePath 'scripts\windows') -Destination (Join-Path $payload 'scripts\windows') -Recurse
-    foreach ($file in @('run_work_stack.py', 'requirements.txt', 'requirements-windows-desktop.txt', 'README.md', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md')) {
+    foreach ($file in @('run_work_stack.py', 'requirements.txt', 'requirements-windows-desktop.txt', 'README.md', 'LICENSE', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md')) {
         Copy-Item -LiteralPath (Join-Path $sourcePath $file) -Destination (Join-Path $payload $file)
     }
     Remove-PythonBytecode -Root $payload

@@ -238,7 +238,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $staging 'frontend'), (Join-Path $staging 'scripts') | Out-Null
     Copy-Item -LiteralPath (Join-Path $sourcePath 'frontend\dist') -Destination (Join-Path $staging 'frontend\dist') -Recurse
     Copy-Item -LiteralPath (Join-Path $sourcePath 'scripts\windows') -Destination (Join-Path $staging 'scripts\windows') -Recurse
-    foreach ($file in @('run_work_stack.py', 'requirements.txt', 'requirements-windows-desktop.txt', 'README.md', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md', 'WorkStack.exe')) {
+    foreach ($file in @('run_work_stack.py', 'requirements.txt', 'requirements-windows-desktop.txt', 'README.md', 'LICENSE', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md', 'WorkStack.exe')) {
         # The installation-root host is staged by this loop; without it the staged
         # guard below can never be satisfied by a genuine payload.
         Copy-Item -LiteralPath (Join-Path $sourcePath $file) -Destination (Join-Path $staging $file)

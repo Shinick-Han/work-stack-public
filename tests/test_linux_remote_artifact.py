@@ -126,6 +126,7 @@ def write_source(root: Path, *, lock: str | None = None, version: str = "1.0.7")
     )
     (root / "run_work_stack.py").write_text("print('run')\n", encoding="utf-8")
     (root / "README.md").write_text("readme\n", encoding="utf-8")
+    (root / "LICENSE").write_bytes((ROOT / "LICENSE").read_bytes())
     (root / "SECURITY.md").write_text("security\n", encoding="utf-8")
     (root / "THIRD_PARTY_NOTICES.md").write_text("notices\n", encoding="utf-8")
     (root / "requirements.txt").write_text(lock or "", encoding="utf-8")
@@ -787,6 +788,7 @@ class LinuxRemoteArtifactTests(unittest.TestCase):
                 "desktop/python-webview-shell/remote_receipt_guard.py",
                 "desktop/python-webview-shell/remote_receipt_io.py",
                 "README.md",
+                "LICENSE",
                 "SECURITY.md",
                 "THIRD_PARTY_NOTICES.md",
             ),

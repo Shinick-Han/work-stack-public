@@ -28,7 +28,7 @@ SOURCE_DIRS = (
     "integrations", "licenses", "quality", "scripts", "tests", "theme", "web", ".github",
 )
 SOURCE_FILES = (
-    ".gitignore", "README.md", "SECURITY.md", "run_work_stack.py",
+    ".gitignore", "README.md", "LICENSE", "SECURITY.md", "run_work_stack.py",
     "frontend/index.html", "frontend/package.json", "frontend/package-lock.json",
     "frontend/THIRD_PARTY_NOTICES.md", "frontend/tsconfig.json",
     "frontend/tsconfig.app.json", "frontend/tsconfig.node.json", "frontend/vite.config.ts",

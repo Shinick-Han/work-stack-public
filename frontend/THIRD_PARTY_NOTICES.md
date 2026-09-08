@@ -11,6 +11,12 @@ all transitive dependencies are frozen in `package-lock.json`.
 | XYFlow React | MIT | Workspace graph view |
 | dnd-kit core / sortable / utilities | MIT | Accessible board interactions |
 | Recharts | MIT | Workspace treemap view |
+| FullCalendar Standard | MIT | Focus Agenda |
+| elkjs 0.11.1 | EPL-2.0 | Graph layout |
+
+See the repository's `THIRD_PARTY_NOTICES.md` and `licenses/` directory for
+FullCalendar and elkjs notices, license texts, and the elkjs source location.
+Work Stack's MIT license does not replace these component licenses.
 
 The development toolchain includes Vite, Vitest, Testing Library, jsdom, and their
 dependencies under their respective package licenses. TypeScript is licensed under

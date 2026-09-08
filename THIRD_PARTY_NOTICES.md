@@ -1,5 +1,18 @@
 # Third-party notices
 
+Work Stack's original code is MIT-licensed; dependencies retain their own
+licenses and copyright notices. This notice does not replace those licenses.
+
+## elkjs 0.11.1
+
+Work Stack uses the unmodified npm package `elkjs` for graph layout. It is
+licensed under the Eclipse Public License 2.0 (EPL-2.0), not MIT. A complete
+license copy is included at `licenses/elkjs-0.11.1-LICENSE.md`.
+Corresponding source and build instructions are available from
+https://github.com/kieler/elkjs/tree/0.11.1; the underlying Eclipse Layout Kernel
+is available at https://github.com/eclipse-elk/elk. Preserve these notices and
+comply with EPL-2.0 when redistributing or modifying the covered component.
+
 ## FullCalendar 6.1.21
 
 Work Stack uses the MIT-licensed FullCalendar Standard packages (`core`, `react`,
@@ -39,9 +52,9 @@ offline and does not vendor the archive in this source repository.
 The Windows setup artifact includes pywebview 6.2.1 (BSD-3-Clause), pythonnet
 3.1.0 (MIT), clr-loader 0.3.1 (MIT), Bottle 0.13.4 (MIT), CFFI 2.1.1
 (MIT-0), pycparser 3.0 (BSD-3-Clause), typing-extensions 4.16.0 (PSF-2.0),
-and proxy_tools 0.1.0 (MIT). They let the signed CPython runtime host the
-installed Microsoft Edge WebView2 Runtime without introducing a newly compiled
-Work Stack executable. Package license texts remain in each installed
+and proxy_tools 0.1.0 (MIT). Work Stack's compiled C# desktop host loads the
+bundled CPython runtime and uses these packages to host the installed Microsoft
+Edge WebView2 Runtime. Package license texts remain in each installed
 `runtime/Lib/site-packages/*.dist-info/licenses` directory where supplied.
 
 pywebview's wheel also carries Microsoft WebView2 managed and native loader

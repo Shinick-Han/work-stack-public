@@ -59,6 +59,7 @@ ROSTER_FILES = (
     "desktop/python-webview-shell/remote_receipt_guard.py",
     "desktop/python-webview-shell/remote_receipt_io.py",
     "README.md",
+    "LICENSE",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
 )
