@@ -64,10 +64,14 @@ ROSTER_FILES = (
     "desktop/python-webview-shell/remote_process_handle.py",
     "desktop/python-webview-shell/remote_receipt_guard.py",
     "desktop/python-webview-shell/remote_receipt_io.py",
+    "desktop/python-webview-shell/remote_skill_install.py",
     "README.md",
     "LICENSE",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
+    "integrations/agent-skill/work-stack/SKILL.md",
+    "integrations/agent-skill/work-stack/references/commands.md",
+    "integrations/agent-skill/work-stack/references/journal-policy.md",
 )
 # Exactly the roster dist_source_gate binds frontend/dist to, including the
 # Python theme output the prebuild check reads, the fixture tsconfig.app pulls

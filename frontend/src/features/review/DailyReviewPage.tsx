@@ -16,6 +16,7 @@ import type {
 import { getErrorMessage } from '../../utils/format'
 import { LeadershipSignalsPanel } from './LeadershipSignalsPanel'
 import { SavedReportsPanel } from './SavedReportsPanel'
+import { MutationNoticePanel } from './MutationNoticePanel'
 import { DailyReviewEntryForm, DayEntries, DraftGuardDialog } from './DailyReviewPageForm'
 import {
   REVIEW_COPY,
@@ -771,6 +772,7 @@ export function DailyReviewPage({
         workspaceId={page.workspaceId}
       />
       <SavedReportsPanel workspaceId={page.workspaceId} />
+      <MutationNoticePanel onOpenTask={onOpenTask} tasks={workspace.tasks} workspaceId={page.workspaceId} />
     </section>
   )
 }

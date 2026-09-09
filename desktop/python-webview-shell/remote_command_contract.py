@@ -26,6 +26,7 @@ REMOTE_PYTHON_REQUIRED = "REMOTE_PYTHON_REQUIRED"
 R5_OWNERSHIP_NOT_IMPLEMENTED = "R5_OWNERSHIP_NOT_IMPLEMENTED"
 REMOTE_SESSION_TOKEN_INVALID = "REMOTE_SESSION_TOKEN_INVALID"
 REMOTE_ENTRY_RELATIVE = "desktop/python-webview-shell/remote_entry.py"
+REMOTE_SKILL_INSTALL_RELATIVE = "desktop/python-webview-shell/remote_skill_install.py"
 LOOPBACK_HOST = "127.0.0.1"
 MAX_PROBE_BYTES = 4096
 SESSION_TOKEN_HEX_BYTES = 16
@@ -228,6 +229,19 @@ def remote_entry_path(app_dir: str) -> str:
     return validated_posix_path(f"{root}/{REMOTE_ENTRY_RELATIVE}", "remote_entry")
 
 
+def remote_skill_install_path(app_dir: str) -> str:
+    root = validated_posix_path(app_dir, "remote_app_dir")
+    return validated_posix_path(f"{root}/{REMOTE_SKILL_INSTALL_RELATIVE}", "remote_skill_install")
+
+
+def require_apply_flag(value: object) -> bool:
+    """Admit only an actual bool. Strings, 1, and other truthy objects are refused."""
+
+    if type(value) is not bool:
+        raise RemoteCommandError("REMOTE_PROTOCOL_INVALID", "apply must be a bool")
+    return value
+
+
 def require_remote_python(value: object) -> str:
     if value is None or value == "":
         raise RemoteCommandError(REMOTE_PYTHON_REQUIRED)
@@ -288,6 +302,28 @@ def provision_install_tokens(
         "--expected-workspace-uid",
         uid,
     ]
+
+
+def skill_tokens(
+    *,
+    remote_python: object,
+    remote_app_dir: str,
+    apply: bool = False,
+) -> list[str]:
+    python = require_remote_python(remote_python)
+    app = validated_posix_path(remote_app_dir, "remote_app_dir")
+    apply_flag = require_apply_flag(apply)
+    tokens = [
+        python,
+        "-I",
+        "-B",
+        remote_skill_install_path(app),
+        "--install-root",
+        app,
+    ]
+    if apply_flag is True:
+        tokens.append("--apply")
+    return tokens
 
 
 def probe_tokens(
@@ -459,6 +495,21 @@ def join_provision_install_command(
         remote_data_dir=remote_data_dir,
         owner=owner,
         expected_workspace_uid=expected_workspace_uid,
+    )
+    scan_tokens_for_live_ssh(tokens)
+    return join_remote_tokens(tokens)
+
+
+def join_skill_command(
+    *,
+    remote_python: object,
+    remote_app_dir: str,
+    apply: bool = False,
+) -> str:
+    tokens = skill_tokens(
+        remote_python=remote_python,
+        remote_app_dir=remote_app_dir,
+        apply=apply,
     )
     scan_tokens_for_live_ssh(tokens)
     return join_remote_tokens(tokens)

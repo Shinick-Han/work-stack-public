@@ -101,9 +101,10 @@ from remote_update_flow_contract import (
     run_order,
     version,
 )
+from remote_update_skill_offer import SkillOfferMixin
 
 
-class RemoteUpdateFlow:
+class RemoteUpdateFlow(SkillOfferMixin):
     """One bounded remote update attempt, driven one call at a time.
 
     ``advance`` runs the next stage, or settles a recorded identity when one
@@ -309,12 +310,12 @@ class RemoteUpdateFlow:
 
     def _actions_locked(self) -> tuple[str, ...]:
         if self._stage is RemoteUpdateStage.READY:
-            return ("finish",)
+            skill = self._skill_locked()
+            return skill.actions() + (() if skill.state.in_flight else ("finish",))
         if self._stage is RemoteUpdateStage.CANCELLED:
             return ("dismiss", "inspect_diagnostics")
         if self._pending is not None:
-            # An identity is unsettled, so no further mutation may be issued:
-            # settling this one is the only offer any recovery call would take.
+            # Unsettled identity: only settling this one may be offered.
             return ("reconcile_pending", "inspect_diagnostics")
         if self._code in outcomes.RESTART_CODES:
             return ("restart_desktop",) + self._recovery_locked() + ("inspect_diagnostics",)

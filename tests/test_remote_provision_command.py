@@ -298,5 +298,163 @@ class RemoteProvisionInstallCommandTest(unittest.TestCase):
         run.assert_not_called()
 
 
+class _Truthy:
+    def __bool__(self) -> bool:
+        return True
+
+
+SKILL_SCRIPT = f"{POSIX_INSTALL}/desktop/python-webview-shell/remote_skill_install.py"
+FROZEN_SKILL_TOKENS = [
+    POSIX_PYTHON,
+    "-I",
+    "-B",
+    SKILL_SCRIPT,
+    "--install-root",
+    POSIX_INSTALL,
+]
+
+
+class RemoteSkillSshCommandTest(unittest.TestCase):
+    def test_default_skill_ssh_argv_is_read_only_helper_path(self) -> None:
+        command = COMMAND.build_ssh_skill_command(load_profile(), SSH_EXECUTABLE)
+        omitted = COMMAND.build_ssh_skill_command(
+            load_profile(), SSH_EXECUTABLE, apply=False
+        )
+        self.assertEqual(command[:14], FROZEN_SSH_PREFIX)
+        self.assertEqual(command, omitted)
+        self.assertIsNot(getattr(command, "shell", None), True)
+        remote = command[-1]
+        tokens = remote.split()
+        self.assertEqual(tokens, FROZEN_SKILL_TOKENS)
+        self.assertNotIn("--apply", tokens)
+        self.assertNotIn("-", tokens)
+        self.assertNotIn("--data-root", tokens)
+        self.assertNotIn("--owner", tokens)
+        self.assertNotIn(OWNER, tokens)
+        self.assertNotIn(POSIX_DATA, remote)
+        self.assertNotIn("HOME", tokens)
+        self.assertNotIn("-c", tokens)
+        self.assertNotIn("'", remote)
+        self.assertNotIn('"', remote)
+        self.assertNotIn("&&", remote)
+        self.assertNotIn("$(", remote)
+        self.assertNotIn("2>&1", remote)
+        self.assertIn("remote_skill_install.py", remote)
+        self.assertNotIn("remote_entry.py", remote)
+
+    def test_apply_true_appends_apply_on_the_full_ssh_argv(self) -> None:
+        command = COMMAND.build_ssh_skill_command(
+            load_profile(), SSH_EXECUTABLE, apply=True
+        )
+        self.assertEqual(command[:14], FROZEN_SSH_PREFIX)
+        tokens = command[-1].split()
+        self.assertEqual(tokens, FROZEN_SKILL_TOKENS + ["--apply"])
+        self.assertEqual(tokens[-1], "--apply")
+        default = COMMAND.build_ssh_skill_command(load_profile(), SSH_EXECUTABLE)
+        self.assertEqual(command[:-1], default[:-1])
+        self.assertEqual(command[-1], default[-1] + " --apply")
+
+    def test_skill_invalid_inputs_are_refused_without_subprocess(self) -> None:
+        cases = (
+            ("python-missing", load_profile(remote_python=None), SSH_EXECUTABLE, {}),
+            ("python-empty", load_profile(remote_python=""), SSH_EXECUTABLE, {}),
+            ("python-bare", load_profile(remote_python="python3"), SSH_EXECUTABLE, {}),
+            (
+                "python-relative",
+                load_profile(remote_python="venv/bin/python"),
+                SSH_EXECUTABLE,
+                {},
+            ),
+            (
+                "path-space",
+                load_profile(remote_app_dir="/workstack-fixture/command owner/app"),
+                SSH_EXECUTABLE,
+                {},
+            ),
+            (
+                "path-dotdot",
+                load_profile(remote_app_dir="/workstack-fixture/command-owner/../app"),
+                SSH_EXECUTABLE,
+                {},
+            ),
+            (
+                "path-trailing-slash",
+                load_profile(remote_app_dir=POSIX_INSTALL + "/"),
+                SSH_EXECUTABLE,
+                {},
+            ),
+            ("path-root", load_profile(remote_app_dir="/"), SSH_EXECUTABLE, {}),
+            (
+                "path-semicolon",
+                load_profile(remote_app_dir="/tmp/app;" + CANARY),
+                SSH_EXECUTABLE,
+                {},
+            ),
+            (
+                "alias-option",
+                load_profile(ssh_host_alias="-oProxyCommand=" + CANARY),
+                SSH_EXECUTABLE,
+                {},
+            ),
+            ("executable-empty", load_profile(), "", {}),
+            ("apply-string", load_profile(), SSH_EXECUTABLE, {"apply": "true"}),
+            ("apply-one", load_profile(), SSH_EXECUTABLE, {"apply": 1}),
+            ("apply-object", load_profile(), SSH_EXECUTABLE, {"apply": _Truthy()}),
+            (
+                "python-is-ssh",
+                load_profile(remote_python="/usr/bin/ssh"),
+                SSH_EXECUTABLE,
+                {},
+            ),
+        )
+        for label, profile, executable, extra in cases:
+            with self.subTest(case=label):
+                with mock.patch.object(subprocess, "Popen") as popen:
+                    with mock.patch.object(subprocess, "run") as run:
+                        with self.assertRaises(CONTRACT.RemoteCommandError) as raised:
+                            COMMAND.build_ssh_skill_command(
+                                profile, executable, **extra
+                            )
+                popen.assert_not_called()
+                run.assert_not_called()
+                message = str(raised.exception)
+                self.assertNotIn(CANARY, message)
+                self.assertNotIn("ProxyCommand", message)
+                if label == "python-missing" or label == "python-empty":
+                    self.assertEqual(raised.exception.code, "REMOTE_PYTHON_REQUIRED")
+                else:
+                    self.assertEqual(raised.exception.code, "REMOTE_PROTOCOL_INVALID")
+
+    def test_provision_install_ssh_argv_is_unchanged(self) -> None:
+        command = COMMAND.build_ssh_provision_install_command(
+            load_profile(), OWNER, SSH_EXECUTABLE
+        )
+        self.assertEqual(command[:14], FROZEN_SSH_PREFIX)
+        self.assertEqual(
+            command[-1].split(),
+            [
+                POSIX_PYTHON,
+                "-I",
+                "-B",
+                "-",
+                "provision-install",
+                "--install-root",
+                POSIX_INSTALL,
+                "--data-root",
+                POSIX_DATA,
+                "--owner",
+                OWNER,
+                "--expected-workspace-uid",
+                WORKSPACE_ID,
+            ],
+        )
+        skill = COMMAND.build_ssh_skill_command(load_profile(), SSH_EXECUTABLE)
+        self.assertEqual(skill[:14], command[:14])
+        self.assertNotEqual(skill[-1], command[-1])
+        self.assertNotIn("provision-install", skill[-1])
+        self.assertNotIn("remote_skill_install.py", command[-1])
+
+
 if __name__ == "__main__":
     unittest.main()
+

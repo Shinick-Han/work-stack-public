@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { expect, test, vi } from 'vitest'
 import { api } from '../../../api/client'
+import { taskDetailSchema } from '../../../domain/schemas'
 import { task } from '../../../test/fixtures'
 import type { TaskDetail } from '../../../domain/types'
 import { GraphView } from './GraphView'
@@ -113,6 +114,48 @@ test('badge click, Enter and Space open context without selecting the task; node
   expect(view.props.onSelectTask).toHaveBeenCalledTimes(3)
   await userEvent.click(screen.getByRole('button', { name: 'Focus objective O-1' }))
   expect(view.props.onSelectObjective).toHaveBeenCalledExactlyOnceWith('O-1')
+})
+
+test('zero-context + Context opens the popup without selecting the task, then a saved card uses that Task', async () => {
+  let created = false
+  vi.spyOn(api, 'getTask').mockImplementation(async (id) => {
+    if (id === 'T-0002' && created) {
+      return taskDetailSchema.parse({
+        task: { ...task, id: 'T-0002' }, activity: [], replies: [],
+        context: [{
+          id: 'N-9', text: 'Release assumption', links: ['T-0002'], created: '2026-09-10',
+          ref: { kind: 'note', id: 'N-9' }, connections: [], date_precision: 'date',
+        }],
+      })
+    }
+    return { task: { ...task, id }, context: [], activity: [], replies: [] }
+  })
+  const create = vi.spyOn(api, 'createNote').mockImplementation(async (text, links) => {
+    created = true
+    return { id: 'N-9', text, links }
+  })
+  const view = await setup()
+  const layouts = layoutPlanningGraphMock.mock.calls.length
+  const add = await screen.findByRole('button', { name: 'Add context for task T-0002' })
+  expect(add).toHaveTextContent('+ Context')
+  await userEvent.click(add)
+  expect(view.props.onSelectTask).not.toHaveBeenCalled()
+  expect(layoutPlanningGraphMock.mock.calls.length).toBe(layouts)
+  const dialog = await screen.findByRole('dialog', { name: task.title })
+  await userEvent.type(screen.getByRole('textbox', { name: 'Context card' }), 'Release assumption')
+  await userEvent.click(screen.getByRole('button', { name: 'Add context card' }))
+  await waitFor(() => expect(create).toHaveBeenCalledExactlyOnceWith(
+    'Release assumption',
+    ['T-0002'],
+    expect.stringMatching(/^workstack:/),
+  ))
+  expect(await screen.findByRole('heading', { name: 'Release assumption' })).toBeInTheDocument()
+  expect(layoutPlanningGraphMock.mock.calls.length).toBe(layouts)
+  await view.rerenderWith({
+    tasks: [{ ...task, context_count: 2 }, { ...task, id: 'T-0002', title: task.title, context_count: 1 }],
+  })
+  expect(screen.getByRole('button', { name: /Open context for task T-0002: 1 linked/ })).toBeInTheDocument()
+  expect(dialog).toBeInTheDocument()
 })
 
 test('Open task closes the panel and selects its exact task', async () => {

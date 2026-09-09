@@ -23,6 +23,7 @@ export type GraphSurfaceProps = {
   pinGeneration: number;
   pinGenerationRef: { current: number };
   aliveRef: { current: boolean };
+  workspaceId: string;
   renderPopupPrerequisites?: GraphViewProps["renderPopupPrerequisites"];
   onSelectTask: (taskId: string) => void;
   onFocusPinChange?: (taskId: string | null) => void;
@@ -63,6 +64,7 @@ function GraphPopovers(props: GraphSurfaceProps) {
           trigger={props.contextTrigger}
           focusFallbackSelector="[data-workspace-focus-fallback]"
           ownerAliveRef={props.aliveRef}
+          workspaceId={props.workspaceId}
           prerequisites={props.renderPopupPrerequisites?.(props.contextTargetId)}
           onClose={closeContext}
           onFocusReturned={releaseFocusPinFor(

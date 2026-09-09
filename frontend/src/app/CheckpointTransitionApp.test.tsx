@@ -145,6 +145,19 @@ function emptySavedReportsPage(url: string, init?: RequestInit) {
   })
 }
 
+/**
+ * The Review surface also mounts MutationNoticePanel, which reads one bounded page from
+ * GET /api/v1/mutation-notices as soon as it renders. The catch-all `{}` below fails that
+ * page schema, so the panel would raise its own role="alert" beside the checkpoint one.
+ * Route-exact for the same reason the saved-reports answer above is.
+ */
+function emptyMutationNoticePage(url: string, init?: RequestInit) {
+  const parsed = new URL(url, 'https://workstack.test')
+  if (parsed.pathname !== '/api/v1/mutation-notices') return null
+  if ((init?.method ?? 'GET').toUpperCase() !== 'GET') return null
+  return jsonResponseOf({ data: { items: [], next_cursor: null } })
+}
+
 function setup(plan: Plan) {
   Stream.instances = []
   window.history.replaceState(null, '', '/?surface=review')
@@ -191,6 +204,8 @@ function setup(plan: Plan) {
     }
     const savedReports = emptySavedReportsPage(url, init)
     if (savedReports) return savedReports
+    const notices = emptyMutationNoticePage(url, init)
+    if (notices) return notices
     if (url.includes('/api/v1/sync/status')) return jsonResponseOf({ data: syncStatus })
     if (url.includes('/api/v1/review')) return jsonResponseOf({ data: review })
     if (url.includes('/api/v1/workspace')) return jsonResponseOf({ data: workspaceBody })
@@ -415,6 +430,8 @@ test('StrictMode replay keeps one live stream and one notice', async () => {
     }
     const savedReports = emptySavedReportsPage(url, init)
     if (savedReports) return savedReports
+    const notices = emptyMutationNoticePage(url, init)
+    if (notices) return notices
     if (url.includes('/api/v1/sync/status')) return jsonResponseOf({ data: syncStatus })
     if (url.endsWith('/api/v1/review/checkpoints')) return jsonResponseOf({ data: audits[0] })
     if (url.includes('/api/v1/review')) {
@@ -487,6 +504,8 @@ test('a failed authoritative read is contained and a later valid hint still work
     }
     const savedReports = emptySavedReportsPage(url, init)
     if (savedReports) return savedReports
+    const notices = emptyMutationNoticePage(url, init)
+    if (notices) return notices
     if (url.includes('/api/v1/sync/status')) return jsonResponseOf({ data: syncStatus })
     if (url.endsWith('/api/v1/review/checkpoints')) {
       auditCalls += 1

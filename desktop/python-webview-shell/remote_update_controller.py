@@ -8,7 +8,7 @@ admissible next action.  Nothing here re-implements either one: the flow is
 injected whole, the projection is recomputed from that same flow object, and
 every click is resolved by ``resolve_remote_update_action``.
 
-Three properties are this module's own responsibility.
+Four properties are this module's own responsibility.
 
 * Every flow call is blocking -- SSH, unpack, probe -- so it runs on a
   ``BoundedRequestWorker`` thread, never on the WebView callback that
@@ -21,6 +21,13 @@ Three properties are this module's own responsibility.
 * A click is resolved against the flow as it is *now*, not as it was when the
   page was painted, so a repeated or stale click can never issue a second
   mutation against an identity that already moved.
+* Mounting a page is a new question.  The host reuses one composed flow for an
+  unchanged binding, so the ephemeral answer the previous page held about the
+  operator's agent Skill is withdrawn before the new page is built, and only a
+  fresh read can offer a write or claim one succeeded.  A Skill click is bound
+  to that page's epoch at submission; a queued call whose page has since been
+  replaced is discarded before the port runs.  A call already armed is not
+  cancelled; its later reply is detached from the new page.
 
 There is no fallback port, no simulated flow and no confirmation dialog: a
 missing host hook or an unselected session refuses to open the page.
@@ -43,7 +50,12 @@ from remote_update_view import RemoteUpdateViewSession
 
 
 #: Host kinds this controller answers by calling the injected flow.  ``verify``
-#: is the last stage of the run order, so it advances like the others.
+#: is the last stage of the run order, so it advances like the others.  The two
+#: skill kinds are their own calls: they are offered only once the run order is
+#: finished, which is exactly the condition ``advance`` refuses, so they are
+#: dispatched by name rather than by relaxing that refusal.  A flow that does
+#: not have them -- an older bundle, or a build with no skill transport -- is
+#: simply not dispatched, because ``_submit_flow_call`` requires the attribute.
 FLOW_CALLS: dict[str, str] = {
     "advance": "advance",
     "verify": "advance",
@@ -52,6 +64,8 @@ FLOW_CALLS: dict[str, str] = {
     "rollback": "rollback",
     "restore": "restore",
     "cancel": "cancel",
+    "skill_inspect": "inspect_skill",
+    "skill_install": "install_skill",
 }
 
 #: The finite external callbacks behind the three independent PC actions.
@@ -132,11 +146,13 @@ class RemoteUpdateController:
         self._trace = trace if callable(trace) else _silent
         self._lock = threading.Lock()
         self._generation = 0
+        self._page_epoch = 0
         self._sequence = 0
         self._bound: RemoteUpdateSelection | None = None
         self._projection: PROJECT.RemoteUpdateProjection | None = None
         self._view: RemoteUpdateViewSession | None = None
         self._jobs: dict[str, Callable[[], object]] = {}
+        self._job_flows: dict[str, object] = {}
         build = worker_factory if worker_factory is not None else BoundedRequestWorker
         self._worker = build(
             self._run_job,
@@ -157,18 +173,44 @@ class RemoteUpdateController:
             return False
         view = self._view_factory()
         with self._lock:
+            self._reopen_skill(selection)
             self._generation += 1
+            self._page_epoch = _skill_page_epoch(selection.flow)
+            self._drop_queued_jobs_locked()
             generation = self._generation
             self._bound = selection
             self._projection = None
             self._view = view
         return self._show(selection, generation)
 
+    def _reopen_skill(self, selection: RemoteUpdateSelection) -> None:
+        """Drop the previous page's ephemeral agent-Skill answer, if any.
+
+        Mounting is the only place this happens.  A repaint of the page on
+        screen keeps what that page has already published -- including an
+        outcome that has only just arrived.  A Skill call still in flight is
+        left running, but the new page does not inherit its later write offer
+        or success sentence.
+
+        A flow without the call is an older bundle or a build with no Skill
+        transport; there is no ephemeral state to withdraw and nothing to do.
+        """
+
+        reopen = getattr(selection.flow, "reopen_skill_view", None)
+        if not callable(reopen):
+            return
+        try:
+            reopen()
+        except Exception as error:
+            self._trace(f"remote update skill reopen failed: {type(error).__name__}")
+
     def retire(self, *, closed: bool = False) -> None:
         """Take the page down.  Any outcome still in flight paints nothing."""
 
         with self._lock:
             self._generation += 1
+            self._page_epoch = 0
+            self._drop_queued_jobs_locked()
             view = self._view
             self._bound = None
             self._projection = None
@@ -216,6 +258,7 @@ class RemoteUpdateController:
             projection = self._projection
             bound = self._bound
             generation = self._generation
+            origin_epoch = self._page_epoch
         if view is None or projection is None or bound is None:
             return True
         admission = view.admit(message)
@@ -232,7 +275,9 @@ class RemoteUpdateController:
             session_id=bound.session_id,
             workspace_id=bound.workspace_id,
         )
-        self._apply(resolved, bound, generation, admitted=admission.outcome == "action")
+        self._apply(
+            resolved, bound, generation, origin_epoch, admitted=admission.outcome == "action"
+        )
         return True
 
     def resume_after_restart(self) -> bool:
@@ -263,6 +308,7 @@ class RemoteUpdateController:
         resolved: PROJECT.ResolvedRemoteUpdateOperation,
         bound: RemoteUpdateSelection,
         generation: int,
+        origin_epoch: int,
         *,
         admitted: bool,
     ) -> None:
@@ -290,12 +336,16 @@ class RemoteUpdateController:
             # ``resume_after_restart`` confirms it against real evidence.
             self._safely(self._hooks.restart_desktop, "restart")
             return
-        if not self._submit_flow_call(kind, bound, generation):
+        if not self._submit_flow_call(kind, bound, generation, origin_epoch):
             self._trace(f"remote update host kind could not be dispatched: {kind}")
             self._request_paint(generation)
 
     def _submit_flow_call(
-        self, kind: str | None, bound: RemoteUpdateSelection, generation: int
+        self,
+        kind: str | None,
+        bound: RemoteUpdateSelection,
+        generation: int,
+        origin_epoch: int,
     ) -> bool:
         name = FLOW_CALLS.get(kind or "")
         if name is None:
@@ -303,7 +353,7 @@ class RemoteUpdateController:
         call = getattr(bound.flow, name, None)
         if not callable(call):
             return False
-        return self._submit(call, generation)
+        return self._submit(_bound_skill_call(call, name, origin_epoch), generation)
 
     def _run_pc_action(self, action: str | None) -> bool:
         """Route an independent PC action to its own external callback."""
@@ -331,15 +381,31 @@ class RemoteUpdateController:
 
     # -- worker -----------------------------------------------------------
 
+    def _drop_queued_jobs_locked(self) -> None:
+        """Forget clicks that were accepted but whose worker has not begun.
+
+        Tokens already popped by ``_run_job`` stay with ``_job_flows`` so a
+        call that has started is not cancelled.  The worker may still deliver
+        the leftover token; without a job it is a no-op.
+        """
+
+        for token in list(self._jobs):
+            self._jobs.pop(token, None)
+            self._job_flows.pop(token, None)
+
     def _submit(self, job: Callable[[], object], generation: int) -> bool:
         with self._lock:
+            if generation != self._generation:
+                return False
             self._sequence += 1
             token = f"job-{self._sequence}-{generation}"
             self._jobs[token] = job
+            self._job_flows[token] = None if self._bound is None else self._bound.flow
         if self._worker.submit(token):
             return True
         with self._lock:
             self._jobs.pop(token, None)
+            self._job_flows.pop(token, None)
         self._trace("remote update worker refused the request")
         return False
 
@@ -359,7 +425,21 @@ class RemoteUpdateController:
         return token
 
     def _deliver_job(self, token: str) -> None:
+        """Refresh the page that still speaks for this job's flow, if any.
+
+        A reopen of the same flow must see the settled state -- never an
+        Install the closed page earned -- and a different selection must not
+        be painted from this completion.
+        """
+
         generation = _token_generation(token)
+        with self._lock:
+            current = self._generation
+            bound = self._bound
+            job_flow = self._job_flows.pop(token, None)
+        if bound is not None and job_flow is bound.flow:
+            self._request_paint(current)
+            return
         if generation is not None:
             self._request_paint(generation)
 
@@ -476,6 +556,31 @@ def _same_selection(candidate: object, bound: RemoteUpdateSelection) -> bool:
         and candidate.workspace_id == bound.workspace_id
         and candidate.flow is bound.flow
     )
+
+
+def _bound_skill_call(
+    call: Callable[..., object], name: str, origin_epoch: int
+) -> Callable[[], object]:
+    """Bind a Skill click to the page epoch captured with its generation.
+
+    The originating epoch is closed over here and compared later under
+    ``SkillOffer``'s arming guard.  This function must not read the live
+    offer: a paused callback can reach submit after a newer page exists.
+    """
+
+    if name not in ("inspect_skill", "install_skill"):
+        return call
+
+    def bound(job: Callable[..., object] = call, epoch: int = origin_epoch) -> object:
+        return job(origin_epoch=epoch)
+
+    return bound
+
+
+def _skill_page_epoch(flow: object) -> int:
+    offer = getattr(flow, "_skill", None)
+    epoch = getattr(offer, "epoch", None)
+    return epoch if isinstance(epoch, int) else 0
 
 
 def _token_generation(token: object) -> int | None:

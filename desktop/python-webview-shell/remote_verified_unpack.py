@@ -45,6 +45,7 @@ from remote_provision_installer import _admit_artifact  # noqa: E402
 
 TOOL = "workstack-verified-unpack/1"
 RECEIPT_NAME = ".workstack-unpacked.json"
+ARTIFACT_MANIFEST_NAME = ".workstack-artifact.json"
 UNIDATA_VERSION = "17.0.0"
 IMPORT_TIMEOUT_SECS = 30
 SMOKE_MODS = ("workstack", "jsonschema", "unicodedata2", "rpds")
@@ -193,6 +194,16 @@ def _write_payload(root: Path, record: Mapping[str, object], blobs: Mapping[str,
     relative = str(record["path"])
     parent = _ensure_payload_dir(root, relative)
     write_new(parent, relative.split("/")[-1], blobs[relative])
+
+
+def _carried_manifest(admitted: Mapping[str, object]) -> bytes:
+    """Original admitted artifact.json bytes, bound by receipt manifest digest."""
+
+    manifest = admitted["manifest"]
+    _require(type(manifest) is bytes and bool(manifest), "REMOTE_ARTIFACT_INVALID")
+    digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+    _require(digest == admitted["manifest_digest"], "REMOTE_ARTIFACT_INVALID")
+    return manifest
 
 
 def _verify_written_hashes(root: Path, records: Sequence[Mapping[str, object]]) -> None:
@@ -487,6 +498,7 @@ def _place_linux_dirfd(
         info = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
         if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != root_identity:
             raise UnpackError("APP_DIRECTORY_CHANGED")
+        write_new_at(root_fd, ARTIFACT_MANIFEST_NAME, _carried_manifest(admitted))
         receipt = _receipt_document(admitted, archive_bytes, source_commit)
         write_new_at(root_fd, RECEIPT_NAME, (json.dumps(receipt, sort_keys=True) + "\n").encode("utf-8"))
         return _success_document(receipt)
@@ -511,6 +523,7 @@ def _place_portable(
         _write_payload(root, record, blobs)
     _verify_written_hashes(root, admitted["files"])
     smoke_imports(root, PRODUCT)
+    write_new(root, ARTIFACT_MANIFEST_NAME, _carried_manifest(admitted))
     receipt = _receipt_document(admitted, archive_bytes, source_commit)
     write_new(root, RECEIPT_NAME, (json.dumps(receipt, sort_keys=True) + "\n").encode("utf-8"))
     return _success_document(receipt)

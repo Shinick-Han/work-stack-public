@@ -265,6 +265,7 @@ class RecordingOps:
         self.fail_code = fail_code
         self.stage_ready = False
         self.files: list[str] = []
+        self.writes: list[tuple[str, bytes, str]] = []
         self.receipt: object = None
         self.cleaned = False
         self.closed = 0
@@ -300,6 +301,7 @@ class RecordingOps:
     def write_file(self, relative_path: str, payload: bytes, digest: str) -> None:
         self._bump("write_file")
         self.files.append(relative_path)
+        self.writes.append((relative_path, payload, digest))
 
     def smoke_imports(self) -> None:
         self._bump("smoke_imports")
@@ -1005,7 +1007,10 @@ class ReleaseIdentityTests(unittest.TestCase):
 class FakeInstallOrderTests(unittest.TestCase):
     def test_full_fake_event_order(self) -> None:
         ops = RecordingOps()
-        result = MODULE._install_with_operations(ops, **valid_kwargs())
+        kwargs = valid_kwargs()
+        with zipfile.ZipFile(io.BytesIO(kwargs["archive_bytes"])) as archive:
+            manifest_bytes = archive.read("artifact.json")
+        result = MODULE._install_with_operations(ops, **kwargs)
         self.assertEqual(result["outcome"], "installed")
         self.assertEqual(result["workspace_uid"], UID)
         self.assertEqual(result["product_version"], PRODUCT)
@@ -1029,7 +1034,12 @@ class FakeInstallOrderTests(unittest.TestCase):
         smoke_at = ops.events.index("smoke_imports")
         self.assertTrue(writes)
         self.assertTrue(all(stage_at < index < smoke_at for index in writes))
-        self.assertEqual(ops.files, sorted(PAYLOAD_FILES))
+        self.assertEqual(ops.files, sorted(PAYLOAD_FILES) + [MODULE.ARTIFACT_MANIFEST])
+        carried = [entry for entry in ops.writes if entry[0] == MODULE.ARTIFACT_MANIFEST]
+        self.assertEqual(len(carried), 1)
+        self.assertEqual(carried[0][1], manifest_bytes)
+        self.assertEqual(carried[0][2], digest_of(manifest_bytes))
+        self.assertEqual(json.loads(kwargs["sidecar_bytes"])["artifact_manifest_sha256"], digest_of(manifest_bytes))
         self.assertNotIn("cleanup_stage", ops.events)
         self.assertIsNotNone(ops.receipt)
         self.assertEqual(ops.closed, 1)

@@ -26,7 +26,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 import unittest
 import uuid
 from pathlib import Path
@@ -71,6 +70,24 @@ NO_STDIN = "no_stdin"
 DROP_REPLY = "drop_reply"
 FOREIGN_REPLY = "foreign_reply"
 HANG = "hang"
+SHORT_TIMEOUT = 0.2
+
+
+def _idle_observation(request: dict) -> tuple[int, bytes, bytes, bool]:
+    """A finished not-run observation, without spawning the real adapter."""
+
+    restore = request["kind"] == TRANSPORT.KIND_OBSERVE_RESTORE
+    document = {
+        "schema_version": TRANSPORT.HELPER_SCHEMA_VERSION,
+        "tool": TRANSPORT.HELPER_TOOL,
+        "kind": TRANSPORT.KIND_RESTORE_BACKUP if restore else TRANSPORT.KIND_CREATE_BACKUP,
+        "operation_id": request["operation_id"],
+        "status": "unknown",
+        "code": "restore_not_run" if restore else "backup_not_run",
+        "attempted": False,
+        "observation": True,
+    }
+    return (0, json.dumps(document).encode("utf-8"), b"", False)
 
 
 class _Sink:
@@ -115,11 +132,12 @@ class _Channel:
         self.stderr = io.BytesIO(err)
 
     def wait(self, timeout: float | None = None) -> int:
-        if self._hangs:
-            time.sleep(min(float(timeout or 0.0) + 5.0, 10.0))
+        # Hang is a closed answer, not a wall-clock race: the caller already
+        # applied its bound, so this process simply never exits until killed.
+        if self._hangs and not self.killed:
             raise subprocess.TimeoutExpired(self.command, timeout or 0.0)
-        self.returncode = self._code
-        return self._code
+        self.returncode = -9 if self.killed else self._code
+        return self.returncode
 
     def kill(self) -> None:
         self.killed = True
@@ -160,6 +178,14 @@ class _RemoteHarness:
         disturbed = request["kind"] in self.affected
         if disturbed and self.behaviour == HANG:
             return (0, b"", b"", True)
+        if self.behaviour == HANG and request["kind"] in (
+            TRANSPORT.KIND_OBSERVE_BACKUP,
+            TRANSPORT.KIND_OBSERVE_RESTORE,
+        ):
+            # A hung mutation still needs a finished read-only preflight.
+            # Running the real adapter here would consume the short port timeout
+            # inside stdin.close(), so the create/restore would never be issued.
+            return _idle_observation(request)
         code, out, err = self.disk.run_adapter(self.disk.translate(request))
         if not disturbed:
             return (code, out, err, False)
@@ -596,13 +622,43 @@ class LostResponseTest(BackupPortTestCase):
         port = PORT.RemoteMaintenanceBackupPort(
             self.target(),
             ssh_executable=SSH_EXECUTABLE,
-            timeout=0.2,
+            timeout=SHORT_TIMEOUT,
             process_factory=self.harness,
         )
         self.harness.behaviour = HANG
 
-        with self.assertRaises(LostResponse):
+        with self.assertRaises(LostResponse) as raised:
             port.create_verified(self.backup_id)
+
+        self.assertEqual(raised.exception.operation_id, self.backup_id)
+        self.assertEqual(
+            [request["kind"] for request in self.harness.requests],
+            ["observe_backup", "create_backup"],
+        )
+        self.assertEqual(self.disk.archives(self.backup_id), [])
+        self.assertEqual(self.disk.receipts(), [])
+
+    def test_a_timed_out_restore_is_lost_not_refused(self) -> None:
+        self.verified_backup()
+        port = PORT.RemoteMaintenanceBackupPort(
+            self.target(),
+            ssh_executable=SSH_EXECUTABLE,
+            timeout=SHORT_TIMEOUT,
+            process_factory=self.harness,
+            restore_source=self.port.restore_source,
+        )
+        self.harness.behaviour = HANG
+
+        with self.assertRaises(LostResponse) as raised:
+            port.restore(self.restore_id)
+
+        self.assertEqual(raised.exception.operation_id, self.restore_id)
+        issued = [request for request in self.harness.requests if request["kind"] == "restore_backup"]
+        self.assertEqual(len(issued), 1)
+        self.assertEqual(
+            [request["kind"] for request in self.harness.requests[-2:]],
+            ["observe_restore", "restore_backup"],
+        )
 
 
 class PreEffectRefusalTest(BackupPortTestCase):
@@ -646,6 +702,24 @@ class PreEffectRefusalTest(BackupPortTestCase):
 
         with self.assertRaises(PortRefusal):
             self.port.observe(self.backup_id)
+
+    def test_a_timed_out_preflight_refuses_with_no_mutation(self) -> None:
+        port = PORT.RemoteMaintenanceBackupPort(
+            self.target(),
+            ssh_executable=SSH_EXECUTABLE,
+            timeout=SHORT_TIMEOUT,
+            process_factory=self.harness,
+        )
+        self.harness.behaviour = HANG
+        self.harness.affected = {TRANSPORT.KIND_OBSERVE_BACKUP}
+
+        with self.assertRaises(PortRefusal) as raised:
+            port.create_verified(self.backup_id)
+
+        self.assertEqual(raised.exception.code, TRANSPORT.CODE_CHANNEL_LOST)
+        self.assertEqual(self.disk.archives(self.backup_id), [])
+        self.assertEqual(self.disk.receipts(), [])
+        self.assertEqual([request["kind"] for request in self.harness.requests], ["observe_backup"])
 
     def test_an_operation_id_that_is_not_canonical_refuses_before_any_process(self) -> None:
         with self.assertRaises(PortRefusal) as raised:

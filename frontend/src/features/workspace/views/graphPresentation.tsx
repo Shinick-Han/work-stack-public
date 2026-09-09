@@ -147,12 +147,23 @@ function GraphNodeAction({ data, actionable }: { data: GraphNodeData; actionable
 }
 
 function GraphNodeContextBadge({ data }: { data: GraphNodeData }) {
-  if (data.kind !== "task" || data.contextCount <= 0) return null;
+  if (data.kind !== "task") return null;
+  const empty = data.contextCount <= 0;
   return (
     <button
       type="button"
-      className="wsv-context-badge wsv-graph-context-trigger nodrag nopan"
-      aria-label={`Open context for task ${data.id}: ${data.contextCount} linked context items`}
+      className={[
+        "wsv-context-badge",
+        "wsv-graph-context-trigger",
+        empty ? "wsv-graph-context-trigger--empty" : "",
+        "nodrag",
+        "nopan",
+      ].filter(Boolean).join(" ")}
+      aria-label={
+        empty
+          ? `Add context for task ${data.id}`
+          : `Open context for task ${data.id}: ${data.contextCount} linked context items`
+      }
       aria-haspopup="dialog"
       onPointerDown={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}
@@ -161,7 +172,7 @@ function GraphNodeContextBadge({ data }: { data: GraphNodeData }) {
         data.onOpenContext?.(event.currentTarget);
       }}
     >
-      ↗ {data.contextCount}
+      {empty ? "+ Context" : `↗ ${data.contextCount}`}
     </button>
   );
 }

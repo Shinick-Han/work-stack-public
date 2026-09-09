@@ -19,6 +19,7 @@ from . import cli_storage_receipts as receipts
 from .cli_parser_root import parser
 from .knowledge_driver_registry import load_driver_registry
 from .server import KnowledgeDriverBinding, serve
+from .server_admission import AGENT_CLIENT_HEADER, AGENT_CLIENT_VALUE
 from .service import DomainError, WorkStack
 from .maintenance import backup_store, initialize_store, relocate_store, restore_store, verify_backup
 from .snapshot_export import write_snapshot_file
@@ -272,6 +273,7 @@ def _forward_agent_apply(
         "Origin": "http://{}:{}".format(origin_host, port),
         "X-WorkStack-CSRF": session_data["csrf_token"],
         "X-WorkStack-Agent-Intent": intent_id,
+        AGENT_CLIENT_HEADER: AGENT_CLIENT_VALUE,
     }
     task_id = str(packet["task_id"])
     expected_revision = int(packet["expected_revision"])
@@ -338,6 +340,7 @@ def apply_agent_update(
         task = stack.patch_task(
             str(packet["task_id"]),
             {**dict(packet["changes"]), "revision": packet["expected_revision"]},
+            origin=AGENT_CLIENT_VALUE,
         )
     emit({
         "data": task,

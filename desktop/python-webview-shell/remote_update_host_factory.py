@@ -94,6 +94,7 @@ from remote_update_journal import (  # noqa: E402
 )
 from remote_update_maintenance_transport import MaintenanceTarget  # noqa: E402
 from remote_update_owner_port import RemoteOwnerStopPort  # noqa: E402
+from remote_update_skill import build_skill_port  # noqa: E402
 from remote_verified_unpack import admit_unpack_bundle  # noqa: E402
 from ssh_profile_metadata import run_remote_profile_metadata_check  # noqa: E402
 from ssot_connection import RemoteConnectionProfile  # noqa: E402
@@ -688,6 +689,12 @@ def build_remote_update_flow(
                 probe=prepare,
                 activation=guarded_port(activation, gate, GATED_ACTIVATION, guard),
                 verification=prepare,
+                # Optional and ungated.  The Skill step touches no owner, no
+                # activation and no SSOT, so there is no durable evidence to
+                # guard; it is bound to the same install ports the update
+                # prepared, and is simply absent -- and never offered -- where
+                # this build carries no reviewed skill command builder.
+                skill=build_skill_port(install),
             ),
             operation_ids=_operation_ids(),
             journal=journal,

@@ -106,6 +106,26 @@ test('contains keyboard focus, closes with Escape and restores the surviving tri
   expect(view.trigger).toHaveFocus()
 })
 
+test('tabs into the context card field and asks before closing an unsaved draft', async () => {
+  vi.spyOn(api, 'getTask').mockResolvedValue(detail(task.id, false))
+  const view = setup()
+  await screen.findByText('No context yet')
+  expect(screen.getByRole('button', { name: 'Close context' })).toHaveFocus()
+  await userEvent.tab()
+  expect(screen.getByRole('textbox', { name: 'Context card' })).toHaveFocus()
+  await userEvent.keyboard('{Escape}')
+  expect(view.onClose).toHaveBeenCalledOnce()
+  await userEvent.type(screen.getByRole('textbox', { name: 'Context card' }), 'Keep this draft')
+  await userEvent.keyboard('{Escape}')
+  expect(view.onClose).toHaveBeenCalledOnce()
+  expect(screen.getByRole('alertdialog', { name: 'Keep unsaved context card?' })).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Keep writing' }))
+  expect(screen.getByRole('textbox', { name: 'Context card' })).toHaveValue('Keep this draft')
+  await userEvent.click(screen.getByRole('button', { name: 'Close context' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Discard and close' }))
+  expect(view.onClose).toHaveBeenCalledTimes(2)
+})
+
 test('explicit task opening is an action, and a removed trigger does not break cleanup', async () => {
   vi.spyOn(api, 'getTask').mockResolvedValue(detail(task.id, false))
   const view = setup()

@@ -305,6 +305,17 @@ class RemoteUpdateInstallPorts:
             expected_served_ui=self._inputs.expected_served_ui_sha256,
         )
 
+    def preparation_is_verified(self) -> bool:
+        """Whether this process holds a verified preparation of the target.
+
+        The same gate ``probe`` and ``verify`` already apply, published so a
+        read-only side action bound to the prepared application can refuse
+        before it opens a channel instead of asking the far side to.
+        """
+
+        record = self._record
+        return record is not None and preparation_verified(record)
+
     def admit_retained_preparation(self, retained: RetainedPreparation) -> bool:
         """Public read-only recovery: re-verify a staging this process did not run.
 

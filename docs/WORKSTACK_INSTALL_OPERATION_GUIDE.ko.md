@@ -292,6 +292,24 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $SkillDest) | Out-
 Copy-Item -LiteralPath '<checkout-root>\integrations\agent-skill\work-stack' -Destination $SkillDest -Recurse
 ```
 
+Linux 원격에서 **이미 검증된 앱 디렉터리**가 있으면, 소스 체크아웃 `cp` 대신 기존 프로비저닝 CLI의 명시적 opt-in으로 같은 세 파일을 `$HOME/.agents/skills/work-stack`에 둡니다. 기본은 inspect/plan입니다. `--apply`가 있어야 씁니다. 수동 unpack과 앱 설치는 HOME에 Skill을 두지 않습니다. Windows GUI는 이 명령을 대신 실행하지 않습니다. `[SOURCE_VERIFIED]`
+
+대상 POSIX 사용자로, `HOME`이 그 사용자의 홈인 셸에서 체크아웃이 있을 때는:
+
+```text
+python -I scripts/remote_provision_install.py --install-skill --install-root <verified-app>
+python -I scripts/remote_provision_install.py --install-skill --install-root <verified-app> --apply
+```
+
+배포된 Linux 앱에서는 소스 체크아웃 없이 페이로드 안의 헬퍼를 씁니다:
+
+```text
+python -I <verified-app>/desktop/python-webview-shell/remote_skill_install.py --install-root <verified-app>
+python -I <verified-app>/desktop/python-webview-shell/remote_skill_install.py --install-root <verified-app> --apply
+```
+
+`<verified-app>`은 검증된 설치 또는 unpack 앱 경로입니다. 바이트는 그 앱의 `integrations/agent-skill/work-stack/` 세 파일에서 읽습니다. 대상이 없거나 비어 있으면 설치하고, 세 파일이 앱과 같으면 noop이며, 소유 영수증이 이전 버전과 현재 파일을 증명할 때만 갱신합니다. 사용자가 고친 파일이나 다른 Skill 파일은 파일 이름이 같아도 덮어쓰지 않고 거절합니다. 갱신은 파일마다 쓰기 직전에 그 파일을 다시 읽어 확인하므로, 그사이 사용자가 고치거나 지운 파일은 덮어쓰지 않고 되살리지도 않으며 `SKILL_DEST_MODIFIED`로 거절합니다. 이때 일부 파일만 새 바이트인 상태로 멈출 수 있고, 영수증은 갱신되지 않으며 결과는 성공이 아닙니다. 직전 바이트는 `.agents/skills/.workstack-work-stack-previous`에, 새 바이트는 `.agents/skills/.workstack-work-stack-stage`에 남습니다. 이 확인은 쓰기 직전까지의 경계만 좁히며, 같은 사용자 권한의 동시 쓰기를 막는 잠금은 없습니다. 형제 Skill 디렉터리는 그대로 둡니다.
+
 ### 7.2 무해한 사후 검증 `[SOURCE_VERIFIED]`
 
 체크아웃 루트에서 저장소가 고정한 검증기를 실행합니다. 네트워크·시계·프로필 상태를 쓰지 않는 결정적 검사입니다.
@@ -322,9 +340,11 @@ Skill의 권한은 **명시적으로 선택한 Task 하나의 읽기**와 **제�
 | 기능 | P0 |
 | --- | --- |
 | 사용자 범위 수동 Skill 설치 | 지원 |
+| 검증된 Linux 앱 `--install-skill` opt-in | 지원(inspect/plan 기본, `--apply`만 기록) |
 | 검증된 소스 런처 접두사 | 지원 |
 | 명시적 v3 경로와 워크스페이스 UID | 필수 |
 | 자동 Skill 업데이트/제거, 패키지 런처/PATH | P0b(미지원) |
+| GUI 원격 Skill 자동 프로비저닝 | 미지원 |
 | 워크스페이스 자동 발견 | 보류 |
 | 데스크톱 SSH/Linux 레지스트리 연동 | P0b |
 | 설치기/업데이터/공개 브라우저 매트릭스 | 공개 릴리스 게이트 |

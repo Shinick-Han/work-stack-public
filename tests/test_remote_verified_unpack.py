@@ -255,6 +255,9 @@ class VerifiedUnpackPlacementTests(unittest.TestCase):
             self.assertEqual(digest_of(payload), record["sha256"])
             self.assertEqual(len(payload), record["size"])
         receipt = json.loads((target / MODULE.RECEIPT_NAME).read_text(encoding="utf-8"))
+        carried = (target / MODULE.ARTIFACT_MANIFEST_NAME).read_bytes()
+        self.assertEqual(digest_of(carried), receipt["artifact_manifest_sha256"])
+        self.assertEqual(digest_of(carried), admitted["manifest_digest"])
         self.assertEqual(receipt["activation"], "not_activated")
         self.assertEqual(receipt["placement"], "ready_candidate")
         self.assert_existing_preserved()
@@ -263,6 +266,25 @@ class VerifiedUnpackPlacementTests(unittest.TestCase):
         verified = MODULE.verify_unpack_identity(str(target), archive, sidecar)
         self.assertEqual(verified["placement"], "identity_verified")
         self.assertEqual(verified["activation"], "not_activated")
+
+    def test_default_unpack_does_not_write_under_home(self) -> None:
+        home = self.base / "posix-home"
+        home.mkdir()
+        marker = home / "keep-home.txt"
+        marker.write_bytes(b"home-untouched\n")
+        archive, sidecar = make_artifact()
+        target = self.base / "new-app"
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
+            result = MODULE.place_verified_unpack(
+                archive_bytes=archive,
+                sidecar_bytes=sidecar,
+                app_dir=str(target),
+            )
+        self.assertEqual(result["outcome"], "unpacked_verified")
+        self.assertEqual(marker.read_bytes(), b"home-untouched\n")
+        self.assertFalse((home / ".agents").exists())
+        self.assertFalse((home / ".agents" / "skills" / "work-stack").exists())
+        self.assert_existing_preserved()
 
     def test_existing_target_is_refused_and_left_untouched(self) -> None:
         archive, sidecar = make_artifact()

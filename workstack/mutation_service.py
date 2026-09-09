@@ -16,6 +16,7 @@ from .mutation_notice import MutationNoticeError, build_compensation
 from .mutation_receipts import (
     MutationReceiptError,
     find_notice,
+    notice_source_for_origin,
     page_notices,
     parse_list_query,
     record_committed_status_notice,
@@ -84,6 +85,16 @@ class MutationNoticeMixin:
 
     def _status_notice_key(self, task: Mapping[str, Any], before_revision: int) -> str:
         return unkeyed_status_key(str(task["uid"]), before_revision)
+
+    def _notice_source_for_origin(self, origin: str | None) -> str:
+        """The notice source for a caller-reported request origin.
+
+        Exposed here because the notice vocabulary lives one layer below the
+        service; the mapping itself stays in ``mutation_receipts`` beside
+        ``notice_source_for`` rather than being spelled twice.
+        """
+
+        return notice_source_for_origin(origin)
 
     def list_mutation_notices(
         self, cursor: str | None = None, limit: int = 20

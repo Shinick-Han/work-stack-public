@@ -191,9 +191,11 @@ def _relationship_task_projection(
 
 def _task_patch_backends(method):
     @wraps(method)
-    def wrapped(self: Any, task_id: str, patch: dict[str, Any]):
+    def wrapped(self: Any, task_id: str, patch: dict[str, Any], **attribution: Any):
+        # Attribution rides only to the in-module body. The experimental command
+        # slices keep their existing two-argument protocol untouched.
         if not isinstance(patch, dict):
-            return method(self, task_id, patch)
+            return method(self, task_id, patch, **attribution)
         fields = set(patch) - {"revision"}
         if not fields and self.task_commands is not None:
             return _optional_command(
@@ -204,7 +206,7 @@ def _task_patch_backends(method):
                 return _optional_command(
                     lambda: self.task_commands.patch_task(task_id, patch), "task"
                 )
-            return method(self, task_id, patch)
+            return method(self, task_id, patch, **attribution)
         if fields and fields <= _TASK_RELATIONSHIP_PATCH_FIELDS:
             if self.relationship_commands is not None:
                 receipt = _optional_command(
@@ -214,9 +216,9 @@ def _task_patch_backends(method):
                     "relationship",
                 )
                 return _relationship_task_projection(self, task_id, receipt)
-            return method(self, task_id, patch)
+            return method(self, task_id, patch, **attribution)
         if fields == {"status"}:
-            return _status_patch_backend(self, method, task_id, patch)
+            return _status_patch_backend(self, method, task_id, patch, **attribution)
         if any(
             command is not None
             for command in (
@@ -226,13 +228,13 @@ def _task_patch_backends(method):
             )
         ):
             raise DomainError("task patch spans an inactive command slice")
-        return method(self, task_id, patch)
+        return method(self, task_id, patch, **attribution)
 
     return wrapped
 
 
 def _status_patch_backend(
-    stack: Any, method, task_id: str, patch: dict[str, Any]
+    stack: Any, method, task_id: str, patch: dict[str, Any], **attribution: Any
 ) -> dict[str, Any]:
     if patch.get("status") == "dropped" and stack.relationship_commands is not None:
         receipt = _optional_command(
@@ -249,7 +251,7 @@ def _status_patch_backend(
             ),
             "task",
         )
-    return method(stack, task_id, patch)
+    return method(stack, task_id, patch, **attribution)
 
 
 class WorkStack(
@@ -349,7 +351,18 @@ class WorkStack(
 
     @_task_patch_backends
     @_transactional
-    def patch_task(self, task_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    def patch_task(
+        self, task_id: str, patch: dict[str, Any], *, origin: str | None = None
+    ) -> dict[str, Any]:
+        """``origin`` is caller-reported provenance for the mutation notice.
+
+        It is admitted by the request boundary before this point and never
+        confers authority. Omitting it keeps the existing GUI attribution, so
+        every present caller is unchanged. The transition fact's actor and
+        provenance stay ``local.user``/``api.v1``: the write is still made under
+        the local user's own authority on this machine.
+        """
+
         if not isinstance(patch, dict):
             raise DomainError("task patch must be an object")
         unknown = sorted(set(patch) - TASK_PATCH_FIELDS)
@@ -399,7 +412,7 @@ class WorkStack(
                 provenance="api.v1",
             )
             projected_status = requested_status
-            self._record_task_status_notice(activity, task, current_status, requested_status, current_revision, next_revision, self._status_notice_key(task, current_revision), "gui")
+            self._record_task_status_notice(activity, task, current_status, requested_status, current_revision, next_revision, self._status_notice_key(task, current_revision), self._notice_source_for_origin(origin))
         task["updated_at"] = self._today()
         task["revision"] = next_revision
         self._event(

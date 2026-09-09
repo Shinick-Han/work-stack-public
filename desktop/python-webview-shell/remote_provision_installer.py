@@ -42,6 +42,7 @@ ENTRYPOINT = "desktop/python-webview-shell/remote_entry.py"
 SOABI = "cpython-312-x86_64-linux-gnu"
 COMMAND = "provision-install"
 RECEIPT = ".workstack-install.json"
+ARTIFACT_MANIFEST = ".workstack-artifact.json"
 ZIP_FLAGS = 0x800
 OWNER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,31}$")
 POSIX_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
@@ -519,7 +520,13 @@ def _admit_artifact(archive_bytes: bytes, sidecar_bytes: bytes) -> dict[str, obj
         handle.close()
     records = _parse_manifest(manifest_bytes, str(sidecar["source_commit"]))
     _match_files(blobs, records)
-    return {"digest": digest, "manifest_digest": sidecar["artifact_manifest_sha256"], "blobs": blobs, "files": records}
+    return {
+        "blobs": blobs,
+        "digest": digest,
+        "files": records,
+        "manifest": manifest_bytes,
+        "manifest_digest": sidecar["artifact_manifest_sha256"],
+    }
 
 
 def _success_document(artifact: Mapping[str, object], uid: str) -> dict[str, object]:
@@ -595,6 +602,9 @@ def _apply_install(operations: object, artifact: dict[str, object], uid: str, ow
         operations.admit_data()
         operations.create_stage()
         _extract_payload(operations, artifact)
+        manifest = artifact["manifest"]
+        _require(type(manifest) is bytes and bool(manifest), "REMOTE_INSTALL_FAILED")
+        operations.write_file(ARTIFACT_MANIFEST, manifest, str(artifact["manifest_digest"]))
         operations.smoke_imports()
         operations.smoke_entrypoint()
         operations.write_receipt(_receipt_document(artifact, uid, owner))

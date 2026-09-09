@@ -22,6 +22,16 @@ function emptySavedReportsList(url: string) {
   })
 }
 
+/**
+ * The Recent changes panel mounts with the page, so its one bounded list request is
+ * answered here the same way the saved-reports list already is. It stays empty: this file
+ * asserts the review surface, and the panel's own behaviour has its own tests.
+ */
+function emptyMutationNotices(url: string) {
+  if (!url.startsWith('/api/v1/mutation-notices')) return null
+  return jsonResponse({ data: { items: [], next_cursor: null } })
+}
+
 const emptyReview: ReviewProjection = {
   day: { date: '2026-08-30', start_time: null, entries: [] },
   weekly: {
@@ -1072,6 +1082,8 @@ function reviewSurfaceFetch(onPost?: (init?: RequestInit) => Response | Promise<
     if (url === '/api/v1/review/entries' && init?.method === 'POST' && onPost) return onPost(init)
     const saved = emptySavedReportsList(url)
     if (saved) return saved
+    const notices = emptyMutationNotices(url)
+    if (notices) return notices
     throw new Error(`Unexpected request: ${url}`)
   })
 }

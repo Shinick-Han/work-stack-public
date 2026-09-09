@@ -1,3 +1,14 @@
+# Public snapshot manifest — 1.0.15
+
+- Source commit: `3f4120b57410c8e6a89ffa45995fb83a3b382739`.
+- Previous public commit: `6edc63f56985b3a83dac21127fe4699d76d01d26`.
+- Installer SHA-256: `afb3a8be4649684ceb2a3bddba57c5286a4cd7850c8853b164d209fe7892e1f8`.
+- Source-only export on existing public history with prior exclusions retained.
+- Official source audit: 44 findings in 27 byte-identical, previously reviewed synthetic fixture files; no new findings or relaxed scanner rules.
+- [Scope and installation](docs/WORKSTACK-1.0.15-RELEASE.md). Locally verified artifacts; full GitHub Actions execution not claimed.
+
+## Previous publication record (historical)
+
 # Public snapshot manifest — 1.0.14
 
 - Source commit: `6a797d5242a53274a8e9eea98b12bdc16f506392`.

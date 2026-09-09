@@ -74,6 +74,20 @@ test('keeps the context control a sibling of the node action', () => {
   expect(onActivate).not.toHaveBeenCalled()
 })
 
+test('zero-context + Context is a sibling control and does not activate the node', () => {
+  const onActivate = vi.fn()
+  const onOpenContext = vi.fn()
+  render(<GraphNodeFrame data={{ id: 'T-0002', kind: 'task', title: 'Release gate',
+    eyebrow: 'T-0002', contextCount: 0, selected: false, related: true, onActivate, onOpenContext }} />)
+  const add = screen.getByRole('button', { name: 'Add context for task T-0002' })
+  expect(add).toHaveTextContent('+ Context')
+  const node = screen.getByRole('button', { name: 'Open task T-0002' })
+  expect(node.contains(add)).toBe(false)
+  fireEvent.click(add)
+  expect(onOpenContext).toHaveBeenCalledExactlyOnceWith(add)
+  expect(onActivate).not.toHaveBeenCalled()
+})
+
 test('move handle Enter is distinct from card activation', () => {
   const onActivate = vi.fn()
   const onMoveKeyDown = vi.fn()

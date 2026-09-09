@@ -79,6 +79,7 @@ export function useGraphCanvas(props: GraphViewProps): GraphSurfaceProps {
     pinGeneration: selection.pinGenerationRef.current,
     pinGenerationRef: selection.pinGenerationRef,
     aliveRef: selection.aliveRef,
+    workspaceId: persistWorkspaceId,
     renderPopupPrerequisites: props.renderPopupPrerequisites,
     onSelectTask: props.onSelectTask,
     onFocusPinChange: props.onFocusPinChange,

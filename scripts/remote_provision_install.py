@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -51,6 +52,7 @@ from remote_provision_driver import (  # noqa: E402
     select_artifact,
 )
 from remote_provision_installer import MAX_ARCHIVE, MAX_SIDECAR  # noqa: E402
+from remote_skill_install import SkillInstallError, run_skill_install  # noqa: E402
 
 
 EXIT_OK = 0
@@ -97,6 +99,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="Run the install. Without this flag the CLI stops after the plan.",
+    )
+    return parser
+
+
+def build_skill_parser() -> argparse.ArgumentParser:
+    """Opt-in Skill install from a verified app. Separate from SSH provision.
+
+    Does not change the frozen SSH provision-install argv. HOME must already
+    be the POSIX user's home; this parser never discovers it.
+    """
+
+    parser = argparse.ArgumentParser(
+        prog="remote_provision_install",
+        description=(
+            "Install the Work Stack agent Skill from a verified installed app "
+            "into $HOME/.agents/skills/work-stack. Inspect/plan is the default. "
+            "Pass --apply to write. Unpack and app provision never do this."
+        ),
+        allow_abbrev=False,
+    )
+    parser.add_argument("--install-skill", action="store_true", required=True)
+    parser.add_argument("--install-root", required=True)
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the Skill. Without this flag the CLI stops after the plan.",
     )
     return parser
 
@@ -152,7 +180,28 @@ def _write_error(code: str, detail: str) -> int:
     return EXIT_REFUSED
 
 
+def run_skill_cli(argv: list[str]) -> int:
+    arguments = build_skill_parser().parse_args(argv)
+    home = os.environ.get("HOME")
+    if not home:
+        return _write_error("HOME_REQUIRED", "HOME is required for skill install")
+    try:
+        document = run_skill_install(
+            install_root=arguments.install_root,
+            home=home,
+            apply=arguments.apply,
+        )
+    except SkillInstallError as error:
+        return _write_error(error.code, error.detail or error.code)
+    _write(document)
+    if document.get("action") == "refuse" or document.get("outcome") == "refused":
+        return EXIT_REFUSED
+    return EXIT_OK
+
+
 def run(argv: list[str]) -> int:
+    if "--install-skill" in argv:
+        return run_skill_cli(argv)
     arguments = build_parser().parse_args(argv)
     try:
         artifact = load_artifact(

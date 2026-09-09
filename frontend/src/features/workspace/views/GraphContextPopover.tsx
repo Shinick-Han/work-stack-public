@@ -1,9 +1,12 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { microsoftProviderGates } from '../../../config/providerGates'
 import { TaskContextTimeline } from '../../../components/TaskContextTimeline'
+import { GraphContextCardComposer, type GraphContextCardComposerHandle } from './GraphContextCardComposer'
+import { graphContextDialogFocusables } from './GraphContextCardComposerModel'
+import { useGraphContextDialogFocus } from './useGraphContextDialogFocus'
 import './GraphContextPopover.css'
 
 interface GraphContextPopoverProps {
@@ -22,6 +25,8 @@ interface GraphContextPopoverProps {
    * so a watch can never act after its owner is gone.
    */
   ownerAliveRef?: { current: boolean }
+  /** Current workspace identity; composer treats a change as a different owner. */
+  workspaceId?: string
   /** Page-owned prerequisite controls; inside the modal so they stay reachable. */
   prerequisites?: ReactNode
 }
@@ -36,105 +41,49 @@ export function GraphContextPopover({
   onOpenTask,
   onFocusReturned,
   ownerAliveRef,
+  workspaceId = '',
   prerequisites,
 }: GraphContextPopoverProps) {
   const titleId = useId()
-  const dialogRef = useRef<HTMLDialogElement>(null)
-  const closeRef = useRef<HTMLButtonElement>(null)
+  const composerRef = useRef<GraphContextCardComposerHandle>(null)
+  const escapeLockRef = useRef(false)
   const detail = useQuery({
     queryKey: ['task', taskId],
     queryFn: () => api.getTask(taskId),
     retry: false,
   })
-  const restoreRef = useRef<{
-    trigger: HTMLButtonElement | null
-    fallbackSelector?: string
-    onFocusReturned?: () => void
-    ownerAliveRef?: { current: boolean }
-  }>({ trigger, fallbackSelector: focusFallbackSelector, onFocusReturned, ownerAliveRef })
-  restoreRef.current = { trigger, fallbackSelector: focusFallbackSelector, onFocusReturned, ownerAliveRef }
-
-  // Cancels a restoration watch installed by a PREVIOUS effect setup. React
-  // StrictMode replays setup/cleanup in development, and that replay focuses the
-  // close control below; without this the replayed blur would fire the previous
-  // watch and release the pin of a popup that is still open.
-  const cancelPreviousWatchRef = useRef<(() => void) | null>(null)
-
-  useEffect(() => {
-    // Effect-lifetime cancellation, deliberately BEFORE the close control takes
-    // focus. This is not a real final close, so it never notifies the owner.
-    cancelPreviousWatchRef.current?.()
-    cancelPreviousWatchRef.current = null
-
-    const dialog = dialogRef.current
-    dialog?.showModal()
-    closeRef.current?.focus()
-    return () => {
-      dialog?.close()
-      const {
-        trigger: original,
-        fallbackSelector,
-        onFocusReturned: notify,
-        ownerAliveRef: alive,
-      } = restoreRef.current
-      const ownerGone = () => alive ? !alive.current : false
-
-      if (original?.isConnected) {
-        original.focus()
-        // Ownership stays with the restored trigger: the caller's pin is
-        // released only once focus ACTUALLY leaves it, or once the trigger is
-        // removed from the document while it still owns focus.
-        let settled = false
-        const stop = () => {
-          if (settled) return
-          settled = true
-          original.removeEventListener('blur', release)
-          observer.disconnect()
-        }
-        const release = () => {
-          if (settled) return
-          // A dead owner may neither move focus nor clear a later owner's state.
-          const abandoned = ownerGone()
-          stop()
-          if (!abandoned) notify?.()
-        }
-        const observer = new MutationObserver(() => {
-          if (settled) return
-          if (ownerGone()) { stop(); return }
-          if (!original.isConnected) {
-            focusFallback(fallbackSelector)
-            release()
-          }
-        })
-        original.addEventListener('blur', release, { once: true })
-        observer.observe(document.body, { childList: true, subtree: true })
-        // A later setup of THIS effect owns the right to cancel this watch.
-        cancelPreviousWatchRef.current = stop
-        return
-      }
-
-      // No connected trigger to return to: hand focus to a stable surviving
-      // Workspace control rather than dropping it on the document body.
-      focusFallback(fallbackSelector)
-      notify?.()
-    }
-    // The dialog is keyed by task, so this runs once per open popup.
-  }, [])
+  const { dialogRef, closeRef } = useGraphContextDialogFocus({
+    trigger,
+    fallbackSelector: focusFallbackSelector,
+    onFocusReturned,
+    ownerAliveRef,
+  })
 
   const wrongTask = detail.data !== undefined && detail.data.task.id !== taskId
+  const requestDismiss = (proceed: () => void) => {
+    if (!composerRef.current) { proceed(); return }
+    composerRef.current.requestDismiss(proceed)
+  }
+  const requestEscapeClose = () => {
+    if (escapeLockRef.current) return
+    escapeLockRef.current = true
+    queueMicrotask(() => { escapeLockRef.current = false })
+    requestDismiss(onClose)
+  }
   return createPortal(<dialog
     ref={dialogRef}
     className="wsv-graph-context"
     aria-labelledby={titleId}
-    onCancel={(event) => { event.preventDefault(); onClose() }}
+    onCancel={(event) => { event.preventDefault(); requestEscapeClose() }}
     onPointerDown={(event) => event.stopPropagation()}
     onClick={(event) => event.stopPropagation()}
     onWheel={(event) => event.stopPropagation()}
     onKeyDown={(event) => {
       event.stopPropagation()
-      if (event.key === 'Escape') { event.preventDefault(); onClose() }
+      if (event.key === 'Escape') { event.preventDefault(); requestEscapeClose() }
       if (event.key === 'Tab') {
-        const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href]'))
+        const trap = event.currentTarget.querySelector<HTMLElement>('[role="alertdialog"]') ?? event.currentTarget
+        const controls = graphContextDialogFocusables(trap)
         const first = controls[0]
         const last = controls.at(-1)
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
@@ -144,7 +93,7 @@ export function GraphContextPopover({
   >
     <header className="wsv-graph-context__header">
       <div><p>{taskId} · Context</p><h2 id={titleId} title={taskTitle}>{taskTitle}</h2></div>
-      <button ref={closeRef} type="button" onClick={onClose} aria-label="Close context">Close</button>
+      <button ref={closeRef} type="button" onClick={() => requestDismiss(onClose)} aria-label="Close context">Close</button>
     </header>
     <div className="wsv-graph-context__body" aria-busy={detail.isFetching}>
       {detail.isPending ? <p role="status">Loading context…</p> : detail.isError || wrongTask ? (
@@ -152,17 +101,15 @@ export function GraphContextPopover({
           <button type="button" disabled={detail.isFetching} onClick={() => { void detail.refetch() }}>Retry</button>
         </div>
       ) : <TaskContextTimeline context={detail.data.context} providerGates={microsoftProviderGates} />}
+      <GraphContextCardComposer
+        key={`${workspaceId}:${taskId}`}
+        ref={composerRef}
+        taskId={taskId}
+        workspaceId={workspaceId}
+        ownerAliveRef={ownerAliveRef}
+      />
     </div>
     {prerequisites ? <div className="wsv-graph-context__prereq">{prerequisites}</div> : null}
-    <footer className="wsv-graph-context__footer"><button type="button" onClick={onOpenTask}>Open task</button></footer>
+    <footer className="wsv-graph-context__footer"><button type="button" onClick={() => requestDismiss(onOpenTask)}>Open task</button></footer>
   </dialog>, document.body)
-}
-
-/** Moves focus to a stable surviving control, never leaving it on BODY. */
-function focusFallback(selector?: string) {
-  if (!selector) return
-  const fallback = document.querySelector<HTMLElement>(selector)
-  if (!fallback) return
-  if (!fallback.hasAttribute('tabindex')) fallback.setAttribute('tabindex', '-1')
-  fallback.focus()
 }

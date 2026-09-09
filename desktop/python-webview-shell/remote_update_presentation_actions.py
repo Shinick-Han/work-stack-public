@@ -32,6 +32,9 @@ ACTIONS = frozenset({
     "reconcile_pending",
     "rollback_activation",
     "verify_connection",
+    "inspect_skill",
+    "install_skill",
+    "update_skill",
 })
 REMOTE_ACTIONS = frozenset({
     "update_connected_server",
@@ -46,6 +49,9 @@ REMOTE_ACTIONS = frozenset({
     "reconcile_pending",
     "rollback_activation",
     "verify_connection",
+    "inspect_skill",
+    "install_skill",
+    "update_skill",
 })
 THIS_PC_ACTIONS = frozenset({
     "update_this_pc",
@@ -59,7 +65,21 @@ READ_ONLY_ACTIONS = frozenset({
     "review",
     "reconcile_pending",
     "verify_connection",
+    "inspect_skill",
 })
+#: The agent-Skill offer, which is a side action on an already finished update.
+#: ``inspect_skill`` writes nothing anywhere; the two write actions are the
+#: explicit second click and are deliberately *not* new remote mutations,
+#: because neither starts, retries or resumes a remote update attempt.
+SKILL_ACTIONS = frozenset({"inspect_skill", "install_skill", "update_skill"})
+#: The exact published code each write offer requires.  An install may only be
+#: clicked from the inspect that found nothing installed, and an update only
+#: from the inspect that found an older build; anything else, an unknown answer
+#: included, admits neither.
+SKILL_OFFER_CODES = {
+    "install_skill": "skill_absent",
+    "update_skill": "skill_outdated",
+}
 NEW_REMOTE_MUTATIONS = frozenset({
     "update_connected_server",
     "retry",
@@ -85,6 +105,9 @@ ACTION_LABELS = {
     "reconcile_pending": "Check pending outcome",
     "rollback_activation": "Restore previous app selection",
     "verify_connection": "Verify the connected server",
+    "inspect_skill": "Check agent Skill",
+    "install_skill": "Install agent Skill",
+    "update_skill": "Update agent Skill",
 }
 
 
@@ -200,9 +223,30 @@ def rollback_pairing_admits(snapshot: object) -> bool:
     return "rollback_activation" in actions
 
 
+def skill_offer_admits(snapshot: object, action: str) -> bool:
+    """Admit an agent-Skill action only from the condition that offers it.
+
+    The offer exists only on a finished update, so nothing here is reachable
+    before stage ``ready``.  The read is admissible wherever it is offered; a
+    write is admissible only from the published code of the inspect that
+    earned it, which is what makes the inspect mandatory and makes a lost
+    answer re-readable rather than re-writable.
+    """
+
+    if getattr(snapshot, "stage", None) != "ready":
+        return False
+    if action not in getattr(snapshot, "actions", ()):
+        return False
+    if action == "inspect_skill":
+        return True
+    return getattr(snapshot, "code", None) == SKILL_OFFER_CODES.get(action)
+
+
 def action_is_admissible(snapshot: object, action: str) -> bool:
     if action not in ACTIONS:
         return False
+    if action in SKILL_ACTIONS:
+        return skill_offer_admits(snapshot, action)
     if action == "stop_owner":
         return stop_offer_admits(snapshot)
     if action == "prepare_app_files":

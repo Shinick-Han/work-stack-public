@@ -62,6 +62,9 @@ D_TO_E_ACTION: dict[str, str] = {
     "inspect_diagnostics": "review",
     "resolve_owner_authority": "review",
     "resolve_activation_pairing": "review",
+    "run_skill_inspect": "inspect_skill",
+    "run_skill_install": "install_skill",
+    "run_skill_update": "update_skill",
 }
 
 D_TO_E_CODE: dict[str, str] = {
@@ -124,6 +127,19 @@ D_TO_E_CODE: dict[str, str] = {
     "rollback_verified": "failed",
     "rollback_failed": "failed",
     "rollback_unknown": "unknown",
+    # The optional agent-Skill side action.  Every one of these is published
+    # at stage ``ready``: they say what happened to the Skill, never that the
+    # remote update that already succeeded did not.
+    "skill_absent": "skill_absent",
+    "skill_outdated": "skill_outdated",
+    "skill_current": "skill_current",
+    "skill_installed": "skill_installed",
+    "skill_updated": "skill_updated",
+    "skill_refused_app_not_verified": "skill_refused_app_not_verified",
+    "skill_refused_destination_foreign": "skill_refused_destination_foreign",
+    "skill_refused_destination_modified": "skill_refused_destination_modified",
+    "skill_refused_failed": "skill_refused_failed",
+    "skill_unknown": "skill_unknown",
 }
 
 D_TO_F_CODE: dict[str, str] = {
@@ -186,6 +202,16 @@ D_TO_F_CODE: dict[str, str] = {
     "rollback_verified": "ROLLBACK_VERIFIED",
     "rollback_failed": "ROLLBACK_FAILED",
     "rollback_unknown": "ROLLBACK_UNKNOWN",
+    "skill_absent": "SKILL_ABSENT",
+    "skill_outdated": "SKILL_OUTDATED",
+    "skill_current": "SKILL_CURRENT",
+    "skill_installed": "SKILL_INSTALLED",
+    "skill_updated": "SKILL_UPDATED",
+    "skill_refused_app_not_verified": "SKILL_REFUSED_APP_NOT_VERIFIED",
+    "skill_refused_destination_foreign": "SKILL_REFUSED_DESTINATION_FOREIGN",
+    "skill_refused_destination_modified": "SKILL_REFUSED_DESTINATION_MODIFIED",
+    "skill_refused_failed": "SKILL_REFUSED_FAILED",
+    "skill_unknown": "SKILL_UNKNOWN",
 }
 
 HOST_KIND = {
@@ -207,6 +233,12 @@ HOST_KIND = {
     "download_this_pc": "pc_independent",
     "check_this_pc": "pc_independent",
     "update_connected_server": "advance",
+    # Two distinct flow calls of their own: ``advance`` refuses a terminal
+    # stage, and this offer exists only at that terminal stage, so it is
+    # dispatched by naming the call rather than by weakening that guard.
+    "inspect_skill": "skill_inspect",
+    "install_skill": "skill_install",
+    "update_skill": "skill_install",
 }
 
 E_TO_D_OPERATION: dict[str, tuple[str, ...]] = {
@@ -229,6 +261,9 @@ E_TO_D_OPERATION: dict[str, tuple[str, ...]] = {
         "resolve_owner_authority",
         "resolve_activation_pairing",
     ),
+    "inspect_skill": ("run_skill_inspect",),
+    "install_skill": ("run_skill_install",),
+    "update_skill": ("run_skill_update",),
 }
 
 

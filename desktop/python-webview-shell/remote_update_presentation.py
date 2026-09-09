@@ -23,6 +23,12 @@ from remote_update_presentation_actions import (
     THIS_PC_ACTIONS,
     next_admissible_action,
 )
+from remote_update_skill_copy import (
+    SKILL_CODES,
+    skill_action_detail,
+    skill_detail,
+    skill_headline,
+)
 from workstack_update_status import canonical_version
 
 
@@ -82,7 +88,7 @@ CODES = frozenset({
     "ready",
     "failed",
     "cancelled",
-})
+}) | SKILL_CODES
 REMOTE_CODES = frozenset({
     "remote_offline",
     "remote_unknown",
@@ -561,6 +567,7 @@ def _headline(
     """The status sentence, in the one fixed order these readings rank in."""
 
     for headline in (
+        skill_headline(snapshot.code),
         _terminal_headline(snapshot, remote_expected, next_action),
         _owner_headline(snapshot),
         _stage_headline(snapshot),
@@ -595,6 +602,8 @@ def _detail(
             "A stop was requested. Wait for verified process exit, listener "
             "release and lease release; a spawned stop command is not success."
         )
+    if skill_detail(snapshot.code):
+        parts.append(skill_detail(snapshot.code))
     action = {
         "update_this_pc": (
             "Update this PC. This does not update the connected server."
@@ -651,7 +660,7 @@ def _detail(
             "Verify the connected server that is now selected. This is a "
             "read-only check and does not require pretending the new owner is dead."
         ),
-    }.get(next_action or "")
+    }.get(next_action or "") or skill_action_detail(next_action)
     if action:
         parts.append(action)
     elif remote_expected and snapshot.versions.remote is None:

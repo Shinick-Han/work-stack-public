@@ -1,4 +1,4 @@
-"""Pure argv builder for the remote provision-install SSH command.
+"""Pure argv builder for remote provision-install and skill SSH commands.
 
 This module returns a fixed-shape OpenSSH argv. It never launches a process,
 never reads the filesystem or SSH config, never discovers host aliases, and
@@ -14,10 +14,12 @@ from remote_command_contract import (
     REMOTE_PYTHON_REQUIRED,
     RemoteCommandError,
     join_provision_install_command,
+    join_skill_command,
     require_safe_token,
 )
 
 _INVALID_INSTALL = "install command is invalid"
+_INVALID_SKILL = "skill command is invalid"
 _INVALID_ALIAS = "ssh host alias is invalid"
 _INVALID_EXECUTABLE = "ssh executable is required"
 
@@ -69,6 +71,46 @@ def build_ssh_provision_install_command(
         )
     except RemoteCommandError as error:
         raise _closed_install_error(error) from None
+    return [
+        executable,
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "PermitLocalCommand=no",
+        "-o",
+        "ClearAllForwardings=yes",
+        "--",
+        alias,
+        remote,
+    ]
+
+
+def _closed_skill_error(error: RemoteCommandError) -> RemoteCommandError:
+    if error.code == REMOTE_PYTHON_REQUIRED:
+        return RemoteCommandError(REMOTE_PYTHON_REQUIRED)
+    return RemoteCommandError("REMOTE_PROTOCOL_INVALID", _INVALID_SKILL)
+
+
+def build_ssh_skill_command(
+    profile: object, ssh_executable: str, *, apply: bool = False
+) -> list[str]:
+    """Build fixed-shape argv that execs the packaged skill helper by path."""
+
+    executable = _require_ssh_executable(ssh_executable)
+    alias = _require_host_alias(getattr(profile, "ssh_host_alias", None))
+    try:
+        remote = join_skill_command(
+            remote_python=getattr(profile, "remote_python", None),
+            remote_app_dir=getattr(profile, "remote_app_dir", None),
+            apply=apply,
+        )
+    except RemoteCommandError as error:
+        raise _closed_skill_error(error) from None
     return [
         executable,
         "-T",

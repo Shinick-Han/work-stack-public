@@ -172,11 +172,20 @@ def write_source(root: Path, *, lock: str | None = None, version: str = "1.0.7")
     (root / "desktop" / "python-webview-shell" / "remote_receipt_io.py").write_text(
         "IO = 1\n", encoding="utf-8"
     )
+    (root / "desktop" / "python-webview-shell" / "remote_skill_install.py").write_text(
+        "SKILL_INSTALL = 1\n", encoding="utf-8"
+    )
     (root / "run_work_stack.py").write_text("print('run')\n", encoding="utf-8")
     (root / "README.md").write_text("readme\n", encoding="utf-8")
     (root / "LICENSE").write_bytes((ROOT / "LICENSE").read_bytes())
     (root / "SECURITY.md").write_text("security\n", encoding="utf-8")
     (root / "THIRD_PARTY_NOTICES.md").write_text("notices\n", encoding="utf-8")
+    skill_src = ROOT / "integrations" / "agent-skill" / "work-stack"
+    skill_dest = root / "integrations" / "agent-skill" / "work-stack"
+    for relative in ("SKILL.md", "references/commands.md", "references/journal-policy.md"):
+        target = skill_dest / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((skill_src / relative).read_bytes())
     (root / "requirements.txt").write_text(lock or "", encoding="utf-8")
 
 
@@ -856,16 +865,36 @@ class LinuxRemoteArtifactTests(unittest.TestCase):
                 "desktop/python-webview-shell/remote_process_handle.py",
                 "desktop/python-webview-shell/remote_receipt_guard.py",
                 "desktop/python-webview-shell/remote_receipt_io.py",
+                "desktop/python-webview-shell/remote_skill_install.py",
                 "README.md",
                 "LICENSE",
                 "SECURITY.md",
                 "THIRD_PARTY_NOTICES.md",
+                "integrations/agent-skill/work-stack/SKILL.md",
+                "integrations/agent-skill/work-stack/references/commands.md",
+                "integrations/agent-skill/work-stack/references/journal-policy.md",
             ),
             BUILDER.ROSTER_FILES,
         )
         self.assertIn(BUILDER.ENTRYPOINT, BUILDER.ROSTER_FILES)
         self.assertEqual(("workstack", "contracts", "web", "licenses"), BUILDER.FROZEN_DIRS)
         self.assertIn("frontend/dist", BUILDER.ROSTER_DIRS)
+
+    def test_payload_contains_exact_agent_skill_bytes(self) -> None:
+        source, wheels = happy_fixture(self.base / "skill-bytes")
+        archive, _sidecar = BUILDER.build_artifact(source, wheels, self.output_dir("skill-out"), TARGET)
+        skill_paths = (
+            "integrations/agent-skill/work-stack/SKILL.md",
+            "integrations/agent-skill/work-stack/references/commands.md",
+            "integrations/agent-skill/work-stack/references/journal-policy.md",
+        )
+        with zipfile.ZipFile(archive) as handle:
+            names = [info.filename.replace("\\", "/") for info in handle.infolist()]
+            for relative in skill_paths:
+                packed = handle.read("payload/" + relative)
+                self.assertEqual(packed, (source / relative).read_bytes())
+                self.assertEqual(packed, (ROOT / relative).read_bytes())
+                self.assertEqual(1, names.count("payload/" + relative))
 
     def test_each_required_roster_file_deleted_in_a_clean_commit_is_refused(self) -> None:
         for index, required in enumerate(BUILDER.ROSTER_FILES):

@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Literal, Protocol
 
+from remote_update_skill_port import SKILL_FLOW_CODES, SkillPort
+
 
 SCHEMA_VERSION = "remote-update-view/1"
 
@@ -127,7 +129,7 @@ CODES: frozenset[str] = frozenset({
     "restore_verified", "restore_verified_activation_selected",
     "restore_failed", "restore_unknown",
     "rollback_verified", "rollback_failed", "rollback_unknown",
-})
+}) | SKILL_FLOW_CODES
 
 # Refusal codes are raised, never published: each describes a call that was
 # not legal in the flow's current condition, and the condition is unchanged.
@@ -141,6 +143,8 @@ REFUSAL_CODES: frozenset[str] = frozenset({
     "restore_refused_pending_commit",
     "rollback_refused_migrated_ssot", "rollback_refused_no_previous_app",
     "rollback_refused_pending_commit", "rollback_refused_no_activation",
+    "skill_refused_unavailable", "skill_refused_not_ready",
+    "skill_refused_in_flight", "skill_refused_inspect_required",
 })
 
 # Symbolic next actions.  The first entry of a published tuple is the one clear
@@ -153,6 +157,7 @@ ACTIONS: frozenset[str] = frozenset({
     "resolve_activation_pairing",
     "restore_backup", "rollback_activation",
     "inspect_diagnostics", "cancel", "dismiss", "finish",
+    "run_skill_inspect", "run_skill_install", "run_skill_update",
 })
 
 
@@ -640,6 +645,11 @@ class RemoteUpdatePorts:
     probe: ProbePort
     activation: ActivationPort
     verification: VerificationPort
+    #: The optional agent-Skill side action offered on a ready update.  It
+    #: defaults to nothing so every existing bundle, fixture and construction
+    #: keeps working unchanged, and so a build whose skill transport is absent
+    #: simply never makes the offer rather than failing to compose a flow.
+    skill: SkillPort | None = None
 
 
 @dataclass(frozen=True)

@@ -153,7 +153,14 @@ class PatchRouteMixin:
         """
 
         if self._header_once("Idempotency-Key") is None:
-            self.send_json({"data": self.stack.patch_task(task_id, body)})
+            # Read on this branch only, and BEFORE the service is reached, so an
+            # unknown, padded or repeated value refuses without touching the
+            # Task. The keyed receipt branch keeps its existing attribution: no
+            # agent apply route reaches it.
+            origin = self._agent_client_origin()
+            self.send_json({
+                "data": self.stack.patch_task(task_id, body, origin=origin)
+            })
             return
         self._send_service_result(
             self.stack.set_task_status_v1(

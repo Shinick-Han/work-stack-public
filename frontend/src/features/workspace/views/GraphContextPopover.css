@@ -1,9 +1,12 @@
 .wsv-graph-node { position: relative; }
 .wsv-graph-node__action:focus-visible { outline: 2px solid var(--ws-focus-ring); outline-offset: 3px; border-radius: 3px; }
 .wsv-graph-node:has(.wsv-graph-context-trigger) .wsv-graph-node__meta { padding-right: 42px; }
+.wsv-graph-node:has(.wsv-graph-context-trigger--empty) .wsv-graph-node__meta { padding-right: 5.75rem; }
 .wsv-graph-context-trigger { position: absolute; right: 12px; bottom: 10px; cursor: pointer; font-size: .61rem; }
+.wsv-graph-context-trigger--empty { white-space: nowrap; font-weight: 700; }
 .wsv-graph-context-trigger:focus-visible { outline: 2px solid var(--ws-focus-ring); outline-offset: 3px; }
 .wsv-graph-context {
+  position: relative;
   box-sizing: border-box; width: min(680px, calc(100vw - 24px));
   max-height: min(760px, calc(100dvh - 24px)); margin: auto; padding: 0;
   border: 1px solid var(--ws-border-default); border-radius: 16px;
@@ -27,4 +30,19 @@
 .wsv-graph-context .context-entry time { font-size: 10px; }
 .wsv-graph-context__footer { display: flex; justify-content: flex-end; padding: 12px 20px; border-top: 1px solid var(--ws-border-default); }
 .wsv-graph-context button { flex-shrink: 0; min-height: 36px; padding: 6px 12px; cursor: pointer; font: inherit; border: 1px solid var(--ws-control-border); border-radius: 8px; background: var(--ws-control-bg); color: var(--ws-text-primary); }
-.wsv-graph-context button:focus-visible, .wsv-graph-context a:focus-visible { outline: 2px solid var(--ws-focus-ring); outline-offset: 3px; }
+.wsv-graph-context button:disabled { cursor: not-allowed; opacity: 0.55; }
+.wsv-graph-context button:focus-visible, .wsv-graph-context a:focus-visible, .wsv-graph-context textarea:focus-visible { outline: 2px solid var(--ws-focus-ring); outline-offset: 3px; }
+.wsv-graph-context__composer { display: grid; gap: 10px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--ws-border-default); }
+.wsv-graph-context__composer h3 { margin: 0; font-size: 13px; }
+.wsv-graph-context__composer p { margin: 0; color: var(--ws-text-muted); font-size: 12px; }
+.wsv-graph-context__composer label { display: grid; gap: 6px; min-width: 0; }
+.wsv-graph-context__composer label > span { color: var(--ws-text-muted); font-size: 12px; font-weight: 600; }
+.wsv-graph-context__composer textarea { min-width: 0; min-height: 72px; padding: 9px 10px; border: 1px solid var(--ws-control-border); border-radius: 8px; background: var(--ws-surface-sunken); color: var(--ws-text-primary); font: inherit; font-size: 13px; line-height: 1.45; resize: vertical; overflow-wrap: anywhere; }
+.wsv-graph-context__composer textarea::placeholder { color: var(--ws-text-muted); }
+.wsv-graph-context__composer [role="alert"] { margin: 0; color: var(--ws-status-danger-text); font-size: 12px; overflow-wrap: anywhere; }
+.wsv-graph-context__composer > button { justify-self: start; }
+.wsv-graph-context__guard { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; padding: 20px; background: var(--ws-backdrop); }
+.wsv-graph-context__guard-card { display: grid; gap: 10px; min-width: 0; width: min(100%, 420px); padding: 16px; border: 1px solid var(--ws-border-default); border-radius: 12px; background: var(--ws-surface-raised); box-shadow: 0 12px 40px var(--ws-backdrop); }
+.wsv-graph-context__guard-card h3 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.wsv-graph-context__guard-card p { margin: 0; color: var(--ws-text-muted); font-size: 13px; overflow-wrap: anywhere; }
+.wsv-graph-context__guard-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }

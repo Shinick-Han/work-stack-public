@@ -69,6 +69,22 @@ def notice_source_for(provenance: str) -> str:
     return "cli" if provenance == "cli" else "gui"
 
 
+# The one frozen Agent CLI client value, spelled here so this mapping and the
+# admission check that produces it agree rather than drifting apart.
+AGENT_CLIENT_ORIGIN = "agent-cli-v1"
+
+
+def notice_source_for_origin(origin: str | None) -> str:
+    """Caller-reported provenance only; it grants nothing and proves nothing.
+
+    Only the exact admitted Agent CLI origin is attributed. Absent, unknown or
+    padded values keep the ordinary GUI source, so a route that never reads the
+    header behaves exactly as it did before.
+    """
+
+    return "agent" if origin == AGENT_CLIENT_ORIGIN else "gui"
+
+
 def next_activity_event_id(events: list[dict[str, Any]]) -> str:
     largest = 0
     for record in events:

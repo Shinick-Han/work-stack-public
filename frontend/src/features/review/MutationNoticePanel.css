@@ -1,0 +1,188 @@
+/* Recent changes. Built from the Daily Review panel primitives already on this page:
+   the same surface, border, radius and type steps as .saved-reports, so the panel reads
+   as another section of the review rather than a new world. */
+
+.mutation-notices {
+  display: grid;
+  gap: 12px;
+  max-width: min(52rem, 100%);
+  min-width: 0;
+  padding: 13px 15px;
+  background: var(--ws-surface-base);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 9px;
+  color: var(--ws-text-primary);
+}
+
+.mutation-notices__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mutation-notices__header h2 {
+  margin: 0;
+  font-size: var(--ws-type-section-title, 1.05rem);
+}
+
+.mutation-notices__header p {
+  margin: 2px 0 0;
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-body, 0.95rem);
+}
+
+.mutation-notices__list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mutation-notices__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--ws-control-bg);
+  border: 1px solid var(--ws-control-border);
+  border-radius: 8px;
+}
+
+.mutation-notices__what {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mutation-notices__what strong {
+  min-width: 0;
+  font-size: var(--ws-type-item-title, 11px);
+  overflow-wrap: anywhere;
+}
+
+.mutation-notices__transition {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mutation-notices__arrow {
+  color: var(--ws-text-muted);
+}
+
+.mutation-notices__who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  grid-column: 1;
+  min-width: 0;
+}
+
+.mutation-notices__who small {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-meta, 9px);
+}
+
+.mutation-notices__task {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--ws-text-secondary);
+  font: inherit;
+  /* The Task is the row's second reading, not its trailing metadata: the same step
+     .saved-reports__item gives its own title, one above the meta beside it. */
+  font-size: var(--ws-type-item-title, 11px);
+  text-align: start;
+  cursor: pointer;
+}
+
+.mutation-notices__task:hover,
+.mutation-notices__task:focus-visible {
+  color: var(--ws-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.mutation-notices__task span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mutation-notices__task.is-unknown {
+  color: var(--ws-text-muted);
+  cursor: default;
+}
+
+.mutation-notices__act {
+  /* A column, so a settled outcome stacks under its control instead of forcing the
+     row to grow around a full-width message wrapped between two buttons. */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-width: 0;
+  max-width: 16rem;
+}
+
+.mutation-notices__outcome {
+  margin: 0;
+  text-align: end;
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-meta, 9px);
+  overflow-wrap: anywhere;
+}
+
+.mutation-notices__outcome[data-phase='undone'] { color: var(--ws-status-success-text); }
+.mutation-notices__outcome[data-phase='unknown'] { color: var(--ws-status-warning-text); }
+.mutation-notices__outcome[data-phase='conflict'],
+.mutation-notices__outcome[data-phase='failed'] { color: var(--ws-status-danger-text); }
+
+.mutation-notices__paging {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.mutation-notices__paging small {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-meta, 9px);
+}
+
+@media (max-width: 720px) {
+  .mutation-notices {
+    max-width: 100%;
+    padding: 12px;
+  }
+
+  .mutation-notices__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mutation-notices__act {
+    grid-column: 1;
+    grid-row: auto;
+    align-items: flex-start;
+    max-width: 100%;
+  }
+
+  .mutation-notices__outcome {
+    text-align: start;
+  }
+}

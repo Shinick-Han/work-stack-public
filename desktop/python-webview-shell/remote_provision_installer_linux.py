@@ -27,7 +27,7 @@ MAX_META = 4096
 STAGE_TRIES = 3
 SMOKE_SECS = 15.0
 # Sole release identity; imported by the admission module, test-pinned to workstack/__init__.py.
-PRODUCT = "1.0.14"
+PRODUCT = "1.0.15"
 PROTOCOL = 1
 ENTRYPOINT = "desktop/python-webview-shell/remote_entry.py"
 SOABI = "cpython-312-x86_64-linux-gnu"

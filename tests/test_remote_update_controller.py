@@ -729,7 +729,14 @@ class ControllerJourneyTests(unittest.TestCase):
         # stages needs no controller change.
         self.assertEqual(
             set(CONTROLLER.FLOW_CALLS.values()),
-            {"advance", "retry", "reconcile", "rollback", "restore", "cancel"},
+            {
+                "advance", "retry", "reconcile", "rollback", "restore", "cancel",
+                # The optional agent-Skill side action is the one thing offered
+                # after the run order finishes, which is the condition
+                # ``advance`` refuses, so it names its own two flow calls
+                # instead of widening the run-order dispatch above.
+                "inspect_skill", "install_skill",
+            },
         )
         self.assertEqual(fixture.views[-1].snapshot.stage, "activate")
         self.assertEqual(fixture.next_action(), "restart")
