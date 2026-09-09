@@ -3,7 +3,8 @@
 - Source: **1.0.13**, 2026-09-09; integration commit `6a2aa786edfc2617c9080873d18abd881290c5c3`.
 - Previous public commit: `5f4a617511ce4b5fa17bbef83376e4ac63c0a0c3`.
 - Only committed product files are exported; private history, local runtime state, vaults and credentials are excluded.
-- No release tag, installer asset or stable update manifest is changed by this snapshot. Latest published binary: v1.0.12.
+- The source-only snapshot was subsequently released as [v1.0.13](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.13), with installer, checksum and stable update manifest. Release tag target: `0ae65161473347bf2ab7d053e375f626ed995d17`.
+- Installer SHA-256: `954df6199d61997972827f6fe2701283681a1f73e33991243fbc1aedec9bf009` (27,607,565 bytes). It is the same locally installed and verified closeout package.
 - [Validation](docs/SOURCE-SNAPSHOT-2026-09-09.md) and [scope](docs/WORKSTACK-CLOSEOUT-2026-09-09.ko.md).
 
 ## Previous publication record (historical)

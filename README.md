@@ -1,6 +1,6 @@
 # Work Stack
 
-**Source snapshot: 1.0.13 (2026-09-09).** This source update does not publish a new Windows release. The latest published binary remains [v1.0.12](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.12). See the [product boundary and closeout](docs/WORKSTACK-CLOSEOUT-2026-09-09.ko.md).
+**Current release: [1.0.13](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.13) (2026-09-09).** The Windows installer, checksum and stable update manifest are published. See the release notes for installation and Smart App Control limitations, and the [product boundary and closeout](docs/WORKSTACK-CLOSEOUT-2026-09-09.ko.md).
 
 For the current Task/Knowledge capabilities and the remaining OpenDocuments integration
 work, see [Knowledge integration status (2026-09-08, Korean)](docs/KNOWLEDGE-INTEGRATION-STATUS-2026-09-08.ko.md).
