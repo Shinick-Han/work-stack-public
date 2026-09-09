@@ -1,0 +1,54 @@
+{
+  "_comment": "Synthetic. Every secret-shaped value here is a canary invented for this fixture; none of it is real. It models a caller that hands the diagnostics formatter its whole internal state, including fields the snapshot has no slot for and canaries lodged inside fields it does have.",
+  "stage": "stop",
+  "code": "REMOTE_LOCK_OWNED",
+  "session_token": "r5pending-token-not-enforced-01",
+  "token_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "argv": [
+    "ssh -i C:/Users/analyst/.ssh/id_ed25519 build01.corp.example.com",
+    "python -I -B -"
+  ],
+  "ssh_host": "build01.corp.example.com",
+  "data_dir": "/nfs/home/analyst/.workstack/data",
+  "app_dir": "/nfs/home/analyst/.workstack/app",
+  "task": {
+    "title": "Q3 pricing rework for the Northwind account",
+    "body": "Q3 pricing rework for the Northwind account",
+    "context": "Q3 pricing rework for the Northwind account"
+  },
+  "stderr": "ssh: connect to host build01.corp.example.com port 22: Connection refused",
+  "versions": {
+    "desktop": "1.0.13",
+    "remote": "build01.corp.example.com",
+    "served_ui": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "protocol": 6,
+    "schema": 6,
+    "token": "r5pending-token-not-enforced-01"
+  },
+  "owner": {
+    "state": "unfenced",
+    "token_available": false,
+    "pidfd_available": false,
+    "process_exit": "unknown",
+    "listener_release": "unknown",
+    "lease_release": "unknown",
+    "receipt_path": "/nfs/home/analyst/.workstack/data/.workstack-remote-owner.json",
+    "token_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "host_identity": "build01.corp.example.com"
+  },
+  "install": {
+    "capability": "unknown",
+    "method": "verified_unpack",
+    "target": "/nfs/home/analyst/.workstack/app"
+  },
+  "backup": {
+    "status": "not_run",
+    "migration_required": true,
+    "backup_path": "/nfs/home/analyst/.workstack/data/backup"
+  },
+  "actions": [
+    "confirm_no_remote_owner_then_remove_receipt",
+    "ssh -i C:/Users/analyst/.ssh/id_ed25519 build01.corp.example.com",
+    "Q3 pricing rework for the Northwind account"
+  ]
+}

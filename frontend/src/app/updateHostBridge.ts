@@ -14,6 +14,8 @@ export interface UpdateHostStatus {
   release_url: string
   message: string
   preferences: UpdatePreferences
+  remote_update_available?: boolean
+  remote_version?: string | null
 }
 
 interface WebViewMessageEvent extends Event { data?: unknown }
@@ -36,9 +38,38 @@ export function hasUpdateHost(): boolean {
   return typeof bridge?.postMessage === 'function' && typeof bridge.addEventListener === 'function'
 }
 
-function isStatus(value: unknown): value is UpdateHostStatus {
-  if (!value || typeof value !== 'object') return false
-  const item = value as Partial<UpdateHostStatus>
+export function isOptionalRemoteUpdateAvailable(value: unknown): value is boolean | undefined {
+  return value === undefined || typeof value === 'boolean'
+}
+
+export function isOptionalObservedRemoteVersion(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null || typeof value === 'string'
+}
+
+export function remoteCapabilityKnown(status: UpdateHostStatus | null | undefined): boolean {
+  return typeof status?.remote_update_available === 'boolean'
+}
+
+export function hasRemoteUpdateCapability(status: UpdateHostStatus | null | undefined): boolean {
+  return status?.remote_update_available === true
+}
+
+export function formatObservedRemoteVersion(status: UpdateHostStatus): string {
+  const version = status.remote_version
+  return typeof version === 'string' && version.trim() !== '' ? version.trim() : 'UNKNOWN'
+}
+
+export function pcStatusCopy(status: UpdateHostStatus | null): string {
+  if (!status) return 'Ready to check the stable channel.'
+  const message = status.message.trim() || 'Ready to check the stable channel.'
+  if (!remoteCapabilityKnown(status)) return message
+  if (status.state === 'current' || /up to date/i.test(status.message)) {
+    return 'This PC is current. That does not mean the Linux server is current.'
+  }
+  return message
+}
+
+function hasRequiredUpdateStatusFields(item: Partial<UpdateHostStatus>): boolean {
   const preferences = item.preferences as Partial<UpdatePreferences> | undefined
   return item.type === 'workstack-update-status'
     && states.has(item.state as UpdateState)
@@ -49,6 +80,14 @@ function isStatus(value: unknown): value is UpdateHostStatus {
     && typeof preferences?.auto_check === 'boolean'
     && typeof preferences.auto_download === 'boolean'
     && typeof preferences.install_on_exit === 'boolean'
+}
+
+function isStatus(value: unknown): value is UpdateHostStatus {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const item = value as Partial<UpdateHostStatus>
+  return hasRequiredUpdateStatusFields(item)
+    && isOptionalRemoteUpdateAvailable(item.remote_update_available)
+    && isOptionalObservedRemoteVersion(item.remote_version)
 }
 
 export function subscribeUpdateStatus(listener: (status: UpdateHostStatus) => void): () => void {
@@ -70,6 +109,7 @@ export const requestUpdateCheck = () => send('check')
 export const requestUpdateDownload = () => send('download')
 export const requestUpdateInstall = () => send('install')
 export const openUpdateRelease = () => send('open-release')
+export const requestRemoteOpen = () => send('remote-open')
 export function saveUpdatePreferences(preferences: UpdatePreferences) {
   send(`preferences|${preferences.auto_check ? 1 : 0}|${preferences.auto_download ? 1 : 0}|${preferences.install_on_exit ? 1 : 0}`)
 }

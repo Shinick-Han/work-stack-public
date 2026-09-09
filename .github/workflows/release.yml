@@ -124,8 +124,15 @@ jobs:
       - name: Install locked frontend dependencies
         run: npm --prefix frontend ci
 
+      # The one and only frontend build of this release. Every later step that
+      # needs frontend/dist consumes the tree admitted here through the same
+      # gate's verify-dist, which re-checks the receipt and refuses on drift
+      # but never builds.
       - name: Build frontend exactly once
-        run: npm --prefix frontend run build
+        shell: pwsh
+        run: |
+          python scripts/release_gate.py refresh-dist --repo .
+          if ($LASTEXITCODE -ne 0) { throw 'Source-bound frontend dist refresh failed.' }
 
       - name: Freeze frontend distribution
         shell: pwsh
@@ -134,11 +141,47 @@ jobs:
           --root frontend/dist
           --output .artifacts/release-output/frozen-dist-manifest.json
 
+      - name: Download locked Linux remote wheels
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path -LiteralPath '.').Path
+          $wheelhouse = Join-Path $root '.artifacts\release-output\linux-wheelhouse'
+          New-Item -ItemType Directory -Path $wheelhouse | Out-Null
+          python -m pip download --disable-pip-version-check --only-binary=:all: --require-hashes --no-deps --python-version 312 --implementation cp --abi cp312 --abi none --platform manylinux_2_17_x86_64 -r (Join-Path $root 'requirements.txt') -d $wheelhouse
+          if ($LASTEXITCODE -ne 0) { throw 'Locked Linux wheel download failed.' }
+
+      - name: Build Linux remote artifact pair
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path -LiteralPath '.').Path
+          $wheelhouse = Join-Path $root '.artifacts\release-output\linux-wheelhouse'
+          $linuxOutput = Join-Path $root '.artifacts\release-output\linux-remote'
+          python scripts/build_linux_remote_artifact.py --source-root $root --wheelhouse $wheelhouse --output-dir $linuxOutput --target cp312-manylinux_2_17_x86_64
+          if ($LASTEXITCODE -ne 0) { throw 'Linux remote artifact build failed.' }
+          $linuxName = "WorkStack-Linux-${{ inputs.version }}-cp312-manylinux_2_17_x86_64"
+          $archive = Join-Path $linuxOutput "$linuxName.zip"
+          $sidecar = Join-Path $linuxOutput "$linuxName.json"
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf) -or -not (Test-Path -LiteralPath $sidecar -PathType Leaf)) {
+            throw "Linux remote pair for ${{ inputs.version }} was not produced; refusing a local-only Windows release artifact."
+          }
+
       - name: Build immutable Windows release bundle
         shell: pwsh
-        run: >-
-          & scripts/windows/Build-WindowsInstaller.ps1
-          -OutputPath ".artifacts/release-output/WorkStack-Setup-${{ inputs.version }}.ps1"
+        run: |
+          $root = (Resolve-Path -LiteralPath '.').Path
+          $linuxName = "WorkStack-Linux-${{ inputs.version }}-cp312-manylinux_2_17_x86_64"
+          $linuxOutput = Join-Path $root '.artifacts\release-output\linux-remote'
+          $archive = Join-Path $linuxOutput "$linuxName.zip"
+          $sidecar = Join-Path $linuxOutput "$linuxName.json"
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf) -or -not (Test-Path -LiteralPath $sidecar -PathType Leaf)) {
+            throw 'Linux remote pair is missing; refusing a local-only Windows release artifact.'
+          }
+          # -ConsumeAdmittedDist: the frontend was already built and frozen
+          # above, so this step admits that exact tree through the gate's
+          # verify-dist instead of building a second one. A missing, stale or
+          # tampered dist/receipt refuses the installer here.
+          & scripts/windows/Build-WindowsInstaller.ps1 -OutputPath ".artifacts/release-output/WorkStack-Setup-${{ inputs.version }}.ps1" -ConsumeAdmittedDist -LinuxArtifactArchivePath $archive -LinuxArtifactSidecarPath $sidecar
+          if ($LASTEXITCODE -ne 0) { throw 'Windows installer build failed.' }
 
       - name: Verify frozen frontend tree
         shell: pwsh

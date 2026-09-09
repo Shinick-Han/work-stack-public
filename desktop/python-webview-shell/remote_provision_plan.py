@@ -12,22 +12,62 @@ import re
 import secrets
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
 
 from remote_command_contract import (
     REMOTE_PYTHON_REQUIRED,
     RemoteCommandError,
     validated_posix_path,
 )
+from remote_provision_facts_model import (
+    ARTIFACT_KEYS,
+    CAPABILITY_KEYS,
+    COMMIT_VALUES,
+    DATA_KEYS,
+    DOCUMENT_KEYS,
+    FACTS_KEYS,
+    FILESYSTEM_VALUES,
+    HOST_BINDING_VALUES,
+    HOST_KEYS,
+    INSTALL_KEYS,
+    MAX_CODE_LENGTH,
+    MAX_DETAIL_LENGTH,
+    METHOD_VALUES,
+    NFS_PUBLISH_VALUES,
+    OPTIONAL_FACTS_KEYS,
+    PATH_RESOLUTION_KEYS,
+    PUBLICATION_VALUES,
+    PYTHON_KEYS,
+    RESOLUTION_ROOT_KEYS,
+    SCHEMA_LOCATIONS,
+    SCRATCH_VALUES,
+    TARGET_KEYS,
+    Artifact,
+    CapabilityFacts,
+    DataFacts,
+    Diagnostic,
+    Facts,
+    HostFacts,
+    InstallFacts,
+    PathResolution,
+    PlanError,
+    PythonFacts,
+    ResolutionFacts,
+    Target,
+    _note,
+)
+from remote_provision_preflight_plan import (
+    _preflight_notes,
+    _preflight_view,
+    compare_provision_resolution,
+)
 from workstack import REMOTE_PROTOCOL_VERSION, __version__
+
 
 
 SCHEMA_VERSION = 1
 MAX_DOCUMENT_BYTES = 8192
 MAX_PRODUCT_VERSION_LENGTH = 64
 MAX_PROTOCOL_VERSION = 1_000_000
-MAX_DETAIL_LENGTH = 256
-MAX_CODE_LENGTH = 64
 # Linux remote runs the product service/CLI (README: Python 3.10 or newer).
 # The Windows embeddable 3.12.10 bundle is not the remote minimum.
 MIN_PYTHON = (3, 10)
@@ -38,86 +78,6 @@ OWNER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,31}$")
 PYTHON_VERSION_PATTERN = re.compile(
     r"^3\.([0-9]|[1-9][0-9])(?:\.([0-9]|[1-9][0-9]{0,2}))?$"
 )
-
-DOCUMENT_KEYS = frozenset({"schema_version", "target", "artifact", "facts"})
-TARGET_KEYS = frozenset(
-    {"os", "install_root", "data_root", "owner", "expected_workspace_id"}
-)
-ARTIFACT_KEYS = frozenset({"product_version", "protocol_version", "digest"})
-FACTS_KEYS = frozenset({"os", "python", "install", "data"})
-PYTHON_KEYS = frozenset({"path", "version"})
-INSTALL_KEYS = frozenset(
-    {"exists", "owner", "symlink", "product_version", "protocol_version", "digest"}
-)
-DATA_KEYS = frozenset({"exists", "owner", "symlink", "workspace_id"})
-SCHEMA_LOCATIONS = frozenset(
-    {"request", "target", "artifact", "facts", "python", "install", "data"}
-)
-
-
-class PlanError(ValueError):
-    """Caller document is not a valid inspect/plan request."""
-
-    def __init__(self, code: str, detail: str = "") -> None:
-        self.code = _clip_text(code, MAX_CODE_LENGTH)
-        self.detail = _clip_text(detail, MAX_DETAIL_LENGTH)
-        super().__init__(self.code if not self.detail else f"{self.code}: {self.detail}")
-
-
-@dataclass(frozen=True)
-class PythonFacts:
-    path: str
-    version: str
-    series: tuple[int, int]
-
-
-@dataclass(frozen=True)
-class InstallFacts:
-    exists: bool
-    owner: str | None
-    symlink: bool
-    product_version: str | None
-    protocol_version: int | None
-    digest: str | None
-
-
-@dataclass(frozen=True)
-class DataFacts:
-    exists: bool
-    owner: str | None
-    symlink: bool
-    workspace_id: str | None
-
-
-@dataclass(frozen=True)
-class Target:
-    os: str
-    install_root: str
-    data_root: str
-    owner: str
-    expected_workspace_id: str
-
-
-@dataclass(frozen=True)
-class Artifact:
-    product_version: str
-    protocol_version: int
-    digest: str
-
-
-@dataclass(frozen=True)
-class Facts:
-    os: str
-    python: PythonFacts | None
-    install: InstallFacts
-    data: DataFacts
-
-
-@dataclass(frozen=True)
-class Diagnostic:
-    code: str
-    severity: str
-    detail: str
 
 
 def plan_remote_provision(raw: bytes | str) -> dict[str, object]:
@@ -203,6 +163,7 @@ def render_plan(parsed: tuple[Target, Artifact, Facts]) -> dict[str, object]:
             "protocol_version": artifact.protocol_version,
             "digest": artifact.digest,
         },
+        "preflight": _preflight_view(target, facts),
     }
 
 
@@ -214,13 +175,6 @@ def encode_plan(document: dict[str, object]) -> bytes:
         sort_keys=True,
     ).encode("utf-8")
     return encoded + b"\n"
-
-
-def _clip_text(value: str, maximum: int) -> str:
-    if len(value) <= maximum:
-        return value
-    return value[: maximum - 1] + "…"
-
 
 def _unique_object(pairs: list[tuple[object, object]]) -> dict[str, object]:
     document: dict[str, object] = {}
@@ -251,6 +205,19 @@ def _exact_keys(raw: dict[str, object], required: frozenset[str], context: str) 
     if required - present:
         raise PlanError("INVALID_DOCUMENT", f"{place} is missing required fields")
     if present - required:
+        raise PlanError("INVALID_DOCUMENT", f"{place} has unsupported fields")
+
+
+def _allowed_keys(
+    raw: dict[str, object], required: frozenset[str], optional: frozenset[str], context: str
+) -> None:
+    place = _location(context)
+    if any(type(key) is not str for key in raw):
+        raise PlanError("INVALID_DOCUMENT", f"{place} keys must be strings")
+    present = set(raw)
+    if required - present:
+        raise PlanError("INVALID_DOCUMENT", f"{place} is missing required fields")
+    if present - required - optional:
         raise PlanError("INVALID_DOCUMENT", f"{place} has unsupported fields")
 
 
@@ -363,12 +330,15 @@ def _parse_artifact(raw: object) -> Artifact:
 
 def _parse_facts(raw: object) -> Facts:
     value = _require_object(raw, "facts")
-    _exact_keys(value, FACTS_KEYS, "facts")
+    _allowed_keys(value, FACTS_KEYS, OPTIONAL_FACTS_KEYS, "facts")
     return Facts(
         os=_linux_os(value["os"], "facts.os"),
         python=_parse_python(value["python"]),
         install=_parse_install(value["install"]),
         data=_parse_data(value["data"]),
+        resolution=_parse_resolution(value["resolution"]) if "resolution" in value else None,
+        host=_parse_host(value["host"]) if "host" in value else None,
+        capability=_parse_capability(value["capability"]) if "capability" in value else None,
     )
 
 
@@ -422,6 +392,62 @@ def _parse_data(raw: object) -> DataFacts:
     return DataFacts(exists, owner, symlink, workspace)
 
 
+def _choice(value: object, field: str, allowed: frozenset[str]) -> str:
+    text = _bounded_text(value, field, 32)
+    if text not in allowed:
+        raise PlanError("INVALID_DOCUMENT", f"{field} is not a supported value")
+    return text
+
+
+def _parse_path_resolution(raw: object, field: str) -> PathResolution:
+    value = _require_object(raw, "resolution")
+    _exact_keys(value, PATH_RESOLUTION_KEYS, "resolution")
+    return PathResolution(
+        configured=_posix(value["configured"], f"{field}.configured"),
+        canonical=_posix(value["canonical"], f"{field}.canonical"),
+        stable=_flag(value["stable"], f"{field}.stable"),
+    )
+
+
+def _parse_resolution(raw: object) -> ResolutionFacts:
+    value = _require_object(raw, "resolution")
+    _exact_keys(value, RESOLUTION_ROOT_KEYS, "resolution")
+    return ResolutionFacts(
+        install=_parse_path_resolution(value["install"], "resolution.install"),
+        data=_parse_path_resolution(value["data"], "resolution.data"),
+    )
+
+
+def _parse_host(raw: object) -> HostFacts:
+    value = _require_object(raw, "host")
+    _exact_keys(value, HOST_KEYS, "host")
+    machine = value["machine"]
+    if machine is not None:
+        machine = _bounded_text(machine, "host.machine", 32)
+    return HostFacts(
+        runtime=_linux_os(value["runtime"], "host.runtime"),
+        machine=machine,
+        binding=_choice(value["binding"], "host.binding", HOST_BINDING_VALUES),
+    )
+
+
+def _parse_capability(raw: object) -> CapabilityFacts:
+    value = _require_object(raw, "capability")
+    _exact_keys(value, CAPABILITY_KEYS, "capability")
+    noexec = value["noexec"]
+    if noexec is not None:
+        noexec = _flag(noexec, "capability.noexec")
+    return CapabilityFacts(
+        publication=_choice(value["publication"], "capability.publication", PUBLICATION_VALUES),
+        method=_choice(value["method"], "capability.method", METHOD_VALUES),
+        commit=_choice(value["commit"], "capability.commit", COMMIT_VALUES),
+        scratch=_choice(value["scratch"], "capability.scratch", SCRATCH_VALUES),
+        filesystem=_choice(value["filesystem"], "capability.filesystem", FILESYSTEM_VALUES),
+        noexec=noexec,
+        nfs_publish=_choice(value["nfs_publish"], "capability.nfs_publish", NFS_PUBLISH_VALUES),
+    )
+
+
 def _optional_protocol(value: object, field: str) -> int | None:
     if value is None:
         return None
@@ -450,14 +476,6 @@ def _overlap(left: str, right: str) -> bool:
     return left == right or left.startswith(right + "/") or right.startswith(left + "/")
 
 
-def _note(code: str, severity: str, detail: str) -> Diagnostic:
-    return Diagnostic(
-        _clip_text(code, MAX_CODE_LENGTH),
-        severity,
-        _clip_text(detail, MAX_DETAIL_LENGTH),
-    )
-
-
 def _collect_diagnostics(
     target: Target, artifact: Artifact, facts: Facts
 ) -> tuple[Diagnostic, ...]:
@@ -472,6 +490,7 @@ def _collect_diagnostics(
     notes.extend(_python_notes(facts.python))
     notes.extend(_path_notes(target, facts))
     notes.extend(_install_state_notes(facts.install, artifact))
+    notes.extend(_preflight_notes(target, facts))
     return tuple(notes)
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import hashlib
 import importlib.util
 import io
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -38,12 +40,17 @@ assert COLLECTOR_SPEC is not None and COLLECTOR_SPEC.loader is not None
 COLLECTOR = importlib.util.module_from_spec(COLLECTOR_SPEC)
 sys.modules["remote_provision_collector"] = COLLECTOR
 COLLECTOR_SPEC.loader.exec_module(COLLECTOR)
+CONTRACT = sys.modules["remote_provision_contract"]
 
 PROBE_SPEC = importlib.util.spec_from_file_location("remote_provision_probe_test", PROBE_PATH)
 assert PROBE_SPEC is not None and PROBE_SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(PROBE_SPEC)
 sys.modules[PROBE_SPEC.name] = MODULE
 PROBE_SPEC.loader.exec_module(MODULE)
+
+FILE_LINE_LIMIT = 800
+HELPER_PATHS = tuple(SHELL / name for name in MODULE.COLLECTOR_HELPER_FILENAMES)
+STREAMED_PATHS = (COLLECTOR_PATH,) + HELPER_PATHS
 
 PLAN_SPEC = importlib.util.spec_from_file_location("remote_provision_plan_probe_comp", PLAN_PATH)
 assert PLAN_SPEC is not None and PLAN_SPEC.loader is not None
@@ -213,6 +220,19 @@ def tree_hashes(root: Path) -> dict[str, str]:
     }
 
 
+def imported_module_names(paths: "tuple[Path, ...]") -> set[str]:
+    """Every module name imported by the given sources, in file order."""
+
+    names: set[str] = set()
+    for path in paths:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names.add(node.module)
+    return names
+
+
 class FakeStdin:
     def __init__(self) -> None:
         self.buffer = bytearray()
@@ -280,6 +300,7 @@ class MappedFS:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.symlinks: set[str] = set()
+        self.link_targets: dict[str, str] = {}
         self.fifos: set[str] = set()
         self.nlinks: dict[str, int] = {}
         self.uids: dict[str, int] = {}
@@ -373,6 +394,20 @@ class MappedFS:
             raise OSError("invalid name")
         return self.open_path(self.join(str(record["path"]), name), flags)
 
+    def readlinkat(self, dirfd: int, name: str) -> str:
+        record = self._fds.get(dirfd)
+        if record is None:
+            raise OSError("bad fd")
+        if name in {"", ".", ".."} or "/" in name:
+            raise OSError("invalid name")
+        path = self.join(str(record["path"]), name)
+        if path not in self.symlinks:
+            raise OSError("not a symlink")
+        target = self.link_targets.get(path)
+        if target is None:
+            raise OSError("dangling")
+        return target
+
     def fstat(self, fd: int) -> SimpleNamespace:
         return self._fds[fd]["info"]  # type: ignore[return-value]
 
@@ -439,6 +474,7 @@ def bind_fs(test: unittest.TestCase, mapped: MappedFS) -> None:
         mock.patch.object(COLLECTOR, "_host_fstat", mapped.fstat),
         mock.patch.object(COLLECTOR, "_host_read_fd", mapped.read_fd),
         mock.patch.object(COLLECTOR, "_host_close", mapped.close),
+        mock.patch.object(COLLECTOR, "_host_readlinkat", mapped.readlinkat),
     )
     for item in patches:
         item.start()
@@ -565,9 +601,12 @@ class RemoteProvisionProbeCommandTest(unittest.TestCase):
         self.assertNotIn("login", remote)
         self.assertNotIn("2>&1", remote)
         self.assertEqual(MODULE.PROBE_TIMEOUT_SECONDS, 15.0)
-        self.assertLessEqual(len(COLLECTOR_PATH.read_bytes()), MODULE.MAX_SOURCE_BYTES)
-        self.assertLessEqual(len(PROBE_PATH.read_text(encoding="utf-8").splitlines()), 800)
-        self.assertLessEqual(len(COLLECTOR_PATH.read_text(encoding="utf-8").splitlines()), 800)
+        self.assertLessEqual(len(MODULE._module_source()), MODULE.MAX_SOURCE_BYTES)
+        for path in (PROBE_PATH,) + STREAMED_PATHS:
+            with self.subTest(path=path.name):
+                self.assertLessEqual(
+                    len(path.read_text(encoding="utf-8").splitlines()), FILE_LINE_LIMIT
+                )
 
     def test_invalid_config_does_not_open_a_process(self) -> None:
         factory = RecordingFactory(FakeProcess(b"{}\n"))
@@ -608,7 +647,7 @@ class RemoteProvisionProbeOracleTest(unittest.TestCase):
             "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o",
             "PermitLocalCommand=no", "-o", "ClearAllForwardings=yes", "--", ALIAS,
         ])
-        self.assertEqual(process.stdin.buffer, COLLECTOR_PATH.read_bytes())
+        self.assertEqual(process.stdin.buffer, MODULE._module_source())
         self.assertTrue(process.stdin.closed)
         self.assertEqual(factory.kwargs["stdin"], subprocess.PIPE)
         self.assertEqual(factory.kwargs["stdout"], subprocess.PIPE)
@@ -941,17 +980,14 @@ class RemoteProvisionProbeCompositionTest(unittest.TestCase):
     def test_module_does_not_enumerate_trees_or_use_a_shell(self) -> None:
         called: set[str] = set()
         imported: set[str] = set()
-        for path in (PROBE_PATH, COLLECTOR_PATH):
+        for path in (PROBE_PATH,) + STREAMED_PATHS:
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                     called.add(node.func.attr)
                 if isinstance(node, ast.keyword) and node.arg == "shell":
                     self.fail("shell keyword must not appear")
-                if isinstance(node, ast.Import):
-                    imported.update(alias.name for alias in node.names)
-                if isinstance(node, ast.ImportFrom) and node.module:
-                    imported.add(node.module)
+        imported = imported_module_names((PROBE_PATH,) + STREAMED_PATHS)
         self.assertNotIn("walk", called)
         self.assertNotIn("listdir", called)
         self.assertNotIn("scandir", called)
@@ -960,19 +996,16 @@ class RemoteProvisionProbeCompositionTest(unittest.TestCase):
         self.assertNotIn("system", called)
         for name in imported:
             self.assertFalse(name == "workstack" or name.startswith("workstack."))
-        collector_tree = ast.parse(COLLECTOR_PATH.read_text(encoding="utf-8"))
-        collector_imported: set[str] = set()
-        for node in ast.walk(collector_tree):
-            if isinstance(node, ast.Import):
-                collector_imported.update(alias.name for alias in node.names)
-            if isinstance(node, ast.ImportFrom) and node.module:
-                collector_imported.add(node.module)
+        collector_imported = imported_module_names(STREAMED_PATHS)
         self.assertNotIn("remote_provision_probe", collector_imported)
         self.assertNotIn("remote_provision_plan", collector_imported)
         self.assertNotIn("remote_command_contract", collector_imported)
-        self.assertLessEqual(len(COLLECTOR_PATH.read_bytes()), MODULE.MAX_SOURCE_BYTES)
-        self.assertLessEqual(len(PROBE_PATH.read_text(encoding="utf-8").splitlines()), 800)
-        self.assertLessEqual(len(COLLECTOR_PATH.read_text(encoding="utf-8").splitlines()), 800)
+        self.assertLessEqual(len(MODULE._module_source()), MODULE.MAX_SOURCE_BYTES)
+        for path in (PROBE_PATH,) + STREAMED_PATHS:
+            with self.subTest(path=path.name):
+                self.assertLessEqual(
+                    len(path.read_text(encoding="utf-8").splitlines()), FILE_LINE_LIMIT
+                )
 
 
 class RemoteProvisionReceiptProjectionTest(unittest.TestCase):
@@ -1373,6 +1406,11 @@ class RemoteProvisionIsolationAndRaceTest(unittest.TestCase):
                 "raise RuntimeError('malicious lookalike executed')\n",
                 encoding="utf-8",
             )
+            for helper in MODULE.COLLECTOR_HELPER_FILENAMES:
+                (outside / helper).write_text(
+                    "raise RuntimeError('malicious lookalike executed')\n",
+                    encoding="utf-8",
+                )
             environment = dict(os.environ)
             environment["PYTHONPATH"] = str(outside)
             result = subprocess.run(
@@ -1391,7 +1429,7 @@ class RemoteProvisionIsolationAndRaceTest(unittest.TestCase):
                 ],
                 cwd=outside,
                 env=environment,
-                input=COLLECTOR_PATH.read_bytes(),
+                input=MODULE._module_source(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=15,
@@ -1801,6 +1839,601 @@ class RemoteProvisionSchemaAdmissionTest(unittest.TestCase):
         facts = self.facts_unwritten(root)
         self.assertEqual(facts["data"]["workspace_id"], task_uid)
         self.assertNotEqual(facts["data"]["workspace_id"], original.workspace_uid)
+
+
+def _default_capability() -> dict[str, object]:
+    return {
+        "publication": "unknown",
+        "method": "unknown",
+        "commit": "unknown",
+        "scratch": "not_requested",
+        "filesystem": "unknown",
+        "noexec": None,
+        "nfs_publish": "unknown",
+    }
+
+
+def _resolution(configured_install: str, canonical_install: str, configured_data: str, canonical_data: str, *, stable: bool = True) -> dict[str, object]:
+    return {
+        "install": {
+            "configured": configured_install,
+            "canonical": canonical_install,
+            "stable": stable,
+        },
+        "data": {
+            "configured": configured_data,
+            "canonical": canonical_data,
+            "stable": stable,
+        },
+    }
+
+
+class RemoteProvisionCanonicalPreflightTest(unittest.TestCase):
+    def collect(
+        self,
+        mapped: MappedFS,
+        install: str = POSIX_INSTALL,
+        data: str = POSIX_DATA,
+        *,
+        scratch_parent: str | None = None,
+    ) -> dict[str, object]:
+        bind_linux(self)
+        bind_fs(self, mapped)
+        return MODULE.collect_provision_facts(install, data, OWNER, scratch_parent)
+
+    def make_alias_tree(self, *, existing_install: bool = False, existing_data: bool = False, workspace_id: str = WORKSPACE_ID) -> tuple[Path, MappedFS]:
+        raw = tempfile.mkdtemp(prefix="ws-alias-")
+        root = Path(raw)
+        mapped = MappedFS(root)
+        mapped.local("/remote/probe-owner").mkdir(parents=True)
+        mapped.symlinks.add("/u")
+        mapped.link_targets["/u"] = "/remote"
+        if existing_install:
+            package = mapped.local("/remote/probe-owner/app/workstack")
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text(PRODUCT_SOURCE, encoding="utf-8")
+        if existing_data:
+            data = mapped.local("/remote/probe-owner/data")
+            data.mkdir(parents=True)
+            (data / "workspace.json").write_text(
+                json.dumps({"id": workspace_id, "name": "Fixture", "version": 2}),
+                encoding="utf-8",
+            )
+            (data / "store-meta.json").write_text(json.dumps(STORE_META), encoding="utf-8")
+        return root, mapped
+
+    def test_plain_paths_report_matching_configured_and_canonical(self) -> None:
+        root, mapped = make_tree()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        facts = self.collect(mapped)
+        self.assertEqual(facts["install"], missing_identity())
+        self.assertEqual(facts["resolution"], _resolution(POSIX_INSTALL, POSIX_INSTALL, POSIX_DATA, POSIX_DATA))
+        self.assertEqual(facts["host"]["runtime"], "linux")
+        self.assertEqual(facts["host"]["binding"], "unknown")
+        self.assertEqual(facts["capability"], _default_capability())
+
+    def test_configured_alias_resolves_before_reparse_and_does_not_change_workspace(self) -> None:
+        root, mapped = self.make_alias_tree(existing_data=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        facts = self.collect(mapped, "/u/probe-owner/app", "/u/probe-owner/data")
+        self.assertFalse(facts["install"]["symlink"])
+        self.assertEqual(facts["data"]["workspace_id"], WORKSPACE_ID)
+        self.assertEqual(
+            facts["resolution"],
+            _resolution("/u/probe-owner/app", "/remote/probe-owner/app", "/u/probe-owner/data", "/remote/probe-owner/data"),
+        )
+        document = {
+            "schema_version": 1,
+            "target": {
+                "os": "linux",
+                "install_root": "/u/probe-owner/app",
+                "data_root": "/u/probe-owner/data",
+                "owner": OWNER,
+                "expected_workspace_id": WORKSPACE_ID,
+            },
+            "artifact": {
+                "product_version": PLAN.__version__,
+                "protocol_version": PLAN.REMOTE_PROTOCOL_VERSION,
+                "digest": ARTIFACT_DIGEST,
+            },
+            "facts": facts,
+        }
+        result = PLAN.plan_remote_provision(json.dumps(document, separators=(",", ":")))
+        self.assertEqual(result["plan"]["install_root"], "/u/probe-owner/app")
+        self.assertEqual(result["preflight"]["install"]["canonical"], "/remote/probe-owner/app")
+        self.assertIn("PATH_RESOLVED", {item["code"] for item in result["diagnostics"]})
+        self.assertNotIn("TARGET_REPARSE_AMBIGUITY", {item["code"] for item in result["diagnostics"]})
+        self.assertEqual(result["decision"], "install_needed")
+
+    def test_alias_to_another_workspace_is_still_mismatch(self) -> None:
+        root, mapped = self.make_alias_tree(existing_data=True, workspace_id=OTHER_UID)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        facts = self.collect(mapped, "/u/probe-owner/app", "/u/probe-owner/data")
+        self.assertEqual(facts["data"]["workspace_id"], OTHER_UID)
+        document = {
+            "schema_version": 1,
+            "target": {
+                "os": "linux",
+                "install_root": "/u/probe-owner/app",
+                "data_root": "/u/probe-owner/data",
+                "owner": OWNER,
+                "expected_workspace_id": WORKSPACE_ID,
+            },
+            "artifact": {
+                "product_version": PLAN.__version__,
+                "protocol_version": PLAN.REMOTE_PROTOCOL_VERSION,
+                "digest": ARTIFACT_DIGEST,
+            },
+            "facts": facts,
+        }
+        result = PLAN.plan_remote_provision(json.dumps(document, separators=(",", ":")))
+        self.assertEqual(result["decision"], "refused")
+        self.assertIn("REMOTE_WORKSPACE_MISMATCH", {item["code"] for item in result["diagnostics"]})
+        self.assertEqual(result["plan"]["install_root"], "/u/probe-owner/app")
+
+    def test_leaf_symlink_after_alias_is_still_reparse(self) -> None:
+        root, mapped = self.make_alias_tree()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        mapped.local("/remote/probe-owner/app").mkdir(parents=True)
+        mapped.symlinks.add("/remote/probe-owner/app")
+        facts = self.collect(mapped, "/u/probe-owner/app", "/u/probe-owner/data")
+        self.assertTrue(facts["install"]["exists"])
+        self.assertTrue(facts["install"]["symlink"])
+        self.assertIsNone(facts["install"]["digest"])
+
+    def test_opt_in_scratch_measures_transactional_publication(self) -> None:
+        root, mapped = make_tree()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        bind_linux(self)
+        bind_fs(self, mapped)
+        with mock.patch.object(COLLECTOR, "_host_capability_scratch", return_value="ok") as scratch:
+            with mock.patch.object(COLLECTOR, "_measure_fs", return_value=("other", False)):
+                facts = MODULE.collect_provision_facts(
+                    POSIX_INSTALL, POSIX_DATA, OWNER, "/workstack-fixture/probe-owner"
+                )
+        scratch.assert_called_once_with("/workstack-fixture/probe-owner")
+        self.assertEqual(facts["capability"]["publication"], "available")
+        self.assertEqual(facts["capability"]["method"], "transactional")
+        self.assertEqual(facts["capability"]["commit"], "renameat2_noreplace")
+        self.assertEqual(facts["capability"]["scratch"], "measured")
+        self.assertEqual(facts["capability"]["nfs_publish"], "not_applicable")
+
+    def test_unmeasured_nfs_stays_unknown_not_unsupported(self) -> None:
+        root, mapped = make_tree()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        bind_linux(self)
+        bind_fs(self, mapped)
+        with mock.patch.object(COLLECTOR, "_measure_fs", return_value=("nfs", False)):
+            facts = MODULE.collect_provision_facts(POSIX_INSTALL, POSIX_DATA, OWNER)
+        self.assertEqual(facts["capability"]["filesystem"], "nfs")
+        self.assertEqual(facts["capability"]["publication"], "unknown")
+        self.assertEqual(facts["capability"]["commit"], "unknown")
+        self.assertEqual(facts["capability"]["nfs_publish"], "unknown")
+        self.assertNotEqual(facts["capability"]["publication"], "unavailable")
+
+    def test_measured_nfs_failure_is_distinct_from_unknown_commit(self) -> None:
+        root, mapped = make_tree()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        bind_linux(self)
+        bind_fs(self, mapped)
+        with mock.patch.object(COLLECTOR, "_host_capability_scratch", return_value="nfs_failed"):
+            with mock.patch.object(COLLECTOR, "_measure_fs", return_value=("nfs", False)):
+                facts = MODULE.collect_provision_facts(
+                    POSIX_INSTALL, POSIX_DATA, OWNER, "/workstack-fixture/probe-owner"
+                )
+        self.assertEqual(facts["capability"]["publication"], "unavailable")
+        self.assertEqual(facts["capability"]["nfs_publish"], "failed")
+        self.assertEqual(facts["capability"]["commit"], "unknown")
+
+    def test_scratch_ownership_failure_is_not_an_nfs_guess(self) -> None:
+        root, mapped = make_tree()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        bind_linux(self)
+        bind_fs(self, mapped)
+        with mock.patch.object(COLLECTOR, "_host_capability_scratch", return_value="ownership"):
+            with mock.patch.object(COLLECTOR, "_measure_fs", return_value=("nfs", False)):
+                facts = MODULE.collect_provision_facts(
+                    POSIX_INSTALL, POSIX_DATA, OWNER, "/workstack-fixture/probe-owner"
+                )
+        self.assertEqual(facts["capability"]["publication"], "unavailable")
+        self.assertEqual(facts["capability"]["commit"], "unknown")
+        self.assertEqual(facts["capability"]["nfs_publish"], "unknown")
+        self.assertNotEqual(facts["capability"]["nfs_publish"], "failed")
+
+    def test_scratch_inside_data_root_is_refused(self) -> None:
+        with self.assertRaises(MODULE.ProbeError) as raised:
+            MODULE.parse_collector_argv(
+                [
+                    "provision-facts",
+                    "--install-root",
+                    POSIX_INSTALL,
+                    "--data-root",
+                    POSIX_DATA,
+                    "--owner",
+                    OWNER,
+                    "--capability-scratch-parent",
+                    POSIX_DATA,
+                ]
+            )
+        self.assertEqual(raised.exception.code, "INVALID_PROBE")
+
+    def test_noexec_parent_is_reported(self) -> None:
+        root, mapped = make_tree()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        bind_linux(self)
+        bind_fs(self, mapped)
+        with mock.patch.object(COLLECTOR, "_measure_fs", return_value=("other", True)):
+            facts = MODULE.collect_provision_facts(POSIX_INSTALL, POSIX_DATA, OWNER)
+        self.assertEqual(facts["capability"]["noexec"], True)
+
+    def test_probe_attaches_selected_profile_host_binding(self) -> None:
+        facts = success_facts()
+        facts["resolution"] = _resolution(POSIX_INSTALL, POSIX_INSTALL, POSIX_DATA, POSIX_DATA)
+        facts["host"] = {"runtime": "linux", "machine": "x86_64", "binding": "unknown"}
+        facts["capability"] = _default_capability()
+        process = FakeProcess(encode_line(facts))
+        result = MODULE.run_remote_provision_probe(
+            load_profile(), OWNER, ssh_executable="ssh.exe", process_factory=RecordingFactory(process)
+        )
+        self.assertEqual(result["host"]["binding"], "selected_profile")
+        self.assertEqual(result["resolution"]["install"]["configured"], POSIX_INSTALL)
+
+    def test_scratch_flag_is_optional_on_the_ssh_command(self) -> None:
+        command = MODULE.build_ssh_provision_probe_command(
+            load_profile(),
+            OWNER,
+            "ssh.exe",
+            capability_scratch_parent="/workstack-fixture/probe-owner",
+        )
+        self.assertIn(MODULE.SCRATCH_FLAG, command[-1])
+        self.assertIn("/workstack-fixture/probe-owner", command[-1])
+        default = MODULE.build_ssh_provision_probe_command(load_profile(), OWNER, "ssh.exe")
+        self.assertNotIn(MODULE.SCRATCH_FLAG, default[-1])
+
+    def make_relative_alias_tree(
+        self, link: str, target: str, *, tree: str = "/remote", workspace_id: str = WORKSPACE_ID
+    ) -> tuple[Path, MappedFS]:
+        """A tree reached through one relative or root ancestor alias."""
+
+        raw = tempfile.mkdtemp(prefix="ws-relalias-")
+        root = Path(raw)
+        mapped = MappedFS(root)
+        base = f"{tree}/probe-owner".replace("//", "/")
+        mapped.local(base).mkdir(parents=True)
+        parent = link.rsplit("/", 1)[0]
+        if parent:
+            mapped.local(parent).mkdir(parents=True, exist_ok=True)
+        mapped.symlinks.add(link)
+        mapped.link_targets[link] = target
+        data = mapped.local(f"{base}/data")
+        data.mkdir(parents=True)
+        (data / "workspace.json").write_text(
+            json.dumps({"id": workspace_id, "name": "Fixture", "version": 2}),
+            encoding="utf-8",
+        )
+        (data / "store-meta.json").write_text(json.dumps(STORE_META), encoding="utf-8")
+        return root, mapped
+
+    def test_relative_and_root_ancestor_aliases_resolve_to_canonical_targets(self) -> None:
+        cases = (
+            ("bare_relative", "/u", "remote", "/remote", "/u/probe-owner"),
+            ("parent_relative", "/srv/u", "../remote", "/remote", "/srv/u/probe-owner"),
+            ("dot_relative", "/u", "./remote", "/remote", "/u/probe-owner"),
+            ("root", "/u", "/", "", "/u/probe-owner"),
+            ("absolute", "/u", "/remote", "/remote", "/u/probe-owner"),
+        )
+        for name, link, target, tree, configured in cases:
+            with self.subTest(case=name):
+                root, mapped = self.make_relative_alias_tree(link, target, tree=tree or "")
+                self.addCleanup(lambda captured=root: __import__("shutil").rmtree(captured, ignore_errors=True))
+                canonical = f"{tree}/probe-owner".replace("//", "/") or "/probe-owner"
+                facts = self.collect(mapped, f"{configured}/app", f"{configured}/data")
+                self.assertEqual(
+                    facts["resolution"],
+                    _resolution(
+                        f"{configured}/app",
+                        f"{canonical}/app",
+                        f"{configured}/data",
+                        f"{canonical}/data",
+                    ),
+                )
+                self.assertEqual(facts["data"]["workspace_id"], WORKSPACE_ID)
+                self.assertFalse(facts["install"]["symlink"])
+
+    def test_relative_alias_keeps_the_configured_root_and_workspace_gate(self) -> None:
+        root, mapped = self.make_relative_alias_tree("/u", "remote")
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        facts = self.collect(mapped, "/u/probe-owner/app", "/u/probe-owner/data")
+        document = {
+            "schema_version": 1,
+            "target": {
+                "os": "linux",
+                "install_root": "/u/probe-owner/app",
+                "data_root": "/u/probe-owner/data",
+                "owner": OWNER,
+                "expected_workspace_id": WORKSPACE_ID,
+            },
+            "artifact": {
+                "product_version": PLAN.__version__,
+                "protocol_version": PLAN.REMOTE_PROTOCOL_VERSION,
+                "digest": ARTIFACT_DIGEST,
+            },
+            "facts": facts,
+        }
+        result = PLAN.plan_remote_provision(json.dumps(document, separators=(",", ":")))
+        codes = {item["code"] for item in result["diagnostics"]}
+        self.assertEqual(result["plan"]["install_root"], "/u/probe-owner/app")
+        self.assertEqual(result["preflight"]["install"]["canonical"], "/remote/probe-owner/app")
+        self.assertIn("PATH_RESOLVED", codes)
+        self.assertNotIn("TARGET_REPARSE_AMBIGUITY", codes)
+        self.assertEqual(result["decision"], "install_needed")
+
+    def test_relative_alias_to_another_workspace_is_still_mismatch(self) -> None:
+        root, mapped = self.make_relative_alias_tree("/u", "remote", workspace_id=OTHER_UID)
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        facts = self.collect(mapped, "/u/probe-owner/app", "/u/probe-owner/data")
+        self.assertEqual(facts["data"]["workspace_id"], OTHER_UID)
+        document = {
+            "schema_version": 1,
+            "target": {
+                "os": "linux",
+                "install_root": "/u/probe-owner/app",
+                "data_root": "/u/probe-owner/data",
+                "owner": OWNER,
+                "expected_workspace_id": WORKSPACE_ID,
+            },
+            "artifact": {
+                "product_version": PLAN.__version__,
+                "protocol_version": PLAN.REMOTE_PROTOCOL_VERSION,
+                "digest": ARTIFACT_DIGEST,
+            },
+            "facts": facts,
+        }
+        result = PLAN.plan_remote_provision(json.dumps(document, separators=(",", ":")))
+        self.assertEqual(result["decision"], "refused")
+        self.assertIn("REMOTE_WORKSPACE_MISMATCH", {item["code"] for item in result["diagnostics"]})
+
+    def test_leaf_symlink_after_a_relative_alias_is_still_reparse(self) -> None:
+        root, mapped = self.make_relative_alias_tree("/u", "remote")
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        mapped.local("/remote/probe-owner/app").mkdir(parents=True)
+        mapped.symlinks.add("/remote/probe-owner/app")
+        facts = self.collect(mapped, "/u/probe-owner/app", "/u/probe-owner/data")
+        self.assertTrue(facts["install"]["exists"])
+        self.assertTrue(facts["install"]["symlink"])
+        self.assertIsNone(facts["install"]["digest"])
+
+    def test_a_relative_alias_chain_still_honors_the_hop_bound(self) -> None:
+        root, mapped = self.make_relative_alias_tree("/u", "hop0")
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        for index in range(COLLECTOR.MAX_SYMLINK_HOPS + 2):
+            link = f"/hop{index}"
+            mapped.symlinks.add(link)
+            mapped.link_targets[link] = f"hop{index + 1}"
+        bind_linux(self)
+        bind_fs(self, mapped)
+        with self.assertRaises(MODULE.ProbeError) as raised:
+            MODULE.collect_provision_facts("/u/probe-owner/app", "/u/probe-owner/data", OWNER)
+        self.assertEqual(raised.exception.code, "TARGET_REPARSE_AMBIGUITY")
+
+    def test_malformed_link_targets_are_still_reparse_ambiguity(self) -> None:
+        cases = (
+            ("space", "re mote"),
+            ("double_slash", "remote//probe-owner"),
+            ("trailing_slash", "remote/"),
+            ("control_character", "remo\x01te"),
+            ("empty", ""),
+            ("oversize", "r" * (CONTRACT.MAX_LINK_TARGET_LENGTH + 1)),
+        )
+        for name, target in cases:
+            with self.subTest(case=name):
+                root, mapped = self.make_relative_alias_tree("/u", target)
+                self.addCleanup(lambda captured=root: __import__("shutil").rmtree(captured, ignore_errors=True))
+                bind_linux(self)
+                bind_fs(self, mapped)
+                with self.assertRaises(MODULE.ProbeError) as raised:
+                    MODULE.collect_provision_facts(
+                        "/u/probe-owner/app", "/u/probe-owner/data", OWNER
+                    )
+                self.assertEqual(raised.exception.code, "TARGET_REPARSE_AMBIGUITY")
+
+    def test_link_target_segments_resolve_against_the_containing_directory(self) -> None:
+        segments = COLLECTOR._link_target_segments
+        self.assertEqual(segments("remote", ["u"]), ["u", "remote"])
+        self.assertEqual(segments("../remote", ["srv", "u"]), ["srv", "remote"])
+        self.assertEqual(segments("/", ["srv", "u"]), [])
+        self.assertEqual(segments("/remote", ["srv", "u"]), ["remote"])
+        self.assertEqual(segments("./remote", ["u"]), ["u", "remote"])
+        self.assertEqual(segments("../../../remote", ["u"]), ["remote"])
+        self.assertEqual(segments("a/./b/../c", []), ["a", "c"])
+        for bad in (None, b"remote", "", "re mote", "remote/", "a//b", "\x7f", "x" * 5000):
+            with self.subTest(target=repr(bad)[:24]):
+                self.assertIsNone(segments(bad, ["u"]))
+
+    def test_apply_revalidation_refuses_an_unstable_current_resolution(self) -> None:
+        previous = success_facts()
+        previous["resolution"] = _resolution(POSIX_INSTALL, POSIX_INSTALL, POSIX_DATA, POSIX_DATA)
+        current = success_facts()
+        current["resolution"] = _resolution(
+            POSIX_INSTALL, POSIX_INSTALL, POSIX_DATA, POSIX_DATA, stable=False
+        )
+        self.assertEqual(
+            PLAN.compare_provision_resolution(previous, current), "TARGET_RESOLUTION_DRIFT"
+        )
+        process = FakeProcess(encode_line(current))
+        with self.assertRaises(MODULE.ProbeError) as raised:
+            MODULE.revalidate_remote_provision_resolution(
+                load_profile(),
+                OWNER,
+                previous,
+                ssh_executable="ssh.exe",
+                process_factory=RecordingFactory(process),
+            )
+        self.assertEqual(raised.exception.code, "TARGET_RESOLUTION_DRIFT")
+        self.assertLessEqual(len(raised.exception.detail), CONTRACT.MAX_DETAIL_LENGTH)
+
+    def test_apply_revalidation_refuses_canonical_drift(self) -> None:
+        previous = success_facts()
+        previous["resolution"] = _resolution(POSIX_INSTALL, POSIX_INSTALL, POSIX_DATA, POSIX_DATA)
+        current = success_facts()
+        current["resolution"] = _resolution(
+            POSIX_INSTALL, "/remote/probe-owner/app", POSIX_DATA, "/remote/probe-owner/data"
+        )
+        process = FakeProcess(encode_line(current))
+        with self.assertRaises(MODULE.ProbeError) as raised:
+            MODULE.revalidate_remote_provision_resolution(
+                load_profile(),
+                OWNER,
+                previous,
+                ssh_executable="ssh.exe",
+                process_factory=RecordingFactory(process),
+            )
+        self.assertEqual(raised.exception.code, "TARGET_RESOLUTION_DRIFT")
+
+    def test_collector_revalidate_helper_refuses_drift(self) -> None:
+        root, mapped = self.make_alias_tree()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        bind_linux(self)
+        bind_fs(self, mapped)
+        MODULE.revalidate_provision_resolution(
+            "/u/probe-owner/app",
+            "/u/probe-owner/data",
+            "/remote/probe-owner/app",
+            "/remote/probe-owner/data",
+        )
+        with self.assertRaises(MODULE.ProbeError) as raised:
+            MODULE.revalidate_provision_resolution(
+                "/u/probe-owner/app",
+                "/u/probe-owner/data",
+                POSIX_INSTALL,
+                POSIX_DATA,
+            )
+        self.assertEqual(raised.exception.code, "TARGET_RESOLUTION_DRIFT")
+
+
+class RemoteProvisionStreamCompositionTest(unittest.TestCase):
+    """The streamed source must carry every module the collector imports."""
+
+    def streamed_text(self, path: Path) -> str:
+        return path.read_bytes().decode("utf-8")
+
+    def test_every_streamed_sibling_import_is_itself_streamed(self) -> None:
+        streamed = {path.stem for path in STREAMED_PATHS}
+        self.assertIn("remote_provision_collector", streamed)
+        for path in STREAMED_PATHS:
+            tree = ast.parse(self.streamed_text(path))
+            for node in ast.walk(tree):
+                names: list[str] = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    self.assertEqual(node.level, 0, path.name)
+                    names = [node.module]
+                for name in names:
+                    if name.startswith("remote_"):
+                        with self.subTest(source=path.name, imported=name):
+                            self.assertIn(name, streamed)
+
+    def test_composed_stream_installs_each_sibling_before_the_collector(self) -> None:
+        source = MODULE._module_source()
+        text = source.decode("ascii")
+        positions = []
+        for path in HELPER_PATHS:
+            marker = "_ws_install({},".format(ascii(path.stem))
+            self.assertIn(marker, text)
+            positions.append(text.index(marker))
+        self.assertEqual(positions, sorted(positions))
+        self.assertGreater(text.rindex("_ws_code = compile("), max(positions))
+        self.assertGreater(text.rindex("exec(_ws_code, globals())"), text.rindex("_ws_code = compile("))
+
+    def test_composed_stream_carries_each_module_verbatim_after_decoding(self) -> None:
+        text = MODULE._module_source().decode("ascii")
+        for path in STREAMED_PATHS:
+            with self.subTest(module=path.name):
+                blob = MODULE._module_blob(path.name)
+                self.assertIn(ascii(blob), text)
+                decoded = zlib.decompress(base64.b64decode(blob))
+                self.assertEqual(decoded, path.read_bytes())
+                self.assertNotIn(
+                    self.streamed_text(path)[:200],
+                    text,
+                    "module source must travel compressed, not verbatim",
+                )
+
+    def test_composed_stream_and_every_decoded_module_stay_within_the_frozen_bound(self) -> None:
+        source = MODULE._module_source()
+        self.assertEqual(MODULE.MAX_SOURCE_BYTES, 32768)
+        self.assertEqual(COLLECTOR.MAX_SOURCE_BYTES, 32768)
+        self.assertLessEqual(len(source), MODULE.MAX_SOURCE_BYTES)
+        text = source.decode("ascii")
+        self.assertEqual(text.count("_ws_code = compile("), 1)
+        decoded_total = 0
+        for path in STREAMED_PATHS:
+            decoded = len(path.read_bytes())
+            decoded_total += decoded
+            with self.subTest(module=path.name):
+                self.assertLessEqual(decoded, MODULE.MAX_SOURCE_BYTES)
+                self.assertIn(str(MODULE.MAX_SOURCE_BYTES), text)
+        self.assertGreater(decoded_total, len(source))
+
+    def test_a_corrupted_blob_is_a_bounded_probe_code_not_a_traceback(self) -> None:
+        source = bytearray(MODULE._module_source())
+        marker = "    _ws_install({}, '".format(ascii(HELPER_PATHS[0].stem)).encode("ascii")
+        start = source.index(marker) + len(marker)
+        source[start + 40 : start + 50] = b"A" * 10
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-"],
+                cwd=directory,
+                input=bytes(source),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+        self.assertLessEqual(len(result.stderr), COLLECTOR.MAX_STDERR_BYTES)
+        error = MODULE._sanitize_failure(result.stderr)
+        self.assertEqual(error.code, "INVALID_PROBE")
+
+    def test_composed_stream_resolves_every_sibling_in_one_interpreter(self) -> None:
+        driver = (
+            "import json, sys\n"
+            "source = sys.stdin.read()\n"
+            "sys.argv = ['-', 'provision-facts']\n"
+            "try:\n"
+            "    exec(compile(source, 'stream', 'exec'), {'__name__': '__main__'})\n"
+            "except SystemExit:\n"
+            "    pass\n"
+            "names = sorted(n for n in sys.modules if n.startswith('remote_'))\n"
+            "print(json.dumps(names))\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", driver],
+                cwd=directory,
+                input=MODULE._module_source(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=False,
+            )
+        stderr = result.stderr.decode("utf-8", "replace")
+        self.assertNotIn("ModuleNotFoundError", stderr)
+        self.assertNotIn("Traceback", stderr)
+        self.assertEqual(
+            json.loads(result.stdout.decode("ascii").splitlines()[-1]),
+            sorted(path.stem for path in HELPER_PATHS),
+        )
+
+    def test_an_unreadable_sibling_is_a_bounded_probe_refusal(self) -> None:
+        original = MODULE.COLLECTOR_HELPER_FILENAMES
+        MODULE.COLLECTOR_HELPER_FILENAMES = original + ("remote_provision_absent.py",)
+        self.addCleanup(setattr, MODULE, "COLLECTOR_HELPER_FILENAMES", original)
+        with self.assertRaises(MODULE.ProbeError) as raised:
+            MODULE._module_source()
+        self.assertEqual(raised.exception.code, "INVALID_PROBE")
 
 
 if __name__ == "__main__":

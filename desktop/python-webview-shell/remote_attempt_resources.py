@@ -1,10 +1,22 @@
-"""Immutable per-attempt remote resources and generation-gated host commits.
+"""Generation-gated host commits over one captured per-attempt bundle.
 
 Each start captures generation, profile, token, process and log once. Stale
 cleanup uses only that bundle. The connection monitor is published the same
 way: one revocable lease per captured generation. The gate lock is for
 ownership decisions and host-field commits; callers must not hold it during
 blocking SSH, a process wait or a monitor start/join.
+
+Two siblings underneath carry the halves that need no host field. The frozen
+bundle and its one-shot cleanup tickets are ``remote_attempt_bundle``; the
+release of a captured bundle, the stop request and the independent
+observations that judge it are ``remote_attempt_shutdown``. This module is
+what publishes the lifecycle lock, commits and detaches host fields, drives
+the startup wait, and orders those pieces; the names both siblings define stay
+importable from here so existing callers and tests keep one entry point. The
+accessor for that lock lives in ``remote_attempt_shutdown`` and is re-exported
+here: the stop-outcome publication is a host commit too, so both modules must
+reach the one lock, and the lower module is the only place both can read it
+without a cycle.
 """
 
 from __future__ import annotations
@@ -13,13 +25,32 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
+from remote_attempt_bundle import (
+    AttemptCleanupClaim,
+    AttemptStart,
+    RemoteAttemptResources,
+    close_resource_sets,
+    host_fields_after_detach,
+    same_installed_bundle,
+)
+from remote_attempt_shutdown import (  # noqa: F401  partly re-exported
+    aggregate_stop_outcomes,
+    close_captured_log,
+    observe_forward_listener_release,
+    publish_stop_outcome,
+    record_stop_outcome,
+    release_captured,
+    resource_lock_for,
+    stop_result_from_request,
+    uninitialized_protocol,
+    unresolved_rank,
+)
 from remote_command_contract import generate_session_token, token_hash
+from remote_stop_result import StopResult
 from ssot_connection import build_ssh_tunnel_command, find_ssh_executable
-
 
 WAIT_STALE = "stale"
 WAIT_EXITED = "exited"
@@ -31,53 +62,6 @@ WAIT_VERIFY_FAILED = "verify-failed"
 CLEANUP_STALE = "stale"
 CLEANUP_FAILED = "failed"
 CLEANUP_STOPPED = "stopped"
-
-CLAIM_STOP_OWNED = "stop-owned"
-CLAIM_PROCESS = "process"
-CLAIM_LOG = "log"
-
-
-class AttemptCleanupClaim:
-    """One-shot tickets for the externally visible cleanups of one attempt.
-
-    Close, the stale waiter, failure cleanup and pre-publication cancellation
-    all race for the same claim, so each remote stop, each captured process
-    reap and each captured log close happens exactly once. The ticket set is
-    bounded by the three effects above and dies with its attempt; no history
-    is retained anywhere.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._taken: set[str] = set()
-
-    def take(self, effect: str) -> bool:
-        with self._lock:
-            if effect in self._taken:
-                return False
-            self._taken.add(effect)
-            return True
-
-
-@dataclass(frozen=True)
-class RemoteAttemptResources:
-    generation: int
-    profile: object
-    token: str
-    process: object | None
-    log: object | None
-    claim: AttemptCleanupClaim = field(
-        default_factory=AttemptCleanupClaim, compare=False, repr=False
-    )
-
-
-@dataclass(frozen=True)
-class AttemptStart:
-    """What one `begin` published: the generation, its token and its claim."""
-
-    generation: int
-    token: str
-    claim: AttemptCleanupClaim
 
 
 class RemoteAttemptResourceGate:
@@ -107,78 +91,6 @@ class RemoteAttemptResourceGate:
         resources = self._current
         self._current = None
         return resources
-
-
-def same_installed_bundle(
-    current: RemoteAttemptResources, resources: RemoteAttemptResources
-) -> bool:
-    return (
-        current.generation == resources.generation
-        and current.token == resources.token
-        and current.process is resources.process
-        and current.log is resources.log
-    )
-
-
-def host_fields_after_detach(
-    resources: RemoteAttemptResources,
-    *,
-    token: object,
-    process: object,
-    log: object,
-) -> tuple[object, object, object]:
-    """Keep newer host fields; clear only the captured bundle's identities."""
-
-    next_token = None if token == resources.token else token
-    next_process = None if process is resources.process else process
-    next_log = None if log is resources.log else log
-    return next_token, next_process, next_log
-
-
-def close_resource_sets(
-    installed: RemoteAttemptResources | None,
-    *,
-    profile: object,
-    token: object,
-    process: object,
-    log: object,
-    claim: AttemptCleanupClaim | None = None,
-) -> tuple[RemoteAttemptResources, ...]:
-    """Intentional close: installed bundle plus any in-flight host fields.
-
-    The in-flight bundle reuses the running attempt's claim, so a close that
-    lands before publication and the startup owner that later cancels cannot
-    both stop the same owned token.
-    """
-
-    bundles: list[RemoteAttemptResources] = []
-    if installed is not None:
-        bundles.append(installed)
-    extra_token = _extra_token(installed, token)
-    extra_process = process if process is not None and (
-        installed is None or process is not installed.process
-    ) else None
-    extra_log = log if log is not None and (installed is None or log is not installed.log) else None
-    if extra_token or extra_process is not None or extra_log is not None:
-        bundles.append(
-            RemoteAttemptResources(
-                generation=0,
-                profile=profile,
-                token=extra_token or "",
-                process=extra_process,
-                log=extra_log,
-                claim=claim if claim is not None else AttemptCleanupClaim(),
-            )
-        )
-    return tuple(bundles)
-
-
-def _extra_token(installed: RemoteAttemptResources | None, token: object) -> str | None:
-    if not isinstance(token, str) or not token:
-        return None
-    if installed is not None and token == installed.token:
-        return None
-    return token
 
 
 def observe_wait_tick(*, current: bool, process_exited: bool, ready: bool) -> str:
@@ -397,28 +309,16 @@ def initialize_remote_attempt_state(host: object, startup: object) -> None:
     host.remote_rebind_deadline = 0.0
     host.remote_product_version = ""
     host.remote_protocol_version = None
+    host.remote_stop_outcome = None
+    host.remote_stop_outcome_generation = None
     host._stop_owned_runner = None
-
-
-def _uninitialized(name: str) -> RuntimeError:
-    return RuntimeError(
-        f"remote attempt protocol used before {name} was published; "
-        "call initialize_attempt_resources(host) in the constructor"
-    )
 
 
 def gate_for(host: object) -> RemoteAttemptResourceGate:
     gate = getattr(host, "remote_attempt_gate", None)
     if not isinstance(gate, RemoteAttemptResourceGate):
-        raise _uninitialized("remote_attempt_gate")
+        raise uninitialized_protocol("remote_attempt_gate")
     return gate
-
-
-def resource_lock_for(host: object):
-    lock = getattr(host, "remote_resource_lock", None)
-    if lock is None:
-        raise _uninitialized("remote_resource_lock")
-    return lock
 
 
 def attempt_is_current(host: object, generation: int) -> bool:
@@ -554,7 +454,15 @@ def start_remote_attempt(host: object) -> AttemptStart:
         host.remote_session_token_hash = token_hash(token)
         claim = AttemptCleanupClaim()
         host.remote_attempt_claim = claim
-        return AttemptStart(int(host.remote_attempt_id), token, claim)
+        generation = int(host.remote_attempt_id)
+        # A new attempt owns the stop-outcome field from here on. Without this
+        # reset a reopened connection keeps projecting the previous owner as
+        # dead with a verified exit while the new owner is starting or already
+        # live, and the stamp is what makes the older attempt's late cleanup
+        # unable to write over the new attempt's result.
+        host.remote_stop_outcome = None
+        host.remote_stop_outcome_generation = generation
+        return AttemptStart(generation, token, claim)
 
 
 def begin_remote_attempt(host: object) -> int:
@@ -611,51 +519,6 @@ def clear_matching_token(host: object, attempt_id: int, token: object) -> None:
             host.remote_session_token = None
             host.remote_session_token_hash = None
 
-
-def close_captured_log(log: object) -> None:
-    closer = getattr(log, "close", None) if log is not None else None
-    if callable(closer):
-        closer()
-
-
-def _release_stop_owned(host: object, resources: RemoteAttemptResources, trace: object) -> None:
-    if not resources.token or resources.profile is None:
-        return
-    if not resources.claim.take(CLAIM_STOP_OWNED):
-        return
-    try:
-        host._request_remote_stop_owned(resources.profile, resources.token)
-    except (OSError, subprocess.SubprocessError, RuntimeError):
-        if callable(trace):
-            trace("stop-owned request failed")
-
-
-def _release_captured_process(host: object, process: object, trace: object) -> None:
-    poll = getattr(process, "poll", None)
-    if callable(poll) and poll() is None and callable(trace):
-        trace(f"stopping SSH connection owned by desktop host (PID {process.pid})")
-    try:
-        host._terminate_owned_process(process)
-    except subprocess.TimeoutExpired:
-        # Bounded terminate and kill both timed out. Report the unconfirmed
-        # reap instead of widening the kill or claiming a clean stop.
-        if callable(trace):
-            pid = getattr(process, "pid", "?")
-            trace(f"SSH process reap unconfirmed after terminate and kill (PID {pid})")
-
-
-def release_captured(host: object, resources: RemoteAttemptResources) -> None:
-    """Release exactly the captured snapshot, each effect at most once."""
-
-    trace = getattr(host, "_trace", None)
-    _release_stop_owned(host, resources, trace)
-    process = resources.process
-    try:
-        if process is not None and resources.claim.take(CLAIM_PROCESS):
-            _release_captured_process(host, process, trace)
-    finally:
-        if resources.log is not None and resources.claim.take(CLAIM_LOG):
-            close_captured_log(resources.log)
 
 
 def cleanup_captured(host: object, resources: RemoteAttemptResources, terminal: str) -> None:
@@ -747,10 +610,41 @@ def ensure_remote_server(host: object) -> None:
     wait_until_ready(host, resources, log_path)
 
 
-def stop_owned_connection(host: object) -> None:
+def stop_owned_connection(host: object) -> StopResult | None:
+    """Close this host's remote connection and report what every bundle proved.
+
+    A close may release more than one captured bundle -- the installed one and
+    an in-flight one caught before publication -- and each is a real owner with
+    its own token, SSH process and port.  The close has therefore stopped the
+    connection only when all of them proved an exit; one bundle that confirms
+    never speaks for one that did not, which is the aggregation the 1.0.8
+    incident turned on.
+
+    The aggregate is published under the newest generation released here, so it
+    replaces the per-bundle publications this close just made and still cannot
+    be overwritten by an older attempt's cleanup landing afterwards.
+    """
+
     with resource_lock_for(host):
+        # The attempt this close belongs to, read before the machine is
+        # stopped and the fields are detached. An in-flight bundle caught
+        # before publication carries no generation of its own, so without
+        # this the terminal close could look older than the attempt whose
+        # fields it just took away.
+        closing = int(getattr(host, "remote_attempt_id", 0) or 0)
         stop_remote_machine(host)
         bundles = snapshot_for_intentional_close(host)
     host._stop_remote_monitor()
-    for resources in bundles:
-        release_captured(host, resources)
+    trace = getattr(host, "_trace", None)
+    results = [release_captured(host, resources) for resources in bundles]
+    outcome = aggregate_stop_outcomes(results)
+    if outcome is None:
+        return None
+    if callable(trace) and len(results) > 1:
+        proven = sum(1 for result in results if result.confirmed)
+        trace(
+            f"remote close released {len(results)} captured bundles, "
+            f"{proven} with a proven exit"
+        )
+    generation = max([closing] + [int(resources.generation) for resources in bundles])
+    return publish_stop_outcome(host, generation, outcome, trace)

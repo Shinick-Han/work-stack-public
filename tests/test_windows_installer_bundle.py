@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -511,6 +513,91 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn("[string]$ConfigPath = ''", start)
         self.assertIn("[IO.Path]::GetFullPath($ConfigPath)", start)
 
+    def test_builder_takes_the_linux_remote_artifact_as_one_optional_pair(self) -> None:
+        script = self.read("Build-WindowsInstaller.ps1")
+
+        self.assertIn("[string]$LinuxArtifactArchivePath = ''", script)
+        self.assertIn("[string]$LinuxArtifactSidecarPath = ''", script)
+        self.assertIn(
+            "$includesRemotePayload = [bool]$LinuxArtifactArchivePath -and [bool]$LinuxArtifactSidecarPath",
+            script,
+        )
+        self.assertIn("are one selection and must be ", script)
+        # Decided before the temporary tree exists, so a half-supplied pair
+        # cannot leave a partial build behind.
+        self.assertLess(
+            script.index("$includesRemotePayload = "),
+            script.index("$temporary = Join-Path"),
+        )
+
+    def test_builder_stages_the_remote_pair_through_the_products_own_admission(self) -> None:
+        script = self.read("Build-WindowsInstaller.ps1")
+
+        self.assertIn("Stage-WorkStackRemoteBundle.py", script)
+        self.assertIn("--expect-version $version", script)
+        self.assertIn("--payload $payload", script)
+        self.assertIn("--archive $LinuxArtifactArchivePath", script)
+        self.assertIn("--sidecar $LinuxArtifactSidecarPath", script)
+        self.assertIn("was not admitted", script)
+        self.assertIn("$admittedRemote.product_version -ne $version", script)
+        stager = (WINDOWS / "Stage-WorkStackRemoteBundle.py").read_text(encoding="utf-8")
+        self.assertIn("import remote_provision_artifact as artifact", stager)
+        self.assertIn("artifact.admit_artifact(", stager)
+        # No second digest or archive validator, and no download.
+        for forbidden in ("hashlib", "zipfile", "urllib", "requests", "subprocess", "socket"):
+            self.assertNotIn(forbidden, stager)
+
+    def test_builder_stages_the_remote_payload_before_it_packages_the_payload(self) -> None:
+        """The wiring, not just the module: staging happens inside the build."""
+
+        script = self.read("Build-WindowsInstaller.ps1")
+
+        stage = script.index("Stage-WorkStackRemoteBundle.py")
+        self.assertLess(script.index("$payload = Join-Path $temporary 'payload'"), stage)
+        self.assertLess(stage, script.rindex("Remove-PythonBytecode -Root $payload"))
+        self.assertLess(stage, script.index("Compress-Archive"))
+        self.assertEqual(1, script.count("Stage-WorkStackRemoteBundle.py"))
+
+    def test_build_summary_distinguishes_a_local_only_build_from_a_connected_one(self) -> None:
+        script = self.read("Build-WindowsInstaller.ps1")
+
+        self.assertIn("$remotePayloadSummary = 'local-only, no Linux remote payload'", script)
+        self.assertIn("includes Linux remote payload ", script)
+        self.assertIn('Write-Host "Payload $remotePayloadSummary"', script)
+        self.assertLess(script.index("Compress-Archive"), script.index('Write-Host "Payload'))
+
+    def test_installer_carries_the_optional_remote_payload_without_requiring_it(self) -> None:
+        installer = self.read("Install-WorkStack.ps1")
+
+        self.assertIn("$hasRemotePayload = Test-Path -LiteralPath $sourceRemote -PathType Container", installer)
+        self.assertIn("Installer source remote is not a directory.", installer)
+        self.assertIn("Copy-Item -LiteralPath $sourceRemote -Destination (Join-Path $staging 'remote') -Recurse", installer)
+        self.assertIn("The packaged Linux remote payload was not staged.", installer)
+        # Optional: it is deliberately absent from the required-source list, so
+        # a local-only installer still installs.
+        required = installer[installer.index("foreach ($required in @("):]
+        self.assertNotIn("'remote'", required[:required.index("\n")])
+        # Staged and guarded before any destructive effect.
+        self.assertLess(
+            installer.index("Copy-Item -LiteralPath $sourceRemote"),
+            installer.index("The packaged Linux remote payload was not staged."),
+        )
+        self.assertLess(
+            installer.index("The packaged Linux remote payload was not staged."),
+            installer.index("Move-Item -LiteralPath $installPath -Destination $rollback"),
+        )
+
+    def test_installer_records_what_the_installed_remote_directory_holds(self) -> None:
+        installer = self.read("Install-WorkStack.ps1")
+
+        self.assertIn("$installedRemote = Join-Path $installPath 'remote'", installer)
+        self.assertIn("Remote payload installed at", installer)
+        self.assertIn("none was packaged", installer)
+        self.assertLess(
+            installer.index("Move-Item -LiteralPath $staging -Destination $installPath"),
+            installer.index("$installedRemote = Join-Path $installPath 'remote'"),
+        )
+
     def test_remote_configurator_is_non_secret_strict_and_uses_a_distinct_forward(self) -> None:
         script = self.read("Configure-WorkStackRemote.ps1")
 
@@ -648,6 +735,324 @@ class WindowsDistStageConsumptionTest(unittest.TestCase):
 
         self.assertNotIn("assets/app.js", self.staged())
         self.assertEqual(admitted, self.live())
+
+
+class WindowsRemotePayloadStageConsumptionTest(unittest.TestCase):
+    """The builder's own remote stage, executed, with real files on disk.
+
+    Both marked stages of the real builder script run verbatim against a
+    temporary payload and a real archive/sidecar pair. Nothing is downloaded,
+    no wheel or dependency is installed, no compiler runs, no installer is
+    produced and no SSH or host is contacted: only the paired selection, the
+    product's own artifact admission, and the payload copy it authorises.
+    """
+
+    def setUp(self) -> None:
+        self.shell = powershell()
+        if self.shell is None:
+            self.skipTest("no PowerShell host is available")
+        self.temporary = tempfile.mkdtemp(prefix="workstack-remote-payload-")
+        self.addCleanup(shutil.rmtree, self.temporary, True)
+        self.base = Path(self.temporary)
+        self.payload = self.base / "payload"
+        self.payload.mkdir()
+        self.release = self.base / "release"
+        self.release.mkdir()
+        self.version = self.literal(ROOT / "workstack" / "__init__.py", "__version__")
+        self.protocol = int(
+            self.literal(ROOT / "workstack" / "__init__.py", "REMOTE_PROTOCOL_VERSION", quoted=False)
+        )
+        self.target = self.literal(
+            ROOT / "desktop" / "python-webview-shell" / "remote_provision_installer.py", "TARGET_ID"
+        )
+        self.stem = "WorkStack-Linux-%s-%s" % (self.version, self.target)
+        self.archive_bytes = b"PK\x03\x04" + b"staged-linux-remote-artifact" * 6
+        self.archive = self.release / (self.stem + ".zip")
+        self.sidecar = self.release / (self.stem + ".json")
+        self.archive.write_bytes(self.archive_bytes)
+        self.write_sidecar()
+
+    def literal(self, path: Path, name: str, quoted: bool = True) -> str:
+        """Read one module-level literal without importing the module."""
+
+        pattern = name + r'\s*=\s*"([^"]+)"' if quoted else name + r"\s*=\s*(\d+)"
+        found = re.search(pattern, path.read_text(encoding="utf-8"))
+        assert found is not None, "%s is missing from %s" % (name, path)
+        return found.group(1)
+
+    def write_sidecar(self, **overrides: object) -> None:
+        version = str(overrides.get("product_version", self.version))
+        digest = str(
+            overrides.get(
+                "sha256", "sha256:" + hashlib.sha256(self.archive_bytes).hexdigest()
+            )
+        )
+        document = {
+            "schema_version": 1,
+            "product_version": version,
+            "remote_protocol_version": self.protocol,
+            "source_commit": "0" * 40,
+            "target_id": self.target,
+            "artifact_manifest_sha256": "sha256:" + "ef" * 32,
+            "archive": {
+                "name": "WorkStack-Linux-%s-%s.zip" % (version, self.target),
+                "size": len(self.archive_bytes),
+                "sha256": digest,
+            },
+        }
+        self.sidecar.write_bytes(json.dumps(document).encode("utf-8"))
+
+    def marked(self, opening: str, closing: str) -> str:
+        """One of the builder's own marked stages, verbatim."""
+
+        script = (WINDOWS / "Build-WindowsInstaller.ps1").read_text(encoding="utf-8-sig")
+        start = script.index(opening)
+        end = script.index(closing)
+        return script[start:script.index("\n", end) + 1]
+
+    def run_stage(self, *, archive: str | None = None, sidecar: str | None = None) -> subprocess.CompletedProcess:
+        quoted = lambda value: str(value).replace("'", "''")
+        selected_archive = self.archive if archive is None else archive
+        selected_sidecar = self.sidecar if sidecar is None else sidecar
+        body = [
+            "$ErrorActionPreference = 'Stop'",
+            "$WorkStackTestPython = '" + quoted(sys.executable) + "'",
+            "function python { & $WorkStackTestPython @args }",
+            "$sourcePath = '" + quoted(ROOT) + "'",
+            "$payload = '" + quoted(self.payload) + "'",
+            "$version = '" + quoted(self.version) + "'",
+            "$LinuxArtifactArchivePath = '" + quoted(selected_archive) + "'",
+            "$LinuxArtifactSidecarPath = '" + quoted(selected_sidecar) + "'",
+            self.marked(
+                "# ---- paired Linux remote artifact selection",
+                "# ---- end paired Linux remote artifact selection",
+            ),
+            self.marked(
+                "# ---- admitted Linux remote payload",
+                "# ---- end admitted Linux remote payload",
+            ),
+            'Write-Host "Payload $remotePayloadSummary"',
+        ]
+        script = self.base / "stage.ps1"
+        script.write_text("\n".join(body) + "\n", encoding="utf-8-sig")
+        return subprocess.run(
+            [self.shell, "-NoProfile", "-NonInteractive", "-File", str(script)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+        )
+
+    def remote(self) -> Path:
+        return self.payload / "remote"
+
+    def staged_names(self) -> list[str]:
+        if not self.remote().is_dir():
+            return []
+        return sorted(path.name for path in self.remote().iterdir())
+
+    def refuse_stage(self, **selection: object) -> str:
+        completed = self.run_stage(**selection)  # type: ignore[arg-type]
+        output = completed.stdout + completed.stderr
+        self.assertNotEqual(0, completed.returncode, output)
+        return output
+
+    def test_a_local_only_build_stages_no_remote_payload_and_says_so(self) -> None:
+        completed = self.run_stage(archive="", sidecar="")
+
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        self.assertEqual([], self.staged_names())
+        self.assertFalse(self.remote().exists())
+        self.assertIn("local-only, no Linux remote payload", completed.stdout)
+
+    def test_the_selected_pair_is_admitted_and_staged_by_the_build_itself(self) -> None:
+        completed = self.run_stage()
+
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        self.assertEqual([self.stem + ".json", self.stem + ".zip"], self.staged_names())
+        self.assertEqual(self.archive_bytes, (self.remote() / (self.stem + ".zip")).read_bytes())
+        self.assertEqual(
+            self.sidecar.read_bytes(), (self.remote() / (self.stem + ".json")).read_bytes()
+        )
+        self.assertIn("includes Linux remote payload", completed.stdout)
+        self.assertIn(
+            "sha256:" + hashlib.sha256(self.archive_bytes).hexdigest(), completed.stdout
+        )
+
+    def test_a_half_supplied_selection_fails_before_anything_is_staged(self) -> None:
+        output = self.refuse_stage(sidecar="")
+
+        self.assertIn("one selection", output)
+        self.assertFalse(self.remote().exists())
+
+    def test_an_artifact_built_for_another_version_fails_the_build(self) -> None:
+        self.write_sidecar(product_version="1.0.12")
+
+        output = self.refuse_stage()
+
+        self.assertIn("was not admitted", output)
+        self.assertIn("VERSION", output)
+        self.assertFalse(self.remote().exists())
+
+    def test_an_archive_that_its_sidecar_does_not_describe_fails_the_build(self) -> None:
+        self.write_sidecar(sha256="sha256:" + "00" * 32)
+
+        output = self.refuse_stage()
+
+        self.assertIn("was not admitted", output)
+        self.assertIn("ADMISSION", output)
+        self.assertFalse(self.remote().exists())
+
+    def test_a_selected_artifact_that_does_not_exist_fails_the_build(self) -> None:
+        output = self.refuse_stage(archive=str(self.release / "absent.zip"))
+
+        self.assertIn("was not admitted", output)
+        self.assertIn("INPUT", output)
+        self.assertFalse(self.remote().exists())
+
+
+class WindowsInstalledRemotePayloadTest(unittest.TestCase):
+    """The packaged pair must survive installation, unchanged, to <root>\\remote.
+
+    The installer's own marked remote stages and its two real payload moves run
+    verbatim over synthetic directories. No installation happens: no runtime,
+    smoke test, authority read, backup, shortcut, service or SSH is involved,
+    and nothing outside the temporary tree is touched.
+    """
+
+    INSTALLER = "Install-WorkStack.ps1"
+
+    def setUp(self) -> None:
+        self.shell = powershell()
+        if self.shell is None:
+            self.skipTest("no PowerShell host is available")
+        self.temporary = tempfile.mkdtemp(prefix="workstack-installed-remote-")
+        self.addCleanup(shutil.rmtree, self.temporary, True)
+        self.base = Path(self.temporary)
+        self.source = self.base / "source"
+        self.source.mkdir()
+        self.install = self.base / "WorkStack"
+        self.staging = self.base / "WorkStack.staging"
+        self.rollback = self.base / "WorkStack.rollback"
+        self.stem = "WorkStack-Linux-1.0.13-cp312-manylinux_2_17_x86_64"
+        self.pair = {
+            self.stem + ".zip": b"PK\x03\x04" + b"installed-remote-artifact" * 5,
+            self.stem + ".json": b'{"product_version": "1.0.13"}\n',
+        }
+
+    def pack_remote(self, files: dict) -> None:
+        remote = self.source / "remote"
+        remote.mkdir()
+        for name, content in files.items():
+            (remote / name).write_bytes(content)
+
+    def marked(self, opening: str, closing: str) -> str:
+        script = (WINDOWS / self.INSTALLER).read_text(encoding="utf-8-sig")
+        start = script.index(opening)
+        end = script.index(closing)
+        return script[start:script.index("\n", end) + 1]
+
+    def statement(self, text: str) -> str:
+        """One of the installer's own payload moves, verbatim."""
+
+        script = (WINDOWS / self.INSTALLER).read_text(encoding="utf-8-sig")
+        self.assertIn(text, script)
+        return text
+
+    def run_install(self) -> subprocess.CompletedProcess:
+        quoted = lambda value: str(value).replace("'", "''")
+        body = [
+            "$ErrorActionPreference = 'Stop'",
+            "$sourcePath = '" + quoted(self.source) + "'",
+            "$staging = '" + quoted(self.staging) + "'",
+            "$installPath = '" + quoted(self.install) + "'",
+            "$rollback = '" + quoted(self.rollback) + "'",
+            self.marked(
+                "# ---- packaged remote payload presence",
+                "# ---- end packaged remote payload presence",
+            ),
+            "New-Item -ItemType Directory -Path $staging | Out-Null",
+            self.marked(
+                "# ---- packaged remote payload copy",
+                "# ---- end packaged remote payload copy",
+            ),
+            self.marked(
+                "# ---- staged remote payload guard",
+                "# ---- end staged remote payload guard",
+            ),
+            "if (Test-Path -LiteralPath $installPath) {",
+            self.statement("Move-Item -LiteralPath $installPath -Destination $rollback"),
+            "}",
+            self.statement("Move-Item -LiteralPath $staging -Destination $installPath"),
+            self.marked(
+                "# ---- installed remote payload record",
+                "# ---- end installed remote payload record",
+            ),
+        ]
+        script = self.base / "install-stage.ps1"
+        script.write_text("\n".join(body) + "\n", encoding="utf-8-sig")
+        return subprocess.run(
+            [self.shell, "-NoProfile", "-NonInteractive", "-File", str(script)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+        )
+
+    def installed(self) -> dict:
+        remote = self.install / "remote"
+        if not remote.is_dir():
+            return {}
+        return {path.name: path.read_bytes() for path in sorted(remote.iterdir()) if path.is_file()}
+
+    def test_the_packaged_pair_reaches_the_install_root_with_byte_identity(self) -> None:
+        self.pack_remote(self.pair)
+
+        completed = self.run_install()
+
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        self.assertEqual(self.pair, self.installed())
+        self.assertIn("Remote payload installed at", completed.stdout)
+        for name in self.pair:
+            self.assertIn(name, completed.stdout)
+
+    def test_a_local_only_installer_installs_with_no_remote_directory(self) -> None:
+        completed = self.run_install()
+
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        self.assertFalse((self.install / "remote").exists())
+        self.assertIn("none was packaged", completed.stdout)
+
+    def test_a_file_wearing_the_remote_name_refuses_before_staging(self) -> None:
+        (self.source / "remote").write_bytes(b"not a bundle")
+
+        completed = self.run_install()
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("not a directory", completed.stdout + completed.stderr)
+        self.assertFalse(self.install.exists())
+        self.assertFalse(self.staging.exists())
+
+    def test_the_installed_remote_directory_holds_only_this_installers_pair(self) -> None:
+        """The recorded claim, checked: no earlier bundle survives the move."""
+
+        superseded = self.install / "remote"
+        superseded.mkdir(parents=True)
+        stale = "WorkStack-Linux-1.0.12-cp312-manylinux_2_17_x86_64.zip"
+        (superseded / stale).write_bytes(b"an earlier remote artifact")
+        self.pack_remote(self.pair)
+
+        completed = self.run_install()
+
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        self.assertEqual(self.pair, self.installed())
+        self.assertNotIn(stale, self.installed())
+        # It was moved aside for rollback, not silently destroyed.
+        self.assertEqual(
+            b"an earlier remote artifact", (self.rollback / "remote" / stale).read_bytes()
+        )
 
 
 if __name__ == "__main__":

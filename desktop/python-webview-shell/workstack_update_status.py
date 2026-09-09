@@ -8,6 +8,11 @@ than was actually verified: they separate the desktop verdict from the remote
 one, keep an unverified remote unverified, and describe a satisfied protocol
 floor as compatibility rather than build equality.
 
+The same concern owns the shape of the status card itself: the bounded message
+document the host publishes to the page, and the preferences block inside it.
+Both were written out twice in the host, once at start and once on every state
+change, so they live here beside the wording they carry.
+
 Pure text composition. No network, no filesystem, no host state.
 """
 
@@ -17,6 +22,9 @@ import re
 
 
 MAX_VERSION_CHARACTERS = 32
+#: The one message type the update card admits, and the bound on its prose.
+UPDATE_STATUS_TYPE = "workstack-update-status"
+MAX_STATUS_MESSAGE_CHARACTERS = 500
 _CANONICAL_VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 
 DESKTOP_ONLY_SCOPE = (
@@ -92,6 +100,33 @@ def remote_clause(
     return " ".join(sentences)
 
 
+def served_ui_clause(
+    *,
+    served_ui_version: str | None,
+    remote_version: str | None = None,
+) -> str:
+    """State the served UI version as its own fact, never as the desktop."""
+
+    served = canonical_version(served_ui_version)
+    if not served:
+        return "The served UI version is unknown."
+    remote = canonical_version(remote_version)
+    if not remote:
+        return (
+            f"The served UI reports {served}. That is not a desktop verdict "
+            "and does not prove the remote product version."
+        )
+    if served == remote:
+        return (
+            f"The served UI reports {served}. Matching the remote product "
+            "version does not prove the interface files were rebuilt from "
+            "that release."
+        )
+    return (
+        f"The served UI reports {served}, which does not match remote {remote}."
+    )
+
+
 def current_version_message(
     *,
     desktop_version: str,
@@ -137,3 +172,39 @@ def newer_than_channel_message(
         minimum_protocol=minimum_protocol,
     )
     return f"{headline}. {clause}"
+
+
+def update_status_payload(
+    current_version: str,
+    *,
+    state: str = "idle",
+    latest_version: str = "",
+    release_url: str = "",
+    message: str = "",
+) -> dict[str, object]:
+    """The status document the host publishes, in exactly one shape.
+
+    ``latest_version`` falls back to the running desktop version, because a
+    card that has learned nothing about the channel yet must not read as if a
+    newer release were known. The message is bounded here rather than at each
+    call site, so no caller can publish an unbounded one.
+    """
+
+    return {
+        "type": UPDATE_STATUS_TYPE,
+        "state": state,
+        "current_version": current_version,
+        "latest_version": latest_version or current_version,
+        "release_url": release_url,
+        "message": message[:MAX_STATUS_MESSAGE_CHARACTERS],
+    }
+
+
+def update_preferences_payload(preferences: object) -> dict[str, object]:
+    """The three settled preference flags the card renders, and nothing else."""
+
+    return {
+        "auto_check": bool(getattr(preferences, "auto_check", False)),
+        "auto_download": bool(getattr(preferences, "auto_download", False)),
+        "install_on_exit": bool(getattr(preferences, "install_on_exit", False)),
+    }

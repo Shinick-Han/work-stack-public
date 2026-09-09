@@ -33,6 +33,12 @@ from remote_command_contract import (
     token_hash,
     validated_posix_path,
 )
+from remote_stop_result import (
+    STOP_CONFIRM_TIMEOUT_SECONDS,
+    STOP_REQUEST_TIMEOUT_SECONDS,
+    StopResult,
+    result_from_launch,
+)
 
 STABLE_PROBE_CODES = frozenset(
     {
@@ -356,6 +362,155 @@ def build_ssh_stop_owned_command(
         profile.ssh_host_alias,
         remote_stop,
     ]
+
+
+def _stop_text(value: object, session_token: object) -> str:
+    """Bounded text from a stop command, with the session token removed.
+
+    The raw token is an argv element of the command that produced this text,
+    so anything derived from that command is scrubbed before it can reach a
+    trace line.  Exception text is never used directly for the same reason:
+    ``subprocess`` puts the whole argv, token included, into its messages.
+    """
+
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    if not isinstance(value, str) or not value:
+        return ""
+    if isinstance(session_token, str) and session_token:
+        value = value.replace(session_token, "<redacted>")
+    return value
+
+
+def request_remote_stop_owned(
+    profile: RemoteConnectionProfile,
+    ssh_executable: str,
+    session_token: object,
+    *,
+    timeout: float = STOP_REQUEST_TIMEOUT_SECONDS,
+    runner: object = None,
+) -> object:
+    """Run one stop-owned command on the product's transport budget.
+
+    The one place the stop-owned argv is built and spent, so a caller names a
+    budget rather than repeating a number next to a ``subprocess.run`` of its
+    own.  The budget has to exceed the whole bounded remote decision -- SSH
+    start, remote interpreter start and the remote's own stop wait -- or the
+    caller gives up before the remote can hand back the verdict it already
+    has, which is how a clean close came to be published as owner=unknown.
+
+    What came back is handed on unread and unswallowed.  A timeout and a
+    launch failure leave this function as the exceptions they are, because the
+    caller distinguishes them and records different evidence for each; reading
+    the outcome is :func:`stop_result_from_completed`'s job.
+
+    ``runner`` is the existing injected-command seam and keeps its shape: it
+    takes the argv.
+    """
+
+    command = build_ssh_stop_owned_command(profile, ssh_executable, session_token)
+    if runner is not None:
+        return runner(command)
+    return subprocess.run(
+        command,
+        check=False,
+        timeout=timeout,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def confirm_remote_stop_owned(
+    profile: RemoteConnectionProfile,
+    ssh_executable: str,
+    session_token: object,
+    *,
+    runner: object = None,
+) -> object:
+    """Ask the same authenticated question again, after the channel closed.
+
+    Same argv, same token, same authority as the first request; what differs
+    is the budget and what the answer can now be.  The first request is made
+    while the desktop still holds the SSH channel that authenticates it, and
+    the owner it reaches cannot finish exiting until that channel is gone --
+    where there is no pidfd nothing was signalled at all, and where there is
+    one the signal was delivered but the shutdown it started still has to
+    close a listener whose request threads that same forward is holding open.
+    By the time this runs the channel has been closed, so the remote answers
+    from a classification instead of a wait, which is why this pass gets the
+    smaller budget of the two and still returns the proven exit.
+
+    It never widens: same single pid, bound through its own handle, under the
+    same token.  It is not guaranteed to be observation-only -- an owner the
+    remote still classifies as live is signalled again by the same authorized
+    stop, exactly as the first request signalled it, and by nothing else.
+    """
+
+    return request_remote_stop_owned(
+        profile,
+        ssh_executable,
+        session_token,
+        timeout=STOP_CONFIRM_TIMEOUT_SECONDS,
+        runner=runner,
+    )
+
+
+def run_remote_stop_owned(
+    profile: RemoteConnectionProfile,
+    ssh_executable: str,
+    session_token: object,
+    *,
+    timeout: float = STOP_REQUEST_TIMEOUT_SECONDS,
+    runner: object = None,
+) -> StopResult:
+    """Ask the remote to stop its owner and read back what it established.
+
+    The return value is the point of this function.  A stop command that was
+    spawned, or that exited zero, says something about the command; only the
+    outcome the remote emitted says anything about the owner, and a remote
+    that emits nothing leaves the exit evidence unknown rather than assumed.
+
+    This is the reading form of :func:`request_remote_stop_owned`, for a
+    caller that wants one outcome back instead of the two exceptions: a
+    request that never returned and one that never left are both recorded as
+    what they are and neither becomes a success.
+    """
+
+    try:
+        completed = request_remote_stop_owned(
+            profile, ssh_executable, session_token, timeout=timeout, runner=runner
+        )
+    except subprocess.TimeoutExpired:
+        return result_from_launch(returncode=None, timed_out=True)
+    except (OSError, subprocess.SubprocessError):
+        # Deliberately not the exception text: it carries the argv, and the
+        # argv carries the raw session token.
+        return result_from_launch(
+            returncode=None, launch_error="the stop command could not be run"
+        )
+    return stop_result_from_completed(completed, session_token)
+
+
+def stop_result_from_completed(completed: object, session_token: object) -> StopResult:
+    """Normalize one finished stop command into an outcome, or into unknown.
+
+    This is the shape the desktop host hands back: a ``CompletedProcess``, or
+    whatever a test runner returned instead.  A completion that carries no
+    integer status has reported nothing observable -- the command may well
+    have run, this desktop simply cannot say so -- and an exit status of zero
+    is a statement about the command, never about the owner's port or lease.
+    Only a payload the remote emitted upgrades that.
+    """
+
+    returncode = getattr(completed, "returncode", None)
+    if not isinstance(returncode, int):
+        return result_from_launch(returncode=None)
+    return result_from_launch(
+        returncode=returncode,
+        stdout=_stop_text(getattr(completed, "stdout", None), session_token),
+        stderr=_stop_text(getattr(completed, "stderr", None), session_token),
+    )
 
 
 def owned_execution_identity(profile: RemoteConnectionProfile) -> tuple[object, ...]:

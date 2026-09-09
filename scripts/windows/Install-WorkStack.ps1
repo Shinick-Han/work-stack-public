@@ -221,6 +221,18 @@ foreach ($required in @('workstack', 'frontend\dist', 'run_work_stack.py', 'requ
         throw "Installer source is not a file: $required"
     }
 }
+# ---- packaged remote payload presence ----------------------------
+# The packaged Linux remote payload is optional and is NOT added to the
+# required list above: an installer built without -LinuxArtifactArchivePath /
+# -LinuxArtifactSidecarPath carries no remote directory and installs exactly
+# as it always has. When one IS packaged it must be a real directory, so a
+# file wearing that name cannot pass as the bundle.
+$sourceRemote = Join-Path $sourcePath 'remote'
+$hasRemotePayload = Test-Path -LiteralPath $sourceRemote -PathType Container
+if ((Test-Path -LiteralPath $sourceRemote) -and -not $hasRemotePayload) {
+    throw 'Installer source remote is not a directory.'
+}
+# ---- end packaged remote payload presence ------------------------
 # The packaged icon must be a real leaf in the source before any destructive
 # effect, so a missing asset refuses here rather than after the payload moves.
 Assert-WorkStackShortcutIconAsset -IconPath (Get-WorkStackShortcutIconPath -InstallPath $sourcePath)
@@ -238,6 +250,13 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $staging 'frontend'), (Join-Path $staging 'scripts') | Out-Null
     Copy-Item -LiteralPath (Join-Path $sourcePath 'frontend\dist') -Destination (Join-Path $staging 'frontend\dist') -Recurse
     Copy-Item -LiteralPath (Join-Path $sourcePath 'scripts\windows') -Destination (Join-Path $staging 'scripts\windows') -Recurse
+    # ---- packaged remote payload copy ----------------------------
+    if ($hasRemotePayload) {
+        # Copied whole and unread: these are the exact bytes the builder
+        # admitted, and nothing here opens, renames or re-validates them.
+        Copy-Item -LiteralPath $sourceRemote -Destination (Join-Path $staging 'remote') -Recurse
+    }
+    # ---- end packaged remote payload copy ------------------------
     foreach ($file in @('run_work_stack.py', 'requirements.txt', 'requirements-windows-desktop.txt', 'README.md', 'LICENSE', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md', 'WorkStack.exe')) {
         # The installation-root host is staged by this loop; without it the staged
         # guard below can never be satisfied by a genuine payload.
@@ -270,6 +289,14 @@ try {
             throw "The staged Work Stack desktop host is incomplete: $stagedLeaf"
         }
     }
+    # ---- staged remote payload guard -----------------------------
+    if ($hasRemotePayload -and -not (Test-Path -LiteralPath (Join-Path $staging 'remote') -PathType Container)) {
+        # A packaged bundle that did not survive staging refuses before Stop,
+        # the pre-upgrade backup and the payload moves, rather than installing
+        # a runtime whose remote payload silently went missing.
+        throw 'The packaged Linux remote payload was not staged.'
+    }
+    # ---- end staged remote payload guard -------------------------
 
     if (Test-Path -LiteralPath $installPath) {
         $stopScript = Join-Path $staging 'scripts\windows\Stop-WorkStack.ps1'
@@ -350,6 +377,22 @@ try {
     Write-Host "Work Stack installed at $installPath"
     Write-Host "Planning data remains at $dataPath"
     Write-Host "Local endpoint: http://127.0.0.1:$resolvedPort/"
+    # ---- installed remote payload record -------------------------
+    # Record what the installed remote directory actually holds. The payload
+    # move replaces the whole install root, so this directory is exactly the
+    # bundle this installer packaged -- an earlier install's remote pair does
+    # not survive into it, and no pair is merged in from anywhere else. A
+    # consumer must therefore select the exact version it has admitted rather
+    # than trusting a count of one or the lexicographically latest name.
+    $installedRemote = Join-Path $installPath 'remote'
+    if ($hasRemotePayload) {
+        $installedRemoteNames = @(Get-ChildItem -LiteralPath $installedRemote -File -Force |
+            ForEach-Object { $_.Name } | Sort-Object)
+        Write-Host "Remote payload installed at ${installedRemote}: $($installedRemoteNames -join ', ')"
+    } else {
+        Write-Host "Remote payload: none was packaged, so $installedRemote is absent after this install."
+    }
+    # ---- end installed remote payload record ---------------------
 } catch {
     $installError = $_
     if (Test-Path -LiteralPath $rollback) {

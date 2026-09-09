@@ -155,6 +155,14 @@ def write_source(root: Path, *, lock: str | None = None, version: str = "1.0.7")
     (root / "desktop" / "python-webview-shell" / "remote_owner.py").write_text(
         "OWNER = 1\n", encoding="utf-8"
     )
+    for helper in (
+        "remote_owner_receipt.py", "remote_owner_stop.py", "remote_stop_result.py",
+        "remote_update_owner_observation.py", "remote_update_maintenance.py",
+        "remote_update_maintenance_receipts.py",
+    ):
+        (root / "desktop" / "python-webview-shell" / helper).write_text(
+            "OWNER_HELPER = 1\n", encoding="utf-8"
+        )
     (root / "desktop" / "python-webview-shell" / "remote_process_handle.py").write_text(
         "HANDLE = 1\n", encoding="utf-8"
     )
@@ -839,6 +847,12 @@ class LinuxRemoteArtifactTests(unittest.TestCase):
                 "desktop/python-webview-shell/remote_entry.py",
                 "desktop/python-webview-shell/remote_command_contract.py",
                 "desktop/python-webview-shell/remote_owner.py",
+                "desktop/python-webview-shell/remote_owner_receipt.py",
+                "desktop/python-webview-shell/remote_owner_stop.py",
+                "desktop/python-webview-shell/remote_stop_result.py",
+                "desktop/python-webview-shell/remote_update_owner_observation.py",
+                "desktop/python-webview-shell/remote_update_maintenance.py",
+                "desktop/python-webview-shell/remote_update_maintenance_receipts.py",
                 "desktop/python-webview-shell/remote_process_handle.py",
                 "desktop/python-webview-shell/remote_receipt_guard.py",
                 "desktop/python-webview-shell/remote_receipt_io.py",

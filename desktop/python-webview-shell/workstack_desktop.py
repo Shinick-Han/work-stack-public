@@ -29,6 +29,8 @@ for import_root in (SCRIPT_DIRECTORY, APPLICATION_ROOT):
 
 from workstack import __version__ as WORKSTACK_VERSION
 from desktop_update_process import launch_update_process
+from desktop_update_admission import (ADMITTED, admission_permits_install, held_install_message,
+                                      ready_install_message, settle_update_admission, settle_update_admission_for_exit)
 from brand_assets import BrandAssetMissing, has_mark_ico, inline_mark_markup, mark_ico_path
 from native_theme import (
     load_persisted_theme,
@@ -53,6 +55,8 @@ from workstack_update import (
 from workstack_update_status import (
     current_version_message,
     newer_than_channel_message,
+    update_preferences_payload,
+    update_status_payload,
 )
 from remote_attempt_resources import (
     CLEANUP_STALE,
@@ -121,13 +125,14 @@ from connection_registry_bridge import (
     is_connection_registry_host_message,
 )
 from knowledge_desktop import KnowledgeDesktopMixin, post_workstack_web_message
+from remote_update_host_surface import RemoteUpdateHostSurfaceMixin
 from ssot_connection import (
     REMOTE_CONNECTION_FILE,
     RemoteConnectionProfile,
     build_ssh_check_command,
-    build_ssh_stop_owned_command,
     build_ssh_tunnel_command,
     check_remote_connection,
+    confirm_remote_stop_owned,
     connection_profile_from_draft,
     find_ssh_executable,
     generate_session_token,
@@ -135,6 +140,7 @@ from ssot_connection import (
     load_remote_connection_profile,
     profile_with_runtime_forward_port,
     resolve_runtime_forward_port,
+    request_remote_stop_owned,
     run_remote_connection_check,
     session_token_for_self_probe,
     save_connection_draft,
@@ -701,7 +707,7 @@ def _ssh_startup_runtime_from_registry(
     return configured, draft
 
 
-class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin):
+class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin, RemoteUpdateHostSurfaceMixin):
     def __init__(self, options: argparse.Namespace) -> None:
         self.options = options
         self.install_root = options.install_root.resolve()
@@ -715,14 +721,7 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
         self.update_check_thread: threading.Thread | None = None
         self.downloaded_update: DownloadedUpdate | None = None
         self.install_update_on_exit = False
-        self.update_status: dict[str, object] = {
-            "type": "workstack-update-status",
-            "state": "idle",
-            "current_version": WORKSTACK_VERSION,
-            "latest_version": WORKSTACK_VERSION,
-            "release_url": "",
-            "message": "",
-        }
+        self.update_status: dict[str, object] = update_status_payload(WORKSTACK_VERSION)
         # The profile registry is the desktop authority for the selected SSOT.
         # Keep an explicit opt-out for recovery builds, but do not require users
         # to launch the installed application with a hidden environment flag.
@@ -804,6 +803,7 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
         self.probe_recorded = False
         self.runtime_version = "unknown"
         self.startup_splash = NativeStartupSplash(self.current_theme)
+        self._init_remote_update_surface()
 
     def run(self) -> int:
         self._apply_process_identity()
@@ -849,6 +849,7 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
                 self._stop_owned_server()
             self._release_single_instance()
             self._launch_pending_update()
+            self._launch_remote_update_restart()
 
     def _prepare_server(self) -> None:
         try:
@@ -857,6 +858,7 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
             self._ensure_server()
             if getattr(self, "connection_registry_startup_enabled", False):
                 self._confirm_pending_connection_registry_activation()
+            self._settle_remote_update_capability()
         except BaseException as error:
             self.startup_error = error
         finally:
@@ -1110,6 +1112,8 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
 
     def _on_form_closing(self, _sender, _event_args) -> None:
         self.startup_recovery.retire(closed=True)
+        self._close_remote_update_bridge()
+        settle_update_admission_for_exit(self, refusal=RemoteAuthorityMismatch)
         self.remote_shutdown_requested.set()
         self.connection_registry_worker.stop(timeout=0)
         self._stop_knowledge_desktop(timeout=0)
@@ -2170,11 +2174,8 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
     def _update_payload(self) -> dict[str, object]:
         return {
             **self.update_status,
-            "preferences": {
-                "auto_check": self.update_preferences.auto_check,
-                "auto_download": self.update_preferences.auto_download,
-                "install_on_exit": self.update_preferences.install_on_exit,
-            },
+            "preferences": update_preferences_payload(self.update_preferences),
+            "remote_update_available": bool(self.remote_update_available),
         }
 
     def _post_update_status(self) -> None:
@@ -2203,14 +2204,13 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
         release_url: str = "",
         message: str = "",
     ) -> None:
-        self.update_status = {
-            "type": "workstack-update-status",
-            "state": state,
-            "current_version": WORKSTACK_VERSION,
-            "latest_version": latest_version or str(self.update_status.get("latest_version", WORKSTACK_VERSION)),
-            "release_url": release_url or str(self.update_status.get("release_url", "")),
-            "message": message[:500],
-        }
+        self.update_status = update_status_payload(
+            WORKSTACK_VERSION,
+            state=state,
+            latest_version=latest_version or str(self.update_status.get("latest_version", "")),
+            release_url=release_url or str(self.update_status.get("release_url", "")),
+            message=message,
+        )
         self._dispatch_update_status()
 
     def _settled_remote_session(self) -> RemoteAttemptResources | None:
@@ -2376,23 +2376,6 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
                     ),
                 )
                 return
-            if self.remote_profile is not None:
-                try:
-                    metadata = self._read_remote_storage_metadata()
-                    self._require_supported_remote_protocol(
-                        metadata,
-                        minimum=manifest.minimum_remote_protocol,
-                        purpose=f"update to Work Stack {manifest.version}",
-                    )
-                    self._remember_remote_metadata(metadata)
-                except RuntimeError as error:
-                    self._set_update_status(
-                        "blocked",
-                        latest_version=manifest.version,
-                        release_url=manifest.release_url,
-                        message=str(error),
-                    )
-                    return
             if not (force_download or self.update_preferences.auto_download):
                 self._set_update_status(
                     "available",
@@ -2410,15 +2393,12 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
             downloaded = download_update(manifest, self.state_root / "updates")
             self.downloaded_update = downloaded
             self.install_update_on_exit = self.update_preferences.install_on_exit
+            admission = settle_update_admission(self, refusal=RemoteAuthorityMismatch)
             self._set_update_status(
-                "ready",
+                "ready" if admission.verdict == ADMITTED else "blocked",
                 latest_version=manifest.version,
                 release_url=manifest.release_url,
-                message=(
-                    "Verified update will install when Work Stack closes"
-                    if self.install_update_on_exit
-                    else "Verified update is ready to install"
-                ),
+                message=ready_install_message(admission, install_on_exit=self.install_update_on_exit),
             )
         except OlderUpdateManifest as error:
             self.downloaded_update = None
@@ -2461,16 +2441,30 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
         if len(parts) == 5 and parts[:2] == [UPDATE_HOST_PREFIX, "preferences"]:
             self._apply_update_preferences(parts[2:])
             return
+        if parts == [UPDATE_HOST_PREFIX, "remote-open"]:
+            self._handle_remote_update_open()
+            return
         if parts == [UPDATE_HOST_PREFIX, "open-release"]:
             release_url = str(self.update_status.get("release_url", ""))
             if release_url.startswith("https://github.com/Shinick-Han/work-stack-public/releases/"):
                 webbrowser.open(release_url)
 
     def _install_downloaded_update(self) -> None:
-        """Install the verified download, or force one check when none is held."""
+        """Install an admitted download, force one check, or explain the hold.
 
-        if self.downloaded_update is None:
+        Admission is settled here, while the window is open and the remote can
+        still be asked. Any other verdict keeps the verified artifact, says why
+        the install is pending, and leaves the window running.
+        """
+
+        downloaded = self.downloaded_update
+        if downloaded is None:
             self._start_update_check(force_download=True)
+            return
+        admission = settle_update_admission(self, refusal=RemoteAuthorityMismatch)
+        if admission.verdict != ADMITTED:
+            self._set_update_status("blocked", latest_version=downloaded.version,
+                                    release_url=downloaded.release_url, message=held_install_message(admission))
             return
         self.install_update_on_exit = True
         if not self._launch_pending_update():
@@ -2478,8 +2472,8 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
             return
         self._set_update_status(
             "installing",
-            latest_version=self.downloaded_update.version,
-            release_url=self.downloaded_update.release_url,
+            latest_version=downloaded.version,
+            release_url=downloaded.release_url,
             message="Closing Work Stack to apply the verified update",
         )
         if self.window is not None:
@@ -2506,6 +2500,12 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
             return False
         if getattr(self, "update_process", None) is not None:
             return self.update_process.poll() is None
+        admission = getattr(self, "update_admission", None)
+        if not admission_permits_install(admission, self):
+            self._trace("verified update held; no settled remote admission covers this download")
+            self._set_update_status("blocked", latest_version=downloaded.version,
+                                    release_url=downloaded.release_url, message=held_install_message(admission))
+            return False
         try:
             self.update_process = launch_update_process(self.install_root, self.state_root, downloaded)
             self._trace(f"verified Work Stack {downloaded.version} update applicator started")
@@ -3164,17 +3164,13 @@ class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin)
         except (OSError, subprocess.SubprocessError):
             self._trace("owned server stop command failed")
 
-    def _request_remote_stop_owned(self, profile: RemoteConnectionProfile, token: str) -> None:
+    def _request_remote_stop_owned(self, profile: RemoteConnectionProfile, token: str) -> object:
         runner = getattr(self, "_stop_owned_runner", None)
-        ssh_executable = find_ssh_executable()
-        command = build_ssh_stop_owned_command(profile, ssh_executable, token)
-        if runner is not None:
-            runner(command)
-            return
-        subprocess.run(
-            command, check=False, timeout=10, stdin=subprocess.DEVNULL, capture_output=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        return request_remote_stop_owned(profile, find_ssh_executable(), token, runner=runner)
+
+    def _confirm_remote_stop_owned(self, profile: RemoteConnectionProfile, token: str) -> object:
+        runner = getattr(self, "_stop_owned_runner", None)
+        return confirm_remote_stop_owned(profile, find_ssh_executable(), token, runner=runner)
 
     def _stop_owned_remote_connection(self) -> None:
         stop_owned_connection(self)

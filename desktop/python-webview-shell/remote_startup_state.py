@@ -91,6 +91,22 @@ class RemoteStartupStateMachine:
         with self._lock:
             return self._state
 
+    @property
+    def last_attempt_generation(self) -> int:
+        """The newest attempt id ever begun here, still readable after `stop`.
+
+        `begin` is the only writer and only ever increments, so this is the
+        machine's monotonic high-water mark. `fail` and `stop` clear the active
+        attempt but never this count, so a caller that captured a generation
+        can still tell, once that attempt is gone, whether a later attempt was
+        begun in its place - which the active id alone cannot say. Zero means
+        no attempt has ever been begun. Read-only: nothing is published and no
+        transition is performed.
+        """
+
+        with self._lock:
+            return self._generation
+
     def is_current(self, attempt_id: str) -> bool:
         with self._lock:
             return self._active_id == attempt_id

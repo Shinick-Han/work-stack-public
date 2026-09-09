@@ -349,6 +349,36 @@ class ProtocolVersusBuildTests(unittest.TestCase):
         self.assertIn("Remote protocol 1 is below the required 2", message)
 
 
+class ServedUiVersionTests(unittest.TestCase):
+    """Served UI is a third version fact, never a desktop or remote alias."""
+
+    def test_an_unknown_served_ui_stays_unknown(self) -> None:
+        self.assertEqual(
+            "The served UI version is unknown.",
+            STATUS.served_ui_clause(served_ui_version=None, remote_version="1.0.13"),
+        )
+        self.assertEqual(
+            "The served UI version is unknown.",
+            STATUS.served_ui_clause(served_ui_version="1.0.13<script>", remote_version="1.0.13"),
+        )
+
+    def test_a_matching_served_ui_does_not_claim_rebuilt_files(self) -> None:
+        message = STATUS.served_ui_clause(served_ui_version="1.0.13", remote_version="1.0.13")
+        self.assertIn("served UI reports 1.0.13", message)
+        self.assertIn("does not prove", message)
+
+    def test_a_mismatch_names_both_observed_versions(self) -> None:
+        message = STATUS.served_ui_clause(served_ui_version="1.0.5", remote_version="1.0.13")
+        self.assertIn("served UI reports 1.0.5", message)
+        self.assertIn("does not match remote 1.0.13", message)
+
+    def test_served_ui_without_a_remote_is_not_a_desktop_verdict(self) -> None:
+        message = STATUS.served_ui_clause(served_ui_version="1.0.13")
+        self.assertIn("served UI reports 1.0.13", message)
+        self.assertIn("not a desktop verdict", message)
+        self.assertNotIn("up to date", message)
+
+
 class VersionContractTests(unittest.TestCase):
     """A displayed version is the whole reported value or it is unknown."""
 

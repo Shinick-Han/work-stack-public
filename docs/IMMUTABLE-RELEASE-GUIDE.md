@@ -24,9 +24,25 @@ substitute for these inputs.
 ## Build and verification contract
 
 The release build refuses pre-existing `frontend/dist` and release-output directories, validates a
-clean candidate checkout, builds the frontend once, freezes a sorted path/size/SHA-256 manifest,
-and then runs the existing offline Windows installer builder. It rechecks the frozen tree and Git
-checkout after packaging.
+clean candidate checkout, builds the frontend once through the source-bound dist gate, and freezes a
+sorted path/size/SHA-256 manifest. It then downloads only the hash-locked
+`cp312-manylinux_2_17_x86_64` binary wheels from the official 7-wheel `requirements.txt` lock,
+builds the same candidate/version Linux archive and sidecar with
+`scripts/build_linux_remote_artifact.py`, and passes that exact pair into the existing Windows
+installer builder. A wheel-download, Linux-build, or pair-admission failure stops the Windows
+artifact. It rechecks the frozen tree and Git checkout after packaging.
+
+"Once" is enforced, not merely asserted. The release invokes the dist gate's `refresh-dist`
+exactly once, before the freeze; the Windows installer builder is then invoked with
+`-ConsumeAdmittedDist`, which makes it call the same gate's `verify-dist` instead.
+`verify-dist` re-reads the recorded build inputs and the emitted tree and refuses on any
+drift, but it never runs `npm run build`, so the release build performs no second frontend
+build. Admission is
+never skipped and no evidence is regenerated in that mode: an absent receipt, a source digest
+that no longer matches, or a tampered `frontend/dist` fails the installer step closed, and the
+packaged copy is still bound to the admitted digest through `verify-staged-dist`. Running
+`scripts/windows/Build-WindowsInstaller.ps1` on its own, without that switch, still refreshes
+its own source-bound dist exactly as before.
 
 The one uploaded product artifact contains exactly:
 

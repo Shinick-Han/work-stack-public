@@ -653,5 +653,200 @@ class RemoteProvisionPlanCliTest(unittest.TestCase):
             self.assertEqual(tuple(sorted(root.iterdir())), before)
 
 
+class RemoteProvisionPreflightPlanTest(unittest.TestCase):
+    def test_absent_preflight_facts_project_unknown_without_refusing(self) -> None:
+        result = MODULE.plan_remote_provision(encoded(valid_document()))
+        self.assertEqual(result["decision"], "install_needed")
+        self.assertEqual(result["plan"]["install_root"], valid_document()["target"]["install_root"])
+        self.assertEqual(result["preflight"]["capability"]["publication"], "unknown")
+        self.assertEqual(result["preflight"]["capability"]["method"], "unknown")
+        self.assertIsNone(result["preflight"]["install"]["stable"])
+        self.assertNotIn("PUBLICATION_UNAVAILABLE", codes(result))
+        self.assertNotIn("NFS_PUBLISH_FAILED", codes(result))
+
+    def test_unknown_extra_preflight_key_is_rejected(self) -> None:
+        document = valid_document()
+        document["facts"]["mounts"] = ["/etc/shadow"]
+        with self.assertRaises(MODULE.PlanError) as raised:
+            MODULE.plan_remote_provision(encoded(document))
+        self.assertEqual(raised.exception.code, "INVALID_DOCUMENT")
+        self.assertNotIn("/etc/shadow", raised.exception.detail)
+
+    def test_alias_resolution_keeps_configured_target_and_workspace_check(self) -> None:
+        document = valid_document()
+        document["target"]["install_root"] = "/u/alice/app"
+        document["target"]["data_root"] = "/u/alice/data"
+        document["facts"]["resolution"] = {
+            "install": {
+                "configured": "/u/alice/app",
+                "canonical": "/remote/alice/app",
+                "stable": True,
+            },
+            "data": {
+                "configured": "/u/alice/data",
+                "canonical": "/remote/alice/data",
+                "stable": True,
+            },
+        }
+        document["facts"]["data"] = {
+            "exists": True,
+            "owner": "alice",
+            "symlink": False,
+            "workspace_id": OTHER_WORKSPACE_ID,
+        }
+        result = MODULE.plan_remote_provision(encoded(document))
+        self.assertEqual(result["decision"], "refused")
+        self.assertIn("REMOTE_WORKSPACE_MISMATCH", codes(result))
+        self.assertIn("PATH_RESOLVED", codes(result))
+        self.assertEqual(result["plan"]["install_root"], "/u/alice/app")
+        self.assertEqual(result["preflight"]["install"]["canonical"], "/remote/alice/app")
+
+    def test_resolution_drift_refuses_install(self) -> None:
+        document = valid_document()
+        document["facts"]["resolution"] = {
+            "install": {
+                "configured": document["target"]["install_root"],
+                "canonical": document["target"]["install_root"],
+                "stable": False,
+            },
+            "data": {
+                "configured": document["target"]["data_root"],
+                "canonical": document["target"]["data_root"],
+                "stable": True,
+            },
+        }
+        result = MODULE.plan_remote_provision(encoded(document))
+        self.assertEqual(result["decision"], "refused")
+        self.assertIn("TARGET_RESOLUTION_DRIFT", codes(result))
+
+    def test_noexec_refuses_before_install(self) -> None:
+        document = valid_document()
+        document["facts"]["capability"] = {
+            "publication": "unknown",
+            "method": "unknown",
+            "commit": "unknown",
+            "scratch": "not_requested",
+            "filesystem": "other",
+            "noexec": True,
+            "nfs_publish": "not_applicable",
+        }
+        result = MODULE.plan_remote_provision(encoded(document))
+        self.assertEqual(result["decision"], "refused")
+        self.assertIn("TARGET_NOEXEC", codes(result))
+
+    def test_unavailable_publication_refuses_long_install(self) -> None:
+        document = valid_document()
+        document["facts"]["capability"] = {
+            "publication": "unavailable",
+            "method": "unknown",
+            "commit": "unavailable",
+            "scratch": "measured",
+            "filesystem": "other",
+            "noexec": False,
+            "nfs_publish": "not_applicable",
+        }
+        result = MODULE.plan_remote_provision(encoded(document))
+        self.assertEqual(result["decision"], "refused")
+        self.assertEqual(result["plan"]["action"], "none")
+        self.assertIn("PUBLICATION_UNAVAILABLE", codes(result))
+        self.assertNotIn("NFS_PUBLISH_FAILED", codes(result))
+
+    def test_measured_nfs_failure_is_not_an_unmeasured_guess(self) -> None:
+        document = valid_document()
+        document["facts"]["capability"] = {
+            "publication": "unavailable",
+            "method": "unknown",
+            "commit": "unknown",
+            "scratch": "measured",
+            "filesystem": "nfs",
+            "noexec": False,
+            "nfs_publish": "failed",
+        }
+        result = MODULE.plan_remote_provision(encoded(document))
+        self.assertEqual(result["decision"], "refused")
+        self.assertIn("NFS_PUBLISH_FAILED", codes(result))
+        self.assertNotIn("PUBLICATION_UNAVAILABLE", codes(result))
+        self.assertNotIn("NFS_COMMIT_UNMEASURED", codes(result))
+
+    def test_nfs_without_scratch_stays_unknown_and_can_still_need_install(self) -> None:
+        document = valid_document()
+        document["facts"]["capability"] = {
+            "publication": "unknown",
+            "method": "unknown",
+            "commit": "unknown",
+            "scratch": "not_requested",
+            "filesystem": "nfs",
+            "noexec": False,
+            "nfs_publish": "unknown",
+        }
+        result = MODULE.plan_remote_provision(encoded(document))
+        self.assertEqual(result["decision"], "install_needed")
+        self.assertIn("NFS_COMMIT_UNMEASURED", codes(result))
+        self.assertIn("COMMIT_SUPPORT_UNKNOWN", codes(result))
+        self.assertNotIn("PUBLICATION_UNAVAILABLE", codes(result))
+        self.assertNotIn("NFS_PUBLISH_FAILED", codes(result))
+
+    def resolution_facts(
+        self,
+        install: str = "/remote/app",
+        data: str = "/remote/data",
+        *,
+        install_stable: object = True,
+        data_stable: object = True,
+    ) -> dict[str, object]:
+        return {
+            "resolution": {
+                "install": {"canonical": install, "stable": install_stable},
+                "data": {"canonical": data, "stable": data_stable},
+            }
+        }
+
+    def test_compare_resolution_detects_drift_and_ignores_missing(self) -> None:
+        matching = self.resolution_facts()
+        drifted = self.resolution_facts(install="/other/app")
+        self.assertIsNone(MODULE.compare_provision_resolution({}, {}))
+        self.assertIsNone(MODULE.compare_provision_resolution(matching, matching))
+        self.assertEqual(
+            MODULE.compare_provision_resolution(matching, drifted),
+            "TARGET_RESOLUTION_DRIFT",
+        )
+        self.assertEqual(
+            MODULE.compare_provision_resolution(matching, {}),
+            "TARGET_RESOLUTION_DRIFT",
+        )
+
+    def test_compare_resolution_refuses_an_unstable_current_observation(self) -> None:
+        matching = self.resolution_facts()
+        unstable = (
+            ("install_false", self.resolution_facts(install_stable=False)),
+            ("data_false", self.resolution_facts(data_stable=False)),
+            ("both_false", self.resolution_facts(install_stable=False, data_stable=False)),
+            ("install_none", self.resolution_facts(install_stable=None)),
+            ("truthy_not_true", self.resolution_facts(install_stable=1)),
+            ("text_not_true", self.resolution_facts(data_stable="true")),
+        )
+        for name, current in unstable:
+            with self.subTest(case=name):
+                self.assertEqual(
+                    MODULE.compare_provision_resolution(matching, current),
+                    "TARGET_RESOLUTION_DRIFT",
+                    "equal canonical strings must not authorize an unstable current",
+                )
+
+    def test_compare_resolution_refuses_a_current_without_an_observed_stable_flag(self) -> None:
+        matching = self.resolution_facts()
+        absent = {
+            "resolution": {
+                "install": {"canonical": "/remote/app"},
+                "data": {"canonical": "/remote/data"},
+            }
+        }
+        self.assertEqual(
+            MODULE.compare_provision_resolution(matching, absent),
+            "TARGET_RESOLUTION_DRIFT",
+        )
+        self.assertIsNone(MODULE.compare_provision_resolution(absent, matching))
+
+
 if __name__ == "__main__":
     unittest.main()

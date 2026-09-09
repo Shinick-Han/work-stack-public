@@ -1,0 +1,183 @@
+{
+  "_comment": "Remote update and close-reopen recovery acceptance matrix. Every criterion is either bound to an executed check in tests/test_remote_recovery_acceptance.py or explicitly marked as not covered here, with the lane or gate that owns it. A criterion may not read 'covered' without a registered check, and a registered check may not exist without a 'covered' criterion; the acceptance test enforces both directions so this file cannot be edited into a false PASS.",
+  "schema": "remote-recovery-acceptance/1",
+  "base_commit": "6a2aa786edfc2617c9080873d18abd881290c5c3",
+  "lane": "f-diagnostics",
+  "environment": {
+    "kind": "synthetic_local",
+    "host_os": "windows",
+    "note": "Synthetic local fixtures on Windows only. Nothing here observed a corporate share, an NFS mount, a csh-family login shell, a Linux kernel without pidfd, or a company machine. No corporate result is represented, claimed or implied by any row in this file."
+  },
+  "statuses": {
+    "covered": "A check registered in the acceptance test executed a production seam and asserted the stated behaviour.",
+    "not_covered": "Not exercised here. The owning lane or gate is named and the reason says what is missing.",
+    "not_run": "Reachable in principle from this lane but deliberately not executed, with the reason stated."
+  },
+  "criteria": [
+    {
+      "id": "RV-01",
+      "title": "A remote older than the desktop is reported as a mismatch, not as up to date",
+      "status": "covered",
+      "seam": "workstack_update_status.remote_clause"
+    },
+    {
+      "id": "RV-02",
+      "title": "A remote reporting the same version does not become proof the interface was rebuilt",
+      "status": "covered",
+      "seam": "workstack_update_status.remote_clause"
+    },
+    {
+      "id": "RV-03",
+      "title": "An unreported remote version stays unverified rather than defaulting to a match",
+      "status": "covered",
+      "seam": "workstack_update_status.remote_clause"
+    },
+    {
+      "id": "RV-04",
+      "title": "A canonical-looking alias with trailing content is refused whole, not matched by prefix",
+      "status": "covered",
+      "seam": "workstack_update_status.canonical_version"
+    },
+    {
+      "id": "OWN-01",
+      "title": "A live owner on this host and boot classifies live and reports live",
+      "status": "covered",
+      "seam": "remote_owner.classify_owner"
+    },
+    {
+      "id": "OWN-02",
+      "title": "An owner receipt from a prior boot is dead without any pid being inspected",
+      "status": "covered",
+      "seam": "remote_owner.classify_owner"
+    },
+    {
+      "id": "OWN-03",
+      "title": "A foreign-host receipt is foreign and its pid is never inspected",
+      "status": "covered",
+      "seam": "remote_owner.classify_owner"
+    },
+    {
+      "id": "OWN-04",
+      "title": "A legacy receipt without host or boot identity is unfenced, not legacy-and-recoverable",
+      "status": "covered",
+      "seam": "remote_owner.classify_owner"
+    },
+    {
+      "id": "OWN-05",
+      "title": "Ambiguous liveness reports unknown and never resolves to live or dead",
+      "status": "covered",
+      "seam": "remote_owner.classify_owner"
+    },
+    {
+      "id": "OWN-06",
+      "title": "A reused pid reports unknown rather than a confident dead verdict",
+      "status": "covered",
+      "seam": "remote_owner.classify_owner"
+    },
+    {
+      "id": "TOK-01",
+      "title": "A missing session token is an independent condition and does not change the owner state",
+      "status": "covered",
+      "seam": "remote_owner.owner_recognizes_caller"
+    },
+    {
+      "id": "PIDFD-01",
+      "title": "pidfd availability is recorded as measured and never implies a verified exit",
+      "status": "covered",
+      "seam": "remote_process_handle.pidfd_signalling_available"
+    },
+    {
+      "id": "STOP-01",
+      "title": "A stop that was issued but not observed leaves exit, listener and lease all unknown",
+      "status": "covered",
+      "seam": "remote_update_diagnostics.project_observation"
+    },
+    {
+      "id": "RED-01",
+      "title": "A caller payload carrying tokens, argv, hosts, paths and Task text leaks none of them",
+      "status": "covered",
+      "seam": "remote_update_diagnostics.render_report"
+    },
+    {
+      "id": "PART-01",
+      "title": "An absent or malformed payload yields a complete honest all-unknown report",
+      "status": "covered",
+      "seam": "remote_update_diagnostics.normalize_view"
+    },
+    {
+      "id": "CAP-01",
+      "title": "An unmeasured filesystem capability reads Unknown and never claims atomic support",
+      "status": "covered",
+      "seam": "remote_update_diagnostics.render_report"
+    },
+    {
+      "id": "BIND-01",
+      "title": "This matrix names a base commit that exists in the checkout it was produced from",
+      "status": "covered",
+      "seam": "git rev-parse --verify"
+    },
+    {
+      "id": "NFS-01",
+      "title": "A real NFS mount that refuses an atomic operation is measured and reported unavailable",
+      "status": "not_covered",
+      "owner": "lane b-preflight",
+      "reason": "Needs a real NFS mount. No share was mounted and no capability probe was run, so nothing here distinguishes a refusing NFS from an untested one. Not all NFS atomic operations are unsupported, so a synthetic stub would assert a conclusion this lane has no evidence for."
+    },
+    {
+      "id": "CSH-01",
+      "title": "A csh-family login shell starts and stops the remote server correctly",
+      "status": "not_covered",
+      "owner": "lane b-preflight",
+      "reason": "Requires a Linux host with a csh-family login shell. The host running this matrix is Windows and no csh-family shell was invoked."
+    },
+    {
+      "id": "PIDFD-02",
+      "title": "A Linux kernel without pidfd performs a normal authenticated shutdown within stated limits",
+      "status": "not_covered",
+      "owner": "lane d-flow",
+      "reason": "PIDFD-01 records only that this host reports no pidfd support. Proving the no-pidfd shutdown path needs a Linux host with pidfd disabled and a real server process; neither was available."
+    },
+    {
+      "id": "UNPACK-01",
+      "title": "Verified unpack, wrong workspace UUID and a corrupt archive each fail inspectably",
+      "status": "not_covered",
+      "owner": "lane c-unpack",
+      "reason": "Owned by the unpack lane against the released helper and its generator. Duplicating it here would report a second, weaker result under the same criterion id."
+    },
+    {
+      "id": "DIST-01",
+      "title": "A stale or missing dist directory is detected and reported before activation",
+      "status": "not_covered",
+      "owner": "lane c-unpack",
+      "reason": "Depends on the packaged distribution layout, which this lane neither builds nor inspects."
+    },
+    {
+      "id": "SCHEMA-01",
+      "title": "A schema 5 to 6 migration preserves Task and Context content",
+      "status": "not_covered",
+      "owner": "lane d-flow",
+      "reason": "Requires the backup, migration and restore contracts and real workspace data. This lane reports migration_required as a fact it is given and never performs or verifies a migration."
+    },
+    {
+      "id": "CLOSE-01",
+      "title": "Close then reopen then close releases the process, the original listener and the lease each time",
+      "status": "not_covered",
+      "owner": "coordinator host wiring",
+      "reason": "The three releases are separately observable in the snapshot, but no production caller populates them yet. Until the coordinator wires the host to record them, every run would report unknown, and marking that covered would be a false PASS for the exact confirmation the company is still missing."
+    },
+    {
+      "id": "BUILD-01",
+      "title": "Package, frontend and source are bound to the exact integrated HEAD",
+      "status": "not_covered",
+      "owner": "integration gate G",
+      "reason": "BIND-01 binds this matrix to a base commit only. Binding the built package and frontend to the integrated HEAD is the integration gate's evidence, not a lane's."
+    },
+    {
+      "id": "COMPANY-01",
+      "title": "Corporate environment confirms remote update and close-reopen-close",
+      "status": "not_covered",
+      "owner": "company receipt",
+      "reason": "No company machine, share or receipt was accessed. The company report of a 1.0.13 connection success is not evidence for this criterion and is not recorded as a result here."
+    }
+  ]
+}

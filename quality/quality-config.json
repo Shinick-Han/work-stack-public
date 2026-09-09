@@ -60,7 +60,8 @@
         "scripts/linux_remote_artifact_zip.py",
         "scripts/dist_source_gate.py",
         "scripts/dist_source_gate_manifest.py",
-        "scripts/dist_source_gate_receipt.py"
+        "scripts/dist_source_gate_receipt.py",
+        "scripts/windows/Stage-WorkStackRemoteBundle.py"
       ],
       "extensions": [
         ".py",
@@ -844,17 +845,57 @@
         "desktop/python-webview-shell/remote_attempt_resources.py",
         "desktop/python-webview-shell/remote_owner.py",
         "desktop/python-webview-shell/remote_process_handle.py",
+        "desktop/python-webview-shell/remote_update_diagnostics.py",
         "desktop/python-webview-shell/remote_receipt_guard.py",
         "desktop/python-webview-shell/remote_receipt_io.py",
         "desktop/python-webview-shell/connection_registry_bridge.py",
-        "desktop/python-webview-shell/owner_launch_config.py"
+        "desktop/python-webview-shell/owner_launch_config.py",
+        "desktop/python-webview-shell/remote_verified_unpack.py",
+        "desktop/python-webview-shell/remote_update_view.py",
+        "desktop/python-webview-shell/remote_update_presentation.py",
+        "desktop/python-webview-shell/remote_provision_capability.py",
+        "desktop/python-webview-shell/remote_provision_contract.py",
+        "desktop/python-webview-shell/remote_provision_facts_model.py",
+        "desktop/python-webview-shell/remote_provision_host.py",
+        "desktop/python-webview-shell/remote_provision_identity.py",
+        "desktop/python-webview-shell/remote_provision_preflight_plan.py",
+        "desktop/python-webview-shell/remote_update_flow.py",
+        "desktop/python-webview-shell/remote_update_flow_contract.py",
+        "desktop/python-webview-shell/remote_update_flow_outcomes.py",
+        "desktop/python-webview-shell/remote_ui_observation.py",
+        "desktop/python-webview-shell/desktop_update_admission.py",
+        "desktop/python-webview-shell/remote_update_activation_adapter.py",
+        "desktop/python-webview-shell/remote_update_activation_binding.py",
+        "desktop/python-webview-shell/remote_update_journal.py",
+        "desktop/python-webview-shell/remote_attempt_bundle.py",
+        "desktop/python-webview-shell/remote_attempt_shutdown.py",
+        "desktop/python-webview-shell/remote_owner_receipt.py",
+        "desktop/python-webview-shell/remote_owner_stop.py",
+        "desktop/python-webview-shell/remote_stop_result.py",
+        "desktop/python-webview-shell/remote_update_presentation_actions.py",
+        "desktop/python-webview-shell/remote_update_projection.py",
+        "desktop/python-webview-shell/remote_update_backup_port.py",
+        "desktop/python-webview-shell/remote_update_maintenance_transport.py",
+        "desktop/python-webview-shell/remote_update_controller.py",
+        "desktop/python-webview-shell/remote_update_host_bridge.py",
+        "desktop/python-webview-shell/remote_update_install_ports.py",
+        "desktop/python-webview-shell/remote_update_install_ports_inspection.py",
+        "desktop/python-webview-shell/remote_update_install_ports_transport.py",
+        "desktop/python-webview-shell/remote_update_owner_port.py",
+        "desktop/python-webview-shell/remote_update_host_factory.py",
+        "desktop/python-webview-shell/remote_update_host_factory_activation.py",
+        "desktop/python-webview-shell/remote_update_host_surface.py",
+        "desktop/python-webview-shell/remote_update_host_surface_record.py",
+        "desktop/python-webview-shell/remote_update_host_surface_view.py",
+        "desktop/python-webview-shell/remote_update_host_recovery_gate.py"
       ],
       "may_import": [
         "py_foundation",
         "py_desktop_rebind",
         "py_bounded_process_exchange",
         "py_knowledge_host",
-        "py_profile_inspection"
+        "py_profile_inspection",
+        "py_remote_owner_observation"
       ]
     },
     {
@@ -1446,6 +1487,39 @@
       ],
       "may_import": [
         "py_checkpoint_facts_format"
+      ]
+    },
+    {
+      "name": "py_remote_maintenance",
+      "globs": [
+        "desktop/python-webview-shell/remote_update_maintenance.py",
+        "desktop/python-webview-shell/remote_update_maintenance_receipts.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_storage",
+        "py_legacy_store",
+        "py_desktop"
+      ]
+    },
+    {
+      "name": "py_remote_bundle_packaging",
+      "globs": [
+        "scripts/windows/Stage-WorkStackRemoteBundle.py"
+      ],
+      "may_import": [
+        "py_desktop"
+      ]
+    },
+    {
+      "name": "py_remote_owner_observation",
+      "globs": [
+        "desktop/python-webview-shell/remote_update_owner_observation.py"
+      ],
+      "may_import": [
+        "py_desktop",
+        "py_foundation",
+        "py_file_lease"
       ]
     }
   ],

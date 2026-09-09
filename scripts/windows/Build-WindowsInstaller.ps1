@@ -1,8 +1,23 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$SourceRoot = '',
     [string]$OutputPath = '',
     [string]$RuntimeArchivePath = '',
+    # Optional, and paired. Neither path builds the Windows product exactly as
+    # it built before: local-only, with no remote payload. Both paths ship the
+    # already built Linux remote artifact that the desktop update flow sends
+    # over SSH. Exactly one is a build error, not a half-shipped installer.
+    [string]$LinuxArtifactArchivePath = '',
+    [string]$LinuxArtifactSidecarPath = '',
+    # Consume the frontend\dist an earlier step of this same release already
+    # admitted, instead of producing one here. Off by default: a standalone
+    # build still refreshes its own dist, exactly as it always did. On, the
+    # builder asks the same shared release gate to VERIFY the recorded
+    # source/dist binding rather than to refresh it, so the release performs
+    # one real frontend build and this packaging step performs none. Nothing
+    # is skipped and no evidence is regenerated: an absent, stale or tampered
+    # receipt or dist refuses here exactly as a failed refresh would.
+    [switch]$ConsumeAdmittedDist,
     [switch]$SkipWheelDownload
 )
 
@@ -62,6 +77,16 @@ $versionLine = Get-Content -LiteralPath (Join-Path $sourcePath 'workstack\__init
     Select-Object -First 1
 if (-not $versionLine) { throw 'Work Stack version could not be read.' }
 $version = [regex]::Match($versionLine, '"([^"]+)"').Groups[1].Value
+# ---- paired Linux remote artifact selection --------------------------
+# Decided before anything is created or downloaded, so a half-supplied
+# selection costs nothing and leaves nothing behind.
+$includesRemotePayload = [bool]$LinuxArtifactArchivePath -and [bool]$LinuxArtifactSidecarPath
+if (-not $includesRemotePayload -and ($LinuxArtifactArchivePath -or $LinuxArtifactSidecarPath)) {
+    throw ('-LinuxArtifactArchivePath and -LinuxArtifactSidecarPath are one selection and must be ' +
+        'supplied together. Supply both to ship the Linux remote payload, or neither to build a ' +
+        'local-only Windows installer.')
+}
+# ---- end paired Linux remote artifact selection ----------------------
 if (-not $OutputPath) { $OutputPath = Join-Path $sourcePath ".artifacts\WorkStack-Setup-$version.ps1" }
 $output = [IO.Path]::GetFullPath($OutputPath)
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $output) | Out-Null
@@ -87,9 +112,20 @@ try {
     # untouched. mtimes and the git commit are not evidence here; only content
     # digests are. The gate never installs dependencies -- an uninstalled
     # frontend\node_modules refuses instead of packaging a stale bundle.
-    $distGate = & python (Join-Path $sourcePath 'scripts\release_gate.py') refresh-dist --repo $sourcePath 2>&1
+    #
+    # -ConsumeAdmittedDist selects the gate's `verify-dist` instead. That is
+    # the same gate, the same receipt and the same admitted-tree answer -- it
+    # re-reads the recorded build inputs and the emitted tree and refuses on
+    # any drift -- but it never runs a build, so a release that already built
+    # and froze the dist does not build a second one here. There is no third
+    # mode and no bypass: exactly one of the two gate operations always runs,
+    # and it must succeed and report an admitted digest before a dist byte is
+    # copied. Consuming an already admitted tree is the only thing the switch
+    # can do; it cannot make packaging accept an unadmitted one.
+    $distGateCommand = if ($ConsumeAdmittedDist) { 'verify-dist' } else { 'refresh-dist' }
+    $distGate = & python (Join-Path $sourcePath 'scripts\release_gate.py') $distGateCommand --repo $sourcePath 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "The frontend dist/source gate refused to package this tree: $($distGate -join ' ')"
+        throw "The frontend dist/source gate refused to package this tree ($distGateCommand): $($distGate -join ' ')"
     }
     # Keep what the gate ADMITTED. frontend\dist is generated and git-ignored, so
     # any other process on this machine may rewrite it the instant this call
@@ -102,7 +138,7 @@ try {
     if (-not $admittedDist -or -not $admittedDist.dist_digest) {
         throw "The frontend dist/source gate reported no admitted dist digest: $($distGate -join ' ')"
     }
-    Write-Host "Frontend dist gate admitted $($admittedDist.dist_file_count) file(s): $($admittedDist.dist_digest)"
+    Write-Host "Frontend dist gate ($distGateCommand) admitted $($admittedDist.dist_file_count) file(s): $($admittedDist.dist_digest)"
     Copy-Item -LiteralPath (Join-Path $sourcePath 'frontend\dist') -Destination (Join-Path $payload 'frontend\dist') -Recurse
     # Everything shipped from here on is this private payload copy, and it is now
     # compared to the admitted digest rather than to a fresh reading of the live
@@ -309,6 +345,57 @@ try {
     # output selection. It is NOT a claim of byte-reproducible PE output, and no
     # reproducible-build switch is assumed of this legacy compiler.
 
+    # ---- admitted Linux remote payload ----------------------------------
+    # The Linux artifact is built by its own builder, on Linux, and is only
+    # ever consumed here. This stage does not build, download, unpack or
+    # re-hash it: it hands the selected archive and sidecar to the product's
+    # own remote_provision_artifact admission -- the same gate the desktop
+    # update flow runs before any SSH -- and only an admitted pair whose
+    # product version is this build's version reaches the payload. The bytes
+    # land under payload\remote at the canonical name derived from that
+    # admitted identity, never from the input filename, and the copy on disk
+    # is admitted again before it is packaged.
+    $remotePayloadSummary = 'local-only, no Linux remote payload'
+    if ($includesRemotePayload) {
+        $remoteStager = Join-Path $sourcePath 'scripts\windows\Stage-WorkStackRemoteBundle.py'
+        # A refusal is written to stderr, and merging that into the success
+        # stream under 'Stop' would raise NativeCommandError at the call and
+        # skip the exit-status decision below. The preference is relaxed for
+        # exactly this one call so the refusal text is captured and the exit
+        # code -- not the presence of stderr -- decides, then restored.
+        $previousErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $remoteStage = & python $remoteStager --source-root $sourcePath --payload $payload `
+                --archive $LinuxArtifactArchivePath --sidecar $LinuxArtifactSidecarPath `
+                --expect-version $version 2>&1
+        } finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "The selected Linux remote artifact was not admitted: $($remoteStage -join ' ')"
+        }
+        $remoteSummaryLine = @($remoteStage | ForEach-Object { $_.ToString() } | Where-Object { $_.Trim() }) |
+            Select-Object -Last 1
+        $admittedRemote = $null
+        try { $admittedRemote = $remoteSummaryLine | ConvertFrom-Json } catch { $admittedRemote = $null }
+        if (-not $admittedRemote -or -not $admittedRemote.artifact_digest) {
+            throw "The Linux remote payload stage reported no admitted artifact: $($remoteStage -join ' ')"
+        }
+        if ($admittedRemote.product_version -ne $version) {
+            throw ("The staged Linux remote payload is $($admittedRemote.product_version), " +
+                "but this Windows build is $version.")
+        }
+        $stagedRemoteArchive = Join-Path $payload ($admittedRemote.archive -replace '/', '\')
+        if (-not (Test-Path -LiteralPath $stagedRemoteArchive -PathType Leaf)) {
+            throw "The staged Linux remote archive is missing from the payload: $stagedRemoteArchive"
+        }
+        $remotePayloadSummary = ("includes Linux remote payload $($admittedRemote.archive) " +
+            "$($admittedRemote.artifact_digest)")
+        Write-Host "Remote payload admitted $($admittedRemote.archive) $($admittedRemote.artifact_digest)"
+    }
+    # ---- end admitted Linux remote payload -------------------------------
+
     Remove-PythonBytecode -Root $payload
     Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archive -CompressionLevel Optimal
     $encoded = [Convert]::ToBase64String([IO.File]::ReadAllBytes($archive))
@@ -360,6 +447,7 @@ try {
     Write-Host "Built $output"
     Write-Host "Checksum $checksumPath"
     Write-Host "SHA-256 $digest"
+    Write-Host "Payload $remotePayloadSummary"
 } finally {
     if ($script:WorkStackPreserveTemporary) {
         Write-Warning ("Preserving " + $temporary + ": a compiler instance may still be using it.")

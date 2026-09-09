@@ -2,8 +2,13 @@ import { useEffect, useState } from 'react'
 import { Dialog } from '../components/Dialog'
 import { Button, IconButton } from '../components/Primitives'
 import {
+  formatObservedRemoteVersion,
+  hasRemoteUpdateCapability,
   hasUpdateHost,
   openUpdateRelease,
+  pcStatusCopy,
+  remoteCapabilityKnown,
+  requestRemoteOpen,
   requestUpdateCheck,
   requestUpdateDownload,
   requestUpdateInstall,
@@ -53,13 +58,60 @@ function UpdateTrigger({ onOpen, presentation, state }: {
   )
 }
 
-function UpdateDialogFooter({ busy, status }: { busy: boolean; status: UpdateHostStatus | null }) {
-  return <>
-    {status?.release_url ? <Button onClick={openUpdateRelease} variant="ghost">Release notes</Button> : null}
-    <Button disabled={busy} icon="refresh" onClick={requestUpdateCheck}>Check now</Button>
-    {status?.state === 'available' ? <Button disabled={busy} onClick={requestUpdateDownload}>Download update</Button> : null}
-    {status?.state === 'ready' ? <Button onClick={requestUpdateInstall} variant="primary">Install and restart</Button> : null}
-  </>
+function UpdateVersionFacts({ status }: { status: UpdateHostStatus | null }) {
+  return (
+    <dl>
+      <div><dt>Desktop version</dt><dd>{status?.current_version ?? 'Detecting…'}</dd></div>
+      <div><dt>Latest desktop</dt><dd>{status?.latest_version || 'Checking…'}</dd></div>
+      {remoteCapabilityKnown(status) ? (
+        <div>
+          <dt>Remote version</dt>
+          <dd>{status ? formatObservedRemoteVersion(status) : 'UNKNOWN'}</dd>
+        </div>
+      ) : null}
+      <div><dt>This PC</dt><dd>{pcStatusCopy(status)}</dd></div>
+    </dl>
+  )
+}
+
+function UpdateIndependenceNote({ status }: { status: UpdateHostStatus | null }) {
+  if (!remoteCapabilityKnown(status)) return null
+  return (
+    <p className="update-dialog__note">
+      The PC installer does not update the connected Linux server.
+    </p>
+  )
+}
+
+function UpdatePcEntry({ busy, status }: { busy: boolean; status: UpdateHostStatus | null }) {
+  return (
+    <fieldset>
+      <legend>Update this PC</legend>
+      <small>Checks, downloads, and installs the desktop app only.</small>
+      <div className="update-dialog__entry-actions">
+        <Button disabled={busy} icon="refresh" onClick={requestUpdateCheck}>Check now</Button>
+        {status?.state === 'available' ? (
+          <Button disabled={busy} onClick={requestUpdateDownload}>Download update</Button>
+        ) : null}
+        {status?.state === 'ready' ? (
+          <Button onClick={requestUpdateInstall} variant="primary">Install and restart</Button>
+        ) : null}
+      </div>
+    </fieldset>
+  )
+}
+
+function UpdateRemoteEntry({ status }: { status: UpdateHostStatus | null }) {
+  if (!hasRemoteUpdateCapability(status)) return null
+  return (
+    <fieldset>
+      <legend>Update connected Linux server</legend>
+      <small>Opens the native update page. This dialog does not install or change the remote app.</small>
+      <div className="update-dialog__entry-actions">
+        <Button onClick={requestRemoteOpen}>Update connected Linux server</Button>
+      </div>
+    </fieldset>
+  )
 }
 
 function UpdatePreferencesForm({ onUpdate, status }: {
@@ -104,19 +156,18 @@ export function UpdateStatusControl() {
     <>
       <UpdateTrigger onOpen={() => setOpen(true)} presentation={presentation} state={status?.state} />
       <Dialog
-        description="Updates are downloaded from the stable Work Stack GitHub release channel and verified before installation."
-        footer={<UpdateDialogFooter busy={presentation.busy} status={status} />}
+        description="Desktop updates are downloaded from the stable Work Stack GitHub release channel and verified before installation."
+        footer={status?.release_url ? <Button onClick={openUpdateRelease} variant="ghost">Release notes</Button> : undefined}
         onClose={() => setOpen(false)}
         open={open}
         size="small"
         title="Work Stack updates"
       >
         <div className="update-dialog">
-          <dl>
-            <div><dt>Installed</dt><dd>{status?.current_version ?? 'Detecting…'}</dd></div>
-            <div><dt>Latest</dt><dd>{status?.latest_version || 'Checking…'}</dd></div>
-            <div><dt>Status</dt><dd>{status?.message || 'Ready to check the stable channel.'}</dd></div>
-          </dl>
+          <UpdateVersionFacts status={status} />
+          <UpdateIndependenceNote status={status} />
+          <UpdatePcEntry busy={presentation.busy} status={status} />
+          <UpdateRemoteEntry status={status} />
           <UpdatePreferencesForm onUpdate={updatePreferences} status={status} />
           <UpdateWarning status={status} />
         </div>

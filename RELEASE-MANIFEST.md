@@ -1,3 +1,14 @@
+# Public snapshot manifest — 1.0.14
+
+- Source commit: `6a797d5242a53274a8e9eea98b12bdc16f506392`.
+- Previous public commit: `0e66f1ae5dba43c8eb418b591ca08a7c3219e716`.
+- Source-only export on the existing public history; exact prior exclusions and fixture review retained.
+- Installer SHA-256: `3a65bf5802e822e55dbea50dab60b3509342360a1024720aa75acbc1acb476d2`.
+- Linux archive SHA-256: `37b1fd75c37dca0aad0fddc45333b14ab957944b5adcb767e0df13cada993dc3`.
+- [Scope, installation and validation](docs/WORKSTACK-1.0.14-RELEASE.ko.md). Manual publication of locally verified artifacts; no full GitHub Actions PASS claim.
+
+## Previous publication record (historical)
+
 # Public snapshot manifest
 
 - Source: **1.0.13**, 2026-09-09; integration commit `6a2aa786edfc2617c9080873d18abd881290c5c3`.

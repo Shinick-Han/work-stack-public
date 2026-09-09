@@ -315,12 +315,23 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         self.assertIn("protocol changed from 1 to 2", host.remote_recovery_message)
 
     def test_update_gate_compares_manifest_minimum_to_actual_remote_endpoint(self) -> None:
+        """The minimum is compared against the endpoint at install, not at download.
+
+        An older remote no longer hides or withholds this PC's own release: the
+        check reports the release as available without touching the remote at
+        all. The same comparison - the manifest minimum against what the
+        connected endpoint actually reports - still refuses the *install*, in
+        the same words, while the verified artifact stays on disk and the
+        window stays open.
+        """
+
         response = mock.MagicMock()
         response.read.return_value = json.dumps({"data": {
             "workspace_id": WORKSPACE_ID,
             "product_version": "1.0.5",
             "remote_protocol_version": 1,
         }}).encode("utf-8")
+        response.__enter__.return_value = response
         manifest = types.SimpleNamespace(
             is_newer=True,
             version="1.0.7",
@@ -328,7 +339,9 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
             minimum_remote_protocol=2,
         )
         host = object.__new__(MODULE.WorkStackDesktopHost)
-        MODULE.initialize_attempt_resources(host)
+        MODULE.initialize_remote_attempt_state(
+            host, MODULE.RemoteStartupStateMachine(observer=host._publish_remote_startup_state)
+        )
         host.remote_profile = MODULE.RemoteConnectionProfile(
             "work-linux", "/app", "/ssot", 18765, WORKSPACE_ID
         )
@@ -336,17 +349,45 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         host.update_preferences = types.SimpleNamespace(auto_download=False, install_on_exit=True)
         host.downloaded_update = None
         host.install_update_on_exit = False
+        host.window = mock.Mock()
+        host._trace = mock.Mock()
         host._set_update_status = mock.Mock()
+        generation = host._begin_remote_attempt()
+        resources = MODULE.RemoteAttemptResources(
+            generation, host.remote_profile, host.remote_session_token,
+            mock.Mock(pid=4242, **{"poll.return_value": None}), None, host.remote_attempt_claim,
+        )
+        self.assertTrue(host._advance_remote_startup(generation, "STARTING_TUNNEL"))
+        self.assertTrue(host._commit_remote_attempt_resources(resources, "WAITING_REMOTE_READY"))
+        self.assertTrue(host._advance_remote_startup(generation, "VERIFYING_AUTHORITY"))
+        self.assertTrue(MODULE.commit_remote_ready(host, generation))
 
         with (
             mock.patch.object(MODULE, "fetch_url_bytes", return_value=b"manifest"),
             mock.patch.object(MODULE, "parse_update_manifest", return_value=manifest),
             mock.patch.object(MODULE.urllib.request, "urlopen", return_value=response) as urlopen,
         ):
-            response.__enter__.return_value = response
             host._check_update_worker(force_download=False)
 
+        urlopen.assert_not_called()
+        self.assertEqual(host._set_update_status.call_args.args[0], "available")
+
+        downloaded = types.SimpleNamespace(
+            version="1.0.7", setup_path=Path("WorkStack-Setup-1.0.7.ps1"),
+            checksum_path=Path("WorkStack-Setup-1.0.7.ps1.sha256"),
+            release_url=manifest.release_url, minimum_remote_protocol=2,
+        )
+        host.downloaded_update = downloaded
+        with (
+            mock.patch.object(MODULE.urllib.request, "urlopen", return_value=response) as urlopen,
+            mock.patch.object(MODULE, "launch_update_process") as launch,
+        ):
+            host._install_downloaded_update()
+
         urlopen.assert_called_once()
+        launch.assert_not_called()
+        host.window.destroy.assert_not_called()
+        self.assertIs(downloaded, host.downloaded_update)
         status_call = host._set_update_status.call_args
         self.assertEqual(status_call.args[0], "blocked")
         self.assertRegex(status_call.kwargs["message"], r"protocol 1.*requires protocol 2.*Upgrade")

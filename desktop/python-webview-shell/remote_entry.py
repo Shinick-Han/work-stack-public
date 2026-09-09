@@ -4,7 +4,9 @@ Runs on the remote interpreter named by the profile.  It never writes the
 home directory and never composes a login-shell script.
 
 Serve creates exclusive owner metadata that stores a token hash, never the
-raw session token. stop-owned terminates only the matching live process.
+raw session token. stop-owned terminates only the matching live process and
+prints one bounded line saying what it established, so a caller can tell a
+refusal from an unconfirmed stop from a proven exit.
 
 Probe accepts an optional caller session token.  A caller that proves it holds
 the live owner's token reads its own session instead of being locked out; a
@@ -45,8 +47,10 @@ from remote_owner import (
     local_path_digest,
     reclaim_or_refuse_owner,
     remove_published_owner_receipt_if_still_ours,
-    run_stop_owned,
+    run_stop_owned,  # noqa: F401  re-exported: the historical raising contract
+    stop_owned_result,
 )
+from remote_stop_result import encode_stop_result, exit_code_for
 
 
 PROBE_KEYS = ("workspace_id", "product_version", "protocol_version")
@@ -325,8 +329,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_serve(args)
             return 0
         if args.command == "stop-owned":
-            run_stop_owned(Path(args.data_dir), str(args.session_token))
-            return 0
+            # Report what the stop actually established, rather than collapsing
+            # every condition into one raise. Exit 0 keeps meaning a confirmed
+            # exit, so an older desktop reads this run exactly as before; 3 and
+            # 4 split "refused" from "ran but unconfirmed", which the single
+            # error status could not tell apart. The emitted line is the only
+            # thing that says anything about the owner: a status alone never
+            # does, and an absent or refused stop never reports a zero.
+            result = stop_owned_result(Path(args.data_dir), str(args.session_token))
+            sys.stdout.buffer.write(encode_stop_result(result))
+            if not result.confirmed and result.detail:
+                # The operator-facing diagnostic 1.0.13 already wrote, kept
+                # byte-for-byte on the same stream. Only the exit status
+                # changes, and stdout carries the machine-readable outcome.
+                sys.stderr.write(result.detail + "\n")
+            return exit_code_for(result.code)
         raise EntryError("REMOTE_PROTOCOL_INVALID", "unknown command")
     except EntryError as error:
         return _emit_error(error)

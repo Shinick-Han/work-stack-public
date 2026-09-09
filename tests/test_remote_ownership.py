@@ -36,6 +36,7 @@ import remote_owner as OWNER  # noqa: E402
 import remote_process_handle as HANDLE  # noqa: E402
 import remote_receipt_guard as GUARD  # noqa: E402
 from remote_command_contract import join_serve_command, token_hash  # noqa: E402
+from remote_stop_result import EXIT_UNCONFIRMED  # noqa: E402
 
 
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
@@ -812,7 +813,13 @@ class RemoteOwnerStopConfirmationTest(unittest.TestCase):
                 code = ENTRY.main(
                     ["stop-owned", "--data-dir", str(data), "--session-token", OWN_TOKEN]
                 )
-            self.assertEqual(code, 2)
+            # stop-owned now emits its structured outcome and returns the
+            # status of that outcome's family. A handle that could not be
+            # signalled is unconfirmed, not the flat error 1.0.13 returned for
+            # every condition alike; the payload is only readable when the
+            # status agrees with it. The operator diagnostic below is
+            # unchanged, and nothing about the refusal is weakened.
+            self.assertEqual(code, EXIT_UNCONFIRMED)
             message = stderr.getvalue()
             self.assertIn("REMOTE_PROTOCOL_INVALID", message)
             self.assertIn("cannot signal the owned process", message)

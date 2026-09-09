@@ -20,6 +20,12 @@ back to ``kill(pid)`` after a checked pid, because that fallback is the exact
 defect the handle exists to remove.  Refusing costs one confirmed stop, not the
 process lifetime: the desktop still closes its own SSH channel and the served
 process still dies with its session through the exec/PDEATHSIG binding.
+
+The observation vocabulary this binding is judged in lives here too: what one
+process may be observed to be, and the ``ProcessController`` contract a caller
+implements to answer that on its own host.  They are declarations, not
+implementations -- nothing here reads a machine identity or decides an owner --
+so the modules that do can share one definition of what they are answering.
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ import errno
 import os
 import select
 import signal
-from typing import Protocol
+from typing import Literal, Protocol
 
 # One /proc/<pid>/stat line, and the 0-based index of starttime among the
 # fields that follow the parenthesised comm.
@@ -55,8 +61,40 @@ POLLNVAL = getattr(select, "POLLNVAL", 0x0020)
 PIDFD_EXIT_MASKS = (POLLIN, POLLIN | POLLHUP)
 
 
+# Why a handle could not be produced or used. The caller has to tell these
+# apart: "this kernel has no pidfd at all" is a runtime capability the stop can
+# route around without signalling anything, while a permission refusal or a
+# start-identity mismatch is a fact about this one process and must not be
+# routed around at all.
+REASON_PIDFD_UNSUPPORTED = "pidfd_unsupported"
+REASON_PERMISSION = "permission"
+REASON_IDENTITY_MISMATCH = "identity_mismatch"
+REASON_INVALID_PID = "invalid_pid"
+REASON_PIN_FAILED = "pin_failed"
+REASON_SIGNAL_FAILED = "signal_failed"
+REASON_CLOSED = "closed"
+HANDLE_REASONS = (
+    REASON_PIDFD_UNSUPPORTED,
+    REASON_PERMISSION,
+    REASON_IDENTITY_MISMATCH,
+    REASON_INVALID_PID,
+    REASON_PIN_FAILED,
+    REASON_SIGNAL_FAILED,
+    REASON_CLOSED,
+)
+
+
 class ProcessHandleUnavailable(Exception):
-    """No handle can name this process here, so nothing may be signalled."""
+    """No handle can name this process here, so nothing may be signalled.
+
+    ``reason`` is a bounded symbolic discriminator, never a parsed message.
+    Only ``pidfd_unsupported`` says the host lacks the mechanism itself; every
+    other reason is about this pid and leaves the stop refused.
+    """
+
+    def __init__(self, detail: str, reason: str = REASON_PIN_FAILED) -> None:
+        self.reason = reason if reason in HANDLE_REASONS else REASON_PIN_FAILED
+        super().__init__(detail)
 
 
 def interpret_pidfd_poll(fd: int, ready: object) -> bool | None:
@@ -146,6 +184,38 @@ class OwnedProcessHandle(Protocol):
         ...
 
 
+
+# "replaced" is deliberately not folded into "exited": the recorded process is
+# gone either way, but only "exited" is evidence that this session's own owner
+# ended, and only "replaced" says its pid now names something unrelated.
+ProcessObservation = Literal["live", "exited", "replaced", "unknown"]
+
+
+class ProcessController(Protocol):
+    def current_pid(self) -> int:
+        ...
+
+    def start_identity(self, pid: int) -> str | None:
+        ...
+
+    def observe(self, pid: int, start_identity: str) -> ProcessObservation:
+        ...
+
+    def open_owned_process(self, pid: int, start_identity: str) -> OwnedProcessHandle | None:
+        ...
+
+    def host_identity(self) -> str | None:
+        ...
+
+    def boot_identity(self) -> str | None:
+        ...
+
+    # A controller may also offer ``pidfd_available() -> bool | None``. It is
+    # deliberately not required here: an older controller that does not answer
+    # leaves the capability unknown, which is the right report, rather than
+    # failing a stop over a field that only describes the stop.
+
+
 class PidfdOwnedProcess:
     """One pidfd: the poll, the signal and the wait all use this same handle."""
 
@@ -182,16 +252,22 @@ class PidfdOwnedProcess:
         """Send one SIGTERM through the handle. Never escalates, never sweeps."""
 
         if self._closed:
-            raise ProcessHandleUnavailable("the owned process handle is already closed")
+            raise ProcessHandleUnavailable(
+                "the owned process handle is already closed", REASON_CLOSED
+            )
         try:
             signal.pidfd_send_signal(self._fd, signal.SIGTERM)
         except ProcessLookupError:
             # Gone between the poll and the signal, which is the asked-for end.
             return
         except PermissionError as error:
-            raise ProcessHandleUnavailable("this session cannot signal the owned process") from error
+            raise ProcessHandleUnavailable(
+                "this session cannot signal the owned process", REASON_PERMISSION
+            ) from error
         except OSError as error:
-            raise ProcessHandleUnavailable("the owned process signal failed") from error
+            raise ProcessHandleUnavailable(
+                "the owned process signal failed", REASON_SIGNAL_FAILED
+            ) from error
 
     def close(self) -> None:
         if self._closed:
@@ -218,26 +294,35 @@ def open_owned_process(pid: int, start_identity: str) -> PidfdOwnedProcess | Non
     """
 
     if pid <= 0:
-        raise ProcessHandleUnavailable("the owned pid is invalid")
+        raise ProcessHandleUnavailable("the owned pid is invalid", REASON_INVALID_PID)
     if pid == os.getpid():
-        raise ProcessHandleUnavailable("refusing to signal the current process")
+        raise ProcessHandleUnavailable(
+            "refusing to signal the current process", REASON_INVALID_PID
+        )
     if not pidfd_signalling_available():
-        raise ProcessHandleUnavailable(PIDFD_UNAVAILABLE_DETAIL)
+        raise ProcessHandleUnavailable(PIDFD_UNAVAILABLE_DETAIL, REASON_PIDFD_UNSUPPORTED)
     try:
         fd = os.pidfd_open(pid, 0)
     except ProcessLookupError:
         return None
     except PermissionError as error:
-        raise ProcessHandleUnavailable("this session cannot pin the owned process") from error
+        raise ProcessHandleUnavailable(
+            "this session cannot pin the owned process", REASON_PERMISSION
+        ) from error
     except OSError as error:
         if error.errno in (errno.ENOSYS, errno.EINVAL):
-            raise ProcessHandleUnavailable(PIDFD_UNAVAILABLE_DETAIL) from error
-        raise ProcessHandleUnavailable("the owned pid could not be pinned") from error
+            raise ProcessHandleUnavailable(
+                PIDFD_UNAVAILABLE_DETAIL, REASON_PIDFD_UNSUPPORTED
+            ) from error
+        raise ProcessHandleUnavailable(
+            "the owned pid could not be pinned", REASON_PIN_FAILED
+        ) from error
     handle = PidfdOwnedProcess(fd, pid)
     observed = read_start_identity(pid)
     if observed is None or observed != start_identity:
         handle.close()
         raise ProcessHandleUnavailable(
-            f"owned pid {pid} no longer carries its recorded start identity"
+            f"owned pid {pid} no longer carries its recorded start identity",
+            REASON_IDENTITY_MISMATCH,
         )
     return handle

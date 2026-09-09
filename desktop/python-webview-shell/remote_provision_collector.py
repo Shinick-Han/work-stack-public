@@ -1,193 +1,141 @@
 """Self-contained stdlib remote Linux provisioning facts collector.
 
 Streamed on SSH stdin to ``python -I -B -``. This module never imports Work Stack
-or local desktop siblings, never writes, and never enumerates a tree.
+or local desktop siblings and never enumerates a tree. The only write is an
+opt-in disposable capability scratch under the selected application parent.
+
+Its four checked-in stdlib-only siblings -- ``remote_provision_contract``,
+``remote_provision_host``, ``remote_provision_identity`` and
+``remote_provision_capability`` -- are composed into the same bounded stdin
+stream by ``remote_provision_probe``, so the remote interpreter resolves them
+without a filesystem or package dependency.
 """
 
 from __future__ import annotations
 
-import ast
 import json
 import os
-import re
 import stat
 import sys
 import uuid
 from collections.abc import Sequence
+
+from remote_provision_capability import (
+    NFS_TYPES,
+    measured_capability,
+    scratch_parent_admitted,
+    unmeasured_capability,
+)
+from remote_provision_contract import (
+    COLLECTOR_COMMAND,
+    SCRATCH_FLAG,
+    ProbeError,
+    _link_target_segments,
+    _overlap,
+    _owner_arg,
+    parse_collector_argv,
+)
+from remote_provision_host import (
+    _effective_username,
+    _glibc_version,
+    _host_close,
+    _host_fstat,
+    _host_fstatvfs,
+    _host_fstype,
+    _host_lstatat,
+    _host_open,
+    _host_openat,
+    _host_read_fd,
+    _host_readlinkat,
+    _inode,
+    _interpreter_facts,
+    _normalized_machine,
+    _open_flags,
+    _owner_name,
+    _running_on_linux,
+    _soabi,
+)
+from remote_provision_identity import (
+    FROZEN_TARGET_JSON,
+    _literal_identity,
+    _object_from_bytes,
+    _parse_canonical_receipt,
+    _reject_constant,
+    _unique_object,
+    _well_formed_store_meta,
+    _workspace_uid,
+)
 
 
 MAX_FACTS_BYTES = 4096
 MAX_SOURCE_BYTES = 32768
 MAX_IDENTITY_BYTES = 4096
 MAX_STDERR_BYTES = 512
-MAX_DETAIL_LENGTH = 256
-MAX_CODE_LENGTH = 64
-MAX_PRODUCT_VERSION_LENGTH = 64
-MAX_PROTOCOL_VERSION = 1_000_000
-COLLECTOR_COMMAND = "provision-facts"
 SUPPORTED_OS = "linux"
-OWNER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,31}$")
-POSIX_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9._/-]+$")
-PYTHON_VERSION_PATTERN = re.compile(
-    r"^3\.([0-9]|[1-9][0-9])(?:\.([0-9]|[1-9][0-9]{0,2}))?$"
-)
 FACTS_KEYS = ("os", "python", "install", "data")
-DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+OPTIONAL_FACTS_KEYS = ("resolution", "host", "capability")
+MAX_SYMLINK_HOPS = 8
+SYS_RENAMEAT2 = 316
+RENAME_NOREPLACE = 1
 RECEIPT_NAME = ".workstack-install.json"
-RECEIPT_KEYS = frozenset(
-    {
-        "schema_version",
-        "product_version",
-        "remote_protocol_version",
-        "artifact_digest",
-        "artifact_manifest_sha256",
-        "workspace_uid",
-        "owner",
-        "target",
-    }
-)
-FROZEN_TARGET_JSON = (
-    b'{"glibc_min":[2,17],"implementation":"cpython","libc":"glibc",'
-    b'"machine":"x86_64","os":"linux","python_major":3,"python_minor":12,'
-    b'"python_tag":"cp312","soabi":"cpython-312-x86_64-linux-gnu",'
-    b'"wheel_platform":"manylinux_2_17_x86_64"}'
-)
-STORE_META_KEYS = frozenset({"version", "store_schema_version", "migrations"})
-MIGRATION_KEYS = frozenset({"identity", "planning_status"})
-EVIDENCE_KEYS = frozenset({"id", "origin", "source_sha256"})
 
 
-class ProbeError(RuntimeError):
-    """Bounded probe failure that must not echo raw stderr or paths."""
+def _rename_noreplace(parent_fd: int, old: str, new: str) -> int:
+    import ctypes
+    import errno
 
-    def __init__(self, code: str, detail: str = "") -> None:
-        self.code = _clip_text(code, MAX_CODE_LENGTH)
-        self.detail = _clip_text(detail, MAX_DETAIL_LENGTH)
-        super().__init__(self.code if not self.detail else f"{self.code}: {self.detail}")
-
-
-def _clip_text(value: str, maximum: int) -> str:
-    if len(value) <= maximum:
-        return value
-    return value[: maximum - 1] + "…"
-
-
-def _is_posix(value: object) -> bool:
-    if type(value) is not str or not POSIX_PATH_PATTERN.fullmatch(value):
-        return False
-    if value == "/" or value.endswith("/"):
-        return False
-    segments = value.split("/")[1:]
-    return bool(segments) and not any(segment in {"", ".", ".."} for segment in segments)
-
-
-def _posix_arg(value: object) -> str:
-    if not _is_posix(value):
-        raise ProbeError("INVALID_PROBE", "path is not a valid Linux POSIX path")
-    if any(ord(character) < 32 or character == "\x7f" for character in value):
-        raise ProbeError("INVALID_PROBE", "path is not a valid Linux POSIX path")
-    return value
-
-
-def _owner_arg(value: object) -> str:
-    if type(value) is not str or not OWNER_PATTERN.fullmatch(value):
-        raise ProbeError("INVALID_PROBE", "owner is not a POSIX user name")
-    return value
-
-
-def _overlap(left: str, right: str) -> bool:
-    return left == right or left.startswith(right + "/") or right.startswith(left + "/")
-
-
-def parse_collector_argv(argv: Sequence[str]) -> tuple[str, str, str]:
-    if len(argv) != 7:
-        raise ProbeError("INVALID_PROBE", "malformed argv")
-    if (
-        argv[0] != COLLECTOR_COMMAND
-        or argv[1] != "--install-root"
-        or argv[3] != "--data-root"
-        or argv[5] != "--owner"
-    ):
-        raise ProbeError("INVALID_PROBE", "malformed argv")
-    install_root = _posix_arg(argv[2])
-    data_root = _posix_arg(argv[4])
-    owner = _owner_arg(argv[6])
-    if _overlap(install_root, data_root):
-        raise ProbeError("INVALID_PROBE", "install and data roots must be separate")
-    return install_root, data_root, owner
-
-
-def _running_on_linux() -> bool:
-    return sys.platform.startswith("linux")
-
-
-def _effective_username() -> str:
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    args = (parent_fd, os.fsencode(old), parent_fd, os.fsencode(new), RENAME_NOREPLACE)
     try:
-        import pwd
+        func = libc.renameat2
+        func.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        func.restype = ctypes.c_int
+        result = func(*args)
+    except AttributeError:
+        libc.syscall.restype = ctypes.c_long
+        result = libc.syscall(SYS_RENAMEAT2, *args)
+    return 0 if result == 0 else (ctypes.get_errno() or errno.EIO)
 
-        name = pwd.getpwuid(os.geteuid()).pw_name
-    except (ImportError, KeyError, OSError, AttributeError, TypeError):
-        return ""
-    if type(name) is not str:
-        return ""
-    return name
 
+def _host_capability_scratch(parent: str) -> str:
+    import errno
 
-def _owner_name(uid: int) -> str | None:
+    fd = None
     try:
-        import pwd
-
-        name = pwd.getpwuid(uid).pw_name
-    except (ImportError, KeyError, OSError, AttributeError, TypeError):
-        return None
-    if type(name) is not str or not OWNER_PATTERN.fullmatch(name):
-        return None
-    return name
-
-
-def _interpreter_facts() -> dict[str, str] | None:
-    path = sys.executable
-    if not _is_posix(path):
-        return None
-    version = "{}.{}.{}".format(*sys.version_info[:3])
-    if not PYTHON_VERSION_PATTERN.fullmatch(version):
-        return None
-    return {"path": path, "version": version}
-
-
-def _host_open(path: str, flags: int) -> int:
-    return os.open(path, flags)
-
-
-def _host_openat(dirfd: int, name: str, flags: int) -> int:
-    return os.open(name, flags, dir_fd=dirfd)
-
-
-def _host_fstat(fd: int) -> os.stat_result:
-    return os.fstat(fd)
-
-
-def _host_lstatat(dirfd: int, name: str) -> os.stat_result:
-    return os.lstat(name, dir_fd=dirfd)
-
-
-def _host_read_fd(fd: int, limit: int) -> bytes:
-    return os.read(fd, limit)
-
-
-def _host_close(fd: int) -> None:
-    os.close(fd)
-
-
-def _open_flags(*names: str) -> int:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    for name in names:
-        flags |= getattr(os, name, 0)
-    return flags
-
-
-def _inode(info: os.stat_result) -> tuple[int, int]:
-    return (info.st_dev, info.st_ino)
+        fd = _host_open(parent, _open_flags("O_DIRECTORY", "O_NOFOLLOW"))
+        for _ in range(2):
+            token = "wscap-" + uuid.uuid4().hex[:16]
+            dest = token + "d"
+            try:
+                os.mkdir(token, 0o700, dir_fd=fd)
+            except FileExistsError:
+                continue
+            except PermissionError:
+                return "ownership"
+            err = _rename_noreplace(fd, token, dest)
+            leftover = dest if err == 0 else token
+            try:
+                os.rmdir(leftover, dir_fd=fd)
+            except OSError:
+                pass
+            if err == 0:
+                return "ok"
+            if err in {errno.ENOSYS, errno.EINVAL}:
+                return "unavailable"
+            if err in {errno.EACCES, errno.EPERM}:
+                return "ownership"
+            if err in {errno.EOPNOTSUPP, getattr(errno, "ENOTSUP", errno.EOPNOTSUPP), errno.EIO, errno.ESTALE, errno.EXDEV}:
+                return "nfs_failed"
+            return "unknown"
+        return "unknown"
+    except AttributeError:
+        return "unavailable"
+    except PermissionError:
+        return "ownership"
+    except OSError:
+        return "unknown"
+    finally:
+        _close_fd(fd)
 
 
 def _composition_race_hook(stage: str, path: str = "") -> None:
@@ -241,6 +189,106 @@ def _hold_last(
     if opened is None:
         return None, tuple(chain), True, owner, False
     return opened[0], tuple(chain), True, opened[1], False
+
+
+def _parent_posix(path: str) -> str:
+    parent = path.rsplit("/", 1)[0]
+    return "/" if parent == "" else parent
+
+
+def _reparse() -> ProbeError:
+    return ProbeError("TARGET_REPARSE_AMBIGUITY", "target path is a symlink or reparse point")
+
+
+def _resolve_configured(path: str) -> str:
+    parts = path.split("/")[1:]
+    hops = 0
+    while True:
+        current: int | None = None
+        restarted = False
+        try:
+            try:
+                current = _host_open("/", _open_flags("O_DIRECTORY", "O_NOFOLLOW"))
+            except OSError:
+                raise ProbeError("INVALID_PROBE", "target path could not be inspected") from None
+            built: list[str] = []
+            index = 0
+            while index < len(parts):
+                part = parts[index]
+                last = index == len(parts) - 1
+                info = _child_stat(current, part)
+                if info is None:
+                    built.extend(parts[index:])
+                    return "/" + "/".join(built)
+                if stat.S_ISLNK(info.st_mode):
+                    if last:
+                        built.append(part)
+                        return "/" + "/".join(built)
+                    hops += 1
+                    if hops > MAX_SYMLINK_HOPS:
+                        raise _reparse()
+                    try:
+                        target = _host_readlinkat(current, part)
+                    except (OSError, TypeError, ValueError, UnicodeError):
+                        raise _reparse() from None
+                    resolved = _link_target_segments(target, built)
+                    if resolved is None:
+                        raise _reparse()
+                    parts = resolved + parts[index + 1 :]
+                    restarted = True
+                    break
+                built.append(part)
+                if last:
+                    return "/" + "/".join(built)
+                if not stat.S_ISDIR(info.st_mode):
+                    built.extend(parts[index + 1 :])
+                    return "/" + "/".join(built)
+                opened = _open_dir_child(current, part, _inode(info))
+                if opened is None:
+                    raise _reparse()
+                _close_fd(current)
+                current = opened[0]
+                index += 1
+            if not restarted:
+                return "/" + "/".join(built) if built else "/"
+        finally:
+            _close_fd(current)
+
+
+def _measure_fs(dirfd: int) -> tuple[str, bool | None]:
+    noexec = None
+    try:
+        flag = getattr(os, "ST_NOEXEC", None)
+        if flag is not None:
+            noexec = bool(_host_fstatvfs(dirfd).f_flag & flag)
+    except (OSError, AttributeError, TypeError):
+        noexec = None
+    try:
+        name = _host_fstype(_host_fstat(dirfd).st_dev)
+    except (OSError, AttributeError, TypeError):
+        name = None
+    if name in NFS_TYPES:
+        return "nfs", noexec
+    if name:
+        return "other", noexec
+    return "unknown", noexec
+
+
+def _capability_fields(
+    fstype: str,
+    noexec: bool | None,
+    scratch_parent: str | None,
+    canonical_install: str,
+    canonical_data: str,
+) -> dict[str, object]:
+    if scratch_parent is None:
+        return unmeasured_capability(fstype, noexec)
+    scratch = _resolve_configured(scratch_parent)
+    if not scratch_parent_admitted(
+        scratch, _parent_posix(canonical_install), canonical_install, canonical_data
+    ):
+        raise ProbeError("INVALID_PROBE", "scratch parent must be the application parent")
+    return measured_capability(fstype, noexec, _host_capability_scratch(scratch))
 
 
 def _walk_root(path: str, *, strict: bool = True) -> tuple[int | None, tuple[tuple[int, int], ...], bool, str | None, bool]:
@@ -367,196 +415,6 @@ def _read_held_file(dirfd: int, relative: str, *, expected_owner: str | None = N
         _close_fd(fd)
 
 
-def _unique_object(pairs: list[tuple[object, object]]) -> dict[str, object]:
-    document: dict[str, object] = {}
-    for key, value in pairs:
-        if type(key) is not str or key in document:
-            raise ValueError("duplicate JSON key")
-        document[key] = value
-    return document
-
-
-def _reject_constant(value: str) -> object:
-    raise ValueError("invalid JSON constant")
-
-
-def _object_from_bytes(payload: bytes) -> dict[str, object] | None:
-    try:
-        value = json.loads(
-            payload.decode("utf-8"),
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_constant,
-        )
-    except (UnicodeError, ValueError, RecursionError, MemoryError):
-        return None
-    if type(value) is not dict:
-        return None
-    return value
-
-
-def _evidence_record(value: object, *, planning: bool = False, reports: bool = False, knowledge: bool = False) -> bool:
-    if type(value) is not dict or set(value) != EVIDENCE_KEYS:
-        return False
-    if type(value["id"]) is not str or type(value["origin"]) is not str:
-        return False
-    digest, origin = value["source_sha256"], value["origin"]
-    if knowledge:
-        expected_id = "workstack.knowledge.v6" if origin == "fresh" else "workstack.knowledge.v5-to-v6"
-        migrated_origins = {"migrated_v1", "migrated_v2", "migrated_v3", "migrated_v5"}
-    elif reports:
-        expected_id = "workstack.reports.v5" if origin == "fresh" else "workstack.reports.v3-to-v5"
-        migrated_origins = {"migrated_v1", "migrated_v2", "migrated_v3"}
-    elif planning:
-        expected_id = "workstack.planning-status.v1"
-        migrated_origins = {"migrated_v1", "migrated_v2"}
-    else:
-        expected_id = "workstack.store.v2" if origin == "fresh" else "workstack.store.v1-to-v2"
-        migrated_origins = {"migrated_v1"}
-    if value["id"] != expected_id:
-        return False
-    if origin == "fresh":
-        return digest is None
-    return origin in migrated_origins and type(digest) is str and DIGEST_PATTERN.fullmatch(digest) is not None
-
-
-def _well_formed_store_meta(value: object) -> bool:
-    if type(value) is not dict or set(value) != STORE_META_KEYS:
-        return False
-    if type(value["version"]) is not int or value["version"] != 2:
-        return False
-    schema, migrations = value["store_schema_version"], value["migrations"]
-    keys = {3: MIGRATION_KEYS, 5: MIGRATION_KEYS | {"reports"}, 6: MIGRATION_KEYS | {"reports", "knowledge"}}
-    if type(schema) is not int or schema not in keys or type(migrations) is not dict or set(migrations) != keys[schema]:
-        return False
-    identity = _evidence_record(migrations["identity"])
-    planning = _evidence_record(migrations["planning_status"], planning=True)
-    reports = schema == 3 or _evidence_record(migrations["reports"], reports=True)
-    return identity and planning and reports and (
-        schema != 6 or _evidence_record(migrations["knowledge"], knowledge=True)
-    )
-
-
-def _canonical_uid(text: object) -> str | None:
-    if type(text) is not str:
-        return None
-    try:
-        parsed = uuid.UUID(text)
-    except (ValueError, AttributeError):
-        return None
-    if text != str(parsed) or parsed.int == 0 or parsed.variant != uuid.RFC_4122:
-        return None
-    return text
-
-
-def _workspace_uid(value: object) -> str | None:
-    if type(value) is not dict:
-        return None
-    return _canonical_uid(value.get("id"))
-
-
-def _assign_constants(tree: ast.AST) -> dict[str, object]:
-    constants: dict[str, object] = {}
-    wanted = {"__version__", "REMOTE_PROTOCOL_VERSION"}
-    for node in tree.body:
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if isinstance(target, ast.Name) and target.id in wanted and node.value is not None:
-                    try:
-                        constants[target.id] = ast.literal_eval(node.value)
-                    except (ValueError, SyntaxError, TypeError, MemoryError):
-                        return {}
-    return constants
-
-
-def _literal_identity(payload: bytes) -> tuple[str | None, int | None]:
-    try:
-        tree = ast.parse(payload.decode("utf-8"))
-        constants = _assign_constants(tree)
-    except (UnicodeError, SyntaxError, ValueError, RecursionError, MemoryError):
-        return None, None
-    version = constants.get("__version__")
-    protocol = constants.get("REMOTE_PROTOCOL_VERSION")
-    if (
-        not isinstance(version, str)
-        or not version
-        or len(version) > MAX_PRODUCT_VERSION_LENGTH
-        or any(ord(character) < 32 for character in version)
-    ):
-        return None, None
-    if type(protocol) is not int or not 0 <= protocol <= MAX_PROTOCOL_VERSION:
-        return None, None
-    return version, protocol
-
-
-def _normalized_machine() -> str | None:
-    try:
-        import platform
-
-        raw = platform.machine()
-    except (ImportError, OSError, AttributeError, TypeError):
-        return None
-    if type(raw) is not str:
-        return None
-    token = raw.strip().lower().replace("-", "_")
-    if token in {"x86_64", "amd64", "x64"}:
-        return "x86_64"
-    return None
-
-
-def _soabi() -> object:
-    try:
-        import sysconfig
-
-        return sysconfig.get_config_var("SOABI")
-    except (ImportError, TypeError, ValueError, OSError):
-        return None
-
-
-def _glibc_version() -> tuple[int, int] | None:
-    text = _glibc_version_text()
-    if type(text) is not str:
-        return None
-    parts = text.split(".")
-    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
-        return None
-    major, minor = int(parts[0]), int(parts[1])
-    if major > 999 or minor > 999:
-        return None
-    return major, minor
-
-
-def _glibc_version_text() -> str | None:
-    text = None
-    confstr = getattr(os, "confstr", None)
-    if callable(confstr):
-        try:
-            raw = confstr("CS_GNU_LIBC_VERSION")
-        except (ValueError, OSError, TypeError, AttributeError):
-            raw = None
-        if type(raw) is str and raw.startswith("glibc "):
-            text = raw[6:]
-    if text is None:
-        try:
-            import ctypes
-
-            fn = ctypes.CDLL("libc.so.6").gnu_get_libc_version
-            fn.restype = ctypes.c_char_p
-            payload = fn()
-        except (OSError, AttributeError, TypeError, ValueError):
-            return None
-        if type(payload) is bytes:
-            try:
-                text = payload.decode("ascii")
-            except UnicodeError:
-                return None
-        elif type(payload) is str:
-            text = payload
-        else:
-            return None
-    return text
-
-
 def _runtime_target_ok() -> bool:
     if not _running_on_linux():
         return False
@@ -570,52 +428,6 @@ def _runtime_target_ok() -> bool:
         return False
     glibc = _glibc_version()
     return glibc is not None and glibc >= (2, 17)
-
-
-def _frozen_target_ok(value: object) -> bool:
-    if type(value) is not dict:
-        return False
-    try:
-        encoded = json.dumps(
-            value, ensure_ascii=True, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
-    except (TypeError, ValueError, RecursionError, MemoryError):
-        return False
-    return encoded == FROZEN_TARGET_JSON
-
-
-def _parse_canonical_receipt(payload: bytes) -> dict[str, object] | None:
-    if payload.startswith(b"\xef\xbb\xbf") or b"\r" in payload:
-        return None
-    if not payload.endswith(b"\n") or payload.count(b"\n") != 1:
-        return None
-    value = _object_from_bytes(payload)
-    if value is None:
-        return None
-    try:
-        encoded = json.dumps(
-            value, ensure_ascii=True, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8") + b"\n"
-    except (TypeError, ValueError, RecursionError, MemoryError):
-        return None
-    if encoded != payload or set(value) != RECEIPT_KEYS:
-        return None
-    return value if _receipt_fields_valid(value) else None
-
-
-def _receipt_fields_valid(value: dict[str, object]) -> bool:
-    digest = value["artifact_digest"]
-    manifest = value["artifact_manifest_sha256"]
-    return (
-        type(value["schema_version"]) is int and value["schema_version"] == 1
-        and type(value["product_version"]) is str and bool(value["product_version"])
-        and type(value["remote_protocol_version"]) is int
-        and type(digest) is str and DIGEST_PATTERN.fullmatch(digest) is not None
-        and type(manifest) is str and DIGEST_PATTERN.fullmatch(manifest) is not None
-        and _canonical_uid(value["workspace_uid"]) is not None
-        and type(value["owner"]) is str and OWNER_PATTERN.fullmatch(value["owner"]) is not None
-        and _frozen_target_ok(value["target"])
-    )
 
 
 def _canonical_receipt_digest(
@@ -709,12 +521,21 @@ def _data_fields(
     }
 
 
-def _compose_facts(install_root: str, data_root: str, owner: str) -> dict[str, object]:
+def _compose_facts(
+    install_root: str, data_root: str, owner: str, scratch_parent: str | None
+) -> dict[str, object]:
     install_fd = None
     data_fd = None
+    parent_fd = None
     try:
-        install_fd, install_chain, install_exists, install_owner, install_link = _walk_root(install_root)
-        data_fd, data_chain, data_exists, data_owner, data_link = _walk_root(data_root)
+        canonical_install = _resolve_configured(install_root)
+        canonical_data = _resolve_configured(data_root)
+        if _overlap(canonical_install, canonical_data):
+            raise ProbeError("INVALID_PROBE", "install and data roots must be separate")
+        install_fd, install_chain, install_exists, install_owner, install_link = _walk_root(
+            canonical_install
+        )
+        data_fd, data_chain, data_exists, data_owner, data_link = _walk_root(canonical_data)
         _composition_race_hook("after_root_bind")
         data = _data_fields(data_exists, data_owner, data_link, data_fd)
         data_uid = data["workspace_id"] if type(data["workspace_id"]) is str else None
@@ -724,28 +545,72 @@ def _compose_facts(install_root: str, data_root: str, owner: str) -> dict[str, o
         )
         _composition_race_hook("before_root_revalidate")
         stable = True
-        if install_fd is not None and not _chain_holds(install_root, install_chain):
+        try:
+            if _resolve_configured(install_root) != canonical_install:
+                stable = False
+            if _resolve_configured(data_root) != canonical_data:
+                stable = False
+        except ProbeError:
             stable = False
-        if data_fd is not None and not _chain_holds(data_root, data_chain):
+        if install_fd is not None and not _chain_holds(canonical_install, install_chain):
+            stable = False
+        if data_fd is not None and not _chain_holds(canonical_data, data_chain):
             stable = False
         if not stable:
             install = dict(install)
             install["digest"] = None
+        fstype, noexec = "unknown", None
+        parent = _parent_posix(canonical_install)
+        try:
+            parent_fd, _pchain, parent_exists, _powner, parent_link = _walk_root(parent)
+            if parent_fd is not None and parent_exists and not parent_link:
+                fstype, noexec = _measure_fs(parent_fd)
+        except ProbeError:
+            pass
         return {
             "os": SUPPORTED_OS,
             "python": _interpreter_facts(),
             "install": install,
             "data": data,
+            "resolution": {
+                "install": {
+                    "configured": install_root,
+                    "canonical": canonical_install,
+                    "stable": stable,
+                },
+                "data": {
+                    "configured": data_root,
+                    "canonical": canonical_data,
+                    "stable": stable,
+                },
+            },
+            "host": {
+                "runtime": SUPPORTED_OS,
+                "machine": _normalized_machine(),
+                "binding": "unknown",
+            },
+            "capability": _capability_fields(
+                fstype, noexec, scratch_parent, canonical_install, canonical_data
+            ),
         }
     finally:
         _close_fd(install_fd)
         _close_fd(data_fd)
+        _close_fd(parent_fd)
 
 
 def collect_provision_facts(
-    install_root: str, data_root: str, owner: str
+    install_root: str,
+    data_root: str,
+    owner: str,
+    scratch_parent: str | None = None,
 ) -> dict[str, object]:
-    """Return planner-shaped facts. Never writes and never inventories a tree."""
+    """Return planner-shaped facts. Never inventories a tree.
+
+    Read-only unless ``scratch_parent`` is supplied. That opt-in argument is
+    the only write path: one disposable directory under the selected
+    application parent, created and removed to measure atomic publication.
+    """
 
     if not _running_on_linux():
         raise ProbeError("INVALID_PROBE", "remote collector requires Linux")
@@ -753,7 +618,25 @@ def collect_provision_facts(
         raise ProbeError(
             "TARGET_OWNERSHIP_MISMATCH", "effective user does not match owner"
         )
-    return _compose_facts(install_root, data_root, owner)
+    return _compose_facts(install_root, data_root, owner, scratch_parent)
+
+
+def revalidate_provision_resolution(
+    install_root: str,
+    data_root: str,
+    expected_install: str,
+    expected_data: str,
+) -> None:
+    """Refuse apply when configured paths no longer resolve to inspected canonicals."""
+
+    if (
+        _resolve_configured(install_root) != expected_install
+        or _resolve_configured(data_root) != expected_data
+    ):
+        raise ProbeError(
+            "TARGET_RESOLUTION_DRIFT",
+            "configured path no longer resolves to the inspected canonical target",
+        )
 
 
 def encode_facts_line(facts: dict[str, object]) -> bytes:

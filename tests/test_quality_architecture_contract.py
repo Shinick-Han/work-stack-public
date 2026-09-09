@@ -154,11 +154,15 @@ class Classification(unittest.TestCase):
             "desktop/python-webview-shell/knowledge_search.py",
             "desktop/python-webview-shell/knowledge_host.py",
             "desktop/python-webview-shell/knowledge_host_search.py",
+            "desktop/python-webview-shell/remote_update_maintenance.py",
+            "desktop/python-webview-shell/remote_update_maintenance_receipts.py",
         }
         for filename in ("knowledge_registry.py", "knowledge_registry_paths.py", "knowledge_search.py"):
             self.assertEqual(layer_of(f"desktop/python-webview-shell/{filename}"), "py_knowledge_registry")
         for filename in ("knowledge_host.py", "knowledge_host_search.py"):
             self.assertEqual(layer_of(f"desktop/python-webview-shell/{filename}"), "py_knowledge_host")
+        for filename in ("remote_update_maintenance.py", "remote_update_maintenance_receipts.py"):
+            self.assertEqual(layer_of(f"desktop/python-webview-shell/{filename}"), "py_remote_maintenance")
         for path in sorted(others):
             with self.subTest(path=path):
                 self.assertEqual(layer_of(path), "py_desktop")
@@ -914,7 +918,7 @@ def _fixture_config(path: str) -> "dict[str, Any]":
 # Re-pinned after the reviewed 7f8dda0 decrease-only Wave 3 ratchet:
 # zero new/raised debt entries, 37 retired and 11 lowered against c7a7234.
 # Re-measured populations and metadata are pinned; only config_digest is excluded.
-PRESERVED_BASELINE_DIGEST = "4e7048559dcfcba29a8f360a911f581c90ecd911337881a6e9d5e59ce82df8ea"
+PRESERVED_BASELINE_DIGEST = "d158979287b7da909700f2e2431f8643b06c039c88d2bb62df4fab8562f4a2dd"
 
 
 def baseline_preservation_problems(baseline: dict[str, Any]) -> list[str]:

@@ -1,6 +1,6 @@
 # Work Stack
 
-**Current release: [1.0.13](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.13) (2026-09-09).** The Windows installer, checksum and stable update manifest are published. See the release notes for installation and Smart App Control limitations, and the [product boundary and closeout](docs/WORKSTACK-CLOSEOUT-2026-09-09.ko.md).
+**Current release: [1.0.14](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.14) (2026-09-10).** Includes the matching Linux remote bundle and guided remote update/recovery. See [installation, verification and limitations](docs/WORKSTACK-1.0.14-RELEASE.ko.md). Windows and connected Linux updates are distinct operations.
 
 For the current Task/Knowledge capabilities and the remaining OpenDocuments integration
 work, see [Knowledge integration status (2026-09-08, Korean)](docs/KNOWLEDGE-INTEGRATION-STATUS-2026-09-08.ko.md).

@@ -1,4 +1,4 @@
-"""Remote owner receipt: identity, fencing, and bounded stop confirmation.
+"""Remote owner receipt: identity, fencing, and the authority a stop needs.
 
 The receipt records which process on which host and which boot is serving one
 data directory.  That directory can be a share, and a pid only means something
@@ -13,25 +13,29 @@ authority and is never opened, stolen, or unlinked from this module; the
 receipt is lifetime bookkeeping that may refuse a start and may stop the one
 process this session started, after proving that process is gone.
 
-Two siblings carry the parts a pid check alone cannot do.  Every mutation runs
+Siblings carry the parts a pid check alone cannot do.  Every mutation runs
 inside one ``remote_receipt_guard`` critical section, so a cooperating worker
 cannot publish a new owner between another worker's comparison and its unlink,
 and the stop signal goes through a ``remote_process_handle`` bound to the exact
 process, so a reused pid is refused rather than signalled.
+
+What is left here is the composition of those parts, and it is the half that
+needs this host.  ``remote_owner_receipt`` holds the receipt's bytes, its
+bounds and its publication; ``remote_owner_stop`` holds the confirmation that
+goes through a handle, or the honest observation where no pidfd exists.  The
+controllers, the host and boot identity they report, the fencing
+classification and the guarded acquire/reclaim/remove/stop decisions live in
+this module, which reads those siblings and is read by none of them.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import os
 import sys
-import time
-from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator, Literal, Protocol
+from typing import Literal
 
 # Python isolated mode (-I) omits the script directory from sys.path. Admit
 # only the resolved directory containing this checked-in file so the sibling
@@ -41,45 +45,70 @@ if _SHELL_DIR not in sys.path:
     sys.path.insert(0, _SHELL_DIR)
 
 from remote_command_contract import token_hash
-from remote_process_handle import (
+
+# Every name a caller already reached through this module stays reachable from
+# here, re-exported unchanged, so the split moved no import site and no
+# monkeypatch target.
+from remote_owner_receipt import (  # noqa: F401  partly re-exported
+    FENCED_OWNER_KEYS,
+    MAX_IDENTITY_VALUE_LENGTH,
+    MAX_OWNER_BYTES,
+    OWNER_FENCING_KEYS,
+    OWNER_FILENAME,
+    OWNER_KEYS,
+    SHA256_HEX_LENGTH,
+    UNFENCED_RECOVERY_DETAIL,
+    EntryError,
+    GuardWait,
+    OwnerReceipt,
+    encode_owner_receipt,
+    owner_receipt_path,
+    parse_owner_receipt,
+    read_owner_receipt,
+    read_owner_receipt_bytes,
+    write_owner_receipt_exclusive,
+    _read_owner_bytes,
+    _receipt_guard,
+)
+from remote_owner_stop import (  # noqa: F401  partly re-exported
+    NO_PIDFD_LIMIT_DETAIL,
+    UNSIGNALLED_WAIT_SECONDS,
+    StopWait,
+    _Decision,
+    _confirmed,
+    _refusal,
+    _replaced_refusal,
+    _stop_through_owned_handle,
+    _unsignalled_budget,
+    controller_pidfd_available,
+)
+from remote_process_handle import (  # noqa: F401  partly re-exported
     OwnedProcessHandle,
+    ProcessController,
     ProcessHandleUnavailable,
+    ProcessObservation,
     open_owned_process,
+    pidfd_signalling_available,
     read_bounded_ascii,
     read_start_identity,
 )
-from remote_receipt_guard import (
-    GuardContended,
-    GuardUnavailable,
-    GuardWait,
-    owner_receipt_guard,
-)
-from remote_receipt_io import (
-    ReceiptAlreadyExists,
-    ReceiptPublicationUnavailable,
-    publish_bytes_exclusive,
+from remote_stop_result import (
+    STOP_AMBIGUOUS_LIVENESS,
+    STOP_CONFIRMED_ALREADY_EXITED,
+    STOP_RECEIPT_ABSENT,
+    STOP_REFUSED_FOREIGN_HOST,
+    STOP_REFUSED_GUARD,
+    STOP_REFUSED_RECEIPT_INVALID,
+    STOP_REFUSED_TOKEN_MISMATCH,
+    STOP_REFUSED_UNFENCED_RECEIPT,
+    STOP_REFUSED_WORKSPACE_MISMATCH,
+    StopResult,
 )
 
 
-OWNER_KEYS = (
-    "workspace_id",
-    "data_dir_digest",
-    "app_dir_digest",
-    "pid",
-    "start_identity",
-    "release_id",
-    "token_hash",
-)
-# A receipt carries exactly OWNER_KEYS or exactly FENCED_OWNER_KEYS.
-OWNER_FENCING_KEYS = ("host_identity", "boot_identity")
-FENCED_OWNER_KEYS = OWNER_KEYS + OWNER_FENCING_KEYS
-MAX_OWNER_BYTES = 4096
 # /proc/stat puts a very long "intr" line before "btime", so it needs far more
 # room than one process stat.
 MAX_IDENTITY_SOURCE_BYTES = 262_144
-MAX_IDENTITY_VALUE_LENGTH = 64
-OWNER_FILENAME = ".workstack-remote-owner.json"
-SHA256_HEX_LENGTH = 64
 
 # Digests are domain separated so a host digest can never equal a boot digest,
 # and source tagged so two different sources never compare equal by accident.
@@ -91,53 +120,6 @@ PROC_STAT_PATH = "/proc/stat"
 # A host without /proc has no observable boot. The constant keeps it
 # self-consistent without claiming boot fencing it does not have.
 ISOLATED_BOOT_SOURCE = "isolated-no-boot-identity"
-
-UNFENCED_RECOVERY_DETAIL = (
-    "legacy owner receipt has no host or boot identity; confirm no remote owner "
-    f"is serving this data directory from any host, then remove {OWNER_FILENAME}"
-)
-
-
-@dataclass(frozen=True)
-class StopWait:
-    """Bounded confirmation budget for stop-owned. Tests inject the clock."""
-
-    timeout_seconds: float = 10.0
-    poll_seconds: float = 0.05
-    monotonic: Callable[[], float] = time.monotonic
-    sleep: Callable[[float], None] = time.sleep
-
-
-class EntryError(Exception):
-    def __init__(self, code: str, detail: str = "") -> None:
-        self.code = code
-        super().__init__(code if not detail else f"{code}: {detail}")
-
-
-# "replaced" is deliberately not folded into "exited": the recorded process is
-# gone either way, but only "exited" is evidence that this session's own owner
-# ended, and only "replaced" says its pid now names something unrelated.
-ProcessObservation = Literal["live", "exited", "replaced", "unknown"]
-
-
-class ProcessController(Protocol):
-    def current_pid(self) -> int:
-        ...
-
-    def start_identity(self, pid: int) -> str | None:
-        ...
-
-    def observe(self, pid: int, start_identity: str) -> ProcessObservation:
-        ...
-
-    def open_owned_process(self, pid: int, start_identity: str) -> OwnedProcessHandle | None:
-        ...
-
-    def host_identity(self) -> str | None:
-        ...
-
-    def boot_identity(self) -> str | None:
-        ...
 
 
 class IsolatedProcessController:
@@ -163,6 +145,11 @@ class IsolatedProcessController:
             "REMOTE_PROTOCOL_INVALID",
             "this host cannot bind a stop to the owned process, so it is refused",
         )
+
+    def pidfd_available(self) -> bool | None:
+        # Nothing outside Linux /proc opens a pidfd, and saying so plainly is
+        # better than reporting an unknown this host can already answer.
+        return False
 
     def host_identity(self) -> str | None:
         return local_host_identity()
@@ -197,7 +184,12 @@ class LinuxProcController:
         try:
             return open_owned_process(pid, start_identity)
         except ProcessHandleUnavailable as error:
-            raise EntryError("REMOTE_PROTOCOL_INVALID", str(error)) from error
+            raise EntryError(
+                "REMOTE_PROTOCOL_INVALID", str(error), reason=error.reason
+            ) from error
+
+    def pidfd_available(self) -> bool | None:
+        return pidfd_signalling_available()
 
     def host_identity(self) -> str | None:
         return local_host_identity()
@@ -286,188 +278,6 @@ def local_path_digest(path: Path) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-@dataclass(frozen=True)
-class OwnerReceipt:
-    workspace_id: str
-    data_dir_digest: str
-    app_dir_digest: str
-    pid: int
-    start_identity: str
-    release_id: str
-    token_hash: str
-    # Absent in a pre-fencing receipt, and absent means unknown host.
-    host_identity: str | None = None
-    boot_identity: str | None = None
-
-    @property
-    def is_fenced(self) -> bool:
-        return self.host_identity is not None and self.boot_identity is not None
-
-
-def owner_receipt_path(data_dir: Path) -> Path:
-    return data_dir / OWNER_FILENAME
-
-
-def _sha256_hex(value: object, field: str) -> str:
-    if not isinstance(value, str) or len(value) != SHA256_HEX_LENGTH:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", f"{field} is invalid")
-    if any(character not in "0123456789abcdef" for character in value):
-        raise EntryError("REMOTE_PROTOCOL_INVALID", f"{field} is invalid")
-    return value
-
-
-def _bounded_label(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value or len(value) > MAX_IDENTITY_VALUE_LENGTH:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", f"owner {field} is invalid")
-    if any(ord(character) < 32 for character in value):
-        raise EntryError("REMOTE_PROTOCOL_INVALID", f"owner {field} is invalid")
-    return value
-
-
-def _bounded_pid(value: object) -> int:
-    if type(value) is not int or value <= 0:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner pid is invalid")
-    return value
-
-
-def _owner_body(payload: bytes) -> dict[str, object]:
-    if len(payload) > MAX_OWNER_BYTES:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt too large")
-    try:
-        value = json.loads(payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt is not JSON") from error
-    if not isinstance(value, dict):
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt shape")
-    if set(value) not in ({*OWNER_KEYS}, {*FENCED_OWNER_KEYS}):
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt shape")
-    return value
-
-
-def parse_owner_receipt(payload: bytes) -> OwnerReceipt:
-    value = _owner_body(payload)
-    fenced = "host_identity" in value
-    return OwnerReceipt(
-        workspace_id=_bounded_label(value["workspace_id"], "workspace identity"),
-        data_dir_digest=_sha256_hex(value["data_dir_digest"], "data_dir_digest"),
-        app_dir_digest=_sha256_hex(value["app_dir_digest"], "app_dir_digest"),
-        pid=_bounded_pid(value["pid"]),
-        start_identity=_bounded_label(value["start_identity"], "start identity"),
-        release_id=_bounded_label(value["release_id"], "release identity"),
-        token_hash=_sha256_hex(value["token_hash"], "token_hash"),
-        host_identity=_sha256_hex(value["host_identity"], "host_identity") if fenced else None,
-        boot_identity=_sha256_hex(value["boot_identity"], "boot_identity") if fenced else None,
-    )
-
-
-def _read_owner_bytes(data_dir: Path) -> bytes | None:
-    path = owner_receipt_path(data_dir)
-    try:
-        with path.open("rb") as stream:
-            payload = stream.read(MAX_OWNER_BYTES + 1)
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt is unreadable") from error
-    if len(payload) > MAX_OWNER_BYTES:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt too large")
-    return payload
-
-
-def read_owner_receipt_bytes(data_dir: Path) -> tuple[OwnerReceipt, bytes] | None:
-    """Read the receipt with the exact bytes every later removal is judged on."""
-
-    payload = _read_owner_bytes(data_dir)
-    if payload is None:
-        return None
-    return parse_owner_receipt(payload), payload
-
-
-def read_owner_receipt(data_dir: Path) -> OwnerReceipt | None:
-    found = read_owner_receipt_bytes(data_dir)
-    return None if found is None else found[0]
-
-
-def encode_owner_receipt(receipt: OwnerReceipt) -> bytes:
-    if not receipt.is_fenced:
-        raise EntryError(
-            "REMOTE_PROTOCOL_INVALID", "owner receipt is missing host or boot identity"
-        )
-    encoded = json.dumps(
-        {
-            "workspace_id": receipt.workspace_id,
-            "data_dir_digest": receipt.data_dir_digest,
-            "app_dir_digest": receipt.app_dir_digest,
-            "pid": receipt.pid,
-            "start_identity": receipt.start_identity,
-            "release_id": receipt.release_id,
-            "token_hash": receipt.token_hash,
-            "host_identity": receipt.host_identity,
-            "boot_identity": receipt.boot_identity,
-        },
-        ensure_ascii=True,
-        separators=(",", ":"),
-    ).encode("utf-8") + b"\n"
-    if len(encoded) > MAX_OWNER_BYTES:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt too large")
-    return encoded
-
-
-def unlink_owner_receipt(data_dir: Path) -> None:
-    try:
-        owner_receipt_path(data_dir).unlink()
-    except FileNotFoundError:
-        return
-    except OSError as error:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt could not be removed") from error
-
-
-def _unlink_receipt_if_unchanged_locked(data_dir: Path, expected: bytes) -> bool:
-    """Remove the receipt only while it is still the exact one that was judged.
-
-    Call this with the receipt guard already held.  The comparison and the
-    unlink are two operations and the filesystem has no compare-and-swap to
-    fuse them, so it is the guard, not this function, that stops a cooperating
-    worker publishing a new owner in between and having it deleted here.
-    """
-
-    current = _read_owner_bytes(data_dir)
-    if current is None:
-        return True
-    if current != expected:
-        return False
-    unlink_owner_receipt(data_dir)
-    return True
-
-
-@contextmanager
-def _receipt_guard(data_dir: Path, guard: GuardWait) -> Iterator[None]:
-    """Hold the receipt guard, reporting a refusal in the remote error codes."""
-
-    try:
-        with owner_receipt_guard(data_dir, guard):
-            yield
-    except GuardContended as error:
-        raise EntryError("REMOTE_LOCK_OWNED", str(error)) from error
-    except GuardUnavailable as error:
-        raise EntryError("REMOTE_PROTOCOL_INVALID", str(error)) from error
-
-
-def write_owner_receipt_exclusive(data_dir: Path, receipt: OwnerReceipt) -> None:
-    """Create the receipt, refusing an existing one. Callers hold the guard."""
-
-    encoded = encode_owner_receipt(receipt)
-    try:
-        publish_bytes_exclusive(owner_receipt_path(data_dir), encoded)
-    except ReceiptAlreadyExists as error:
-        raise EntryError("REMOTE_LOCK_OWNED", "pid=unknown") from error
-    except ReceiptPublicationUnavailable as error:
-        raise EntryError(
-            "REMOTE_PROTOCOL_INVALID",
-            str(error) or "owner receipt could not be published",
-        ) from error
-
-
 OwnerFencing = Literal["unfenced", "foreign_host", "prior_boot", "current_boot"]
 OwnerState = Literal[
     "absent", "dead", "replaced", "live", "ambiguous", "foreign", "unfenced"
@@ -532,6 +342,38 @@ def owner_recognizes_caller(receipt: OwnerReceipt, caller_token: str | None) -> 
     if not caller_token:
         return False
     return hmac.compare_digest(receipt.token_hash, token_hash(caller_token))
+
+
+# Removing a receipt is an authority decision, not a byte operation: only the
+# module that judged the receipt may take it away, and only while it is still
+# the exact one that was judged. So the removal stays here with the decisions
+# that authorise it -- which is also what keeps it one seam a cooperating
+# worker's reclaim can be stalled at in a two-process race test.
+def unlink_owner_receipt(data_dir: Path) -> None:
+    try:
+        owner_receipt_path(data_dir).unlink()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt could not be removed") from error
+
+
+def _unlink_receipt_if_unchanged_locked(data_dir: Path, expected: bytes) -> bool:
+    """Remove the receipt only while it is still the exact one that was judged.
+
+    Call this with the receipt guard already held.  The comparison and the
+    unlink are two operations and the filesystem has no compare-and-swap to
+    fuse them, so it is the guard, not this function, that stops a cooperating
+    worker publishing a new owner in between and having it deleted here.
+    """
+
+    current = _read_owner_bytes(data_dir)
+    if current is None:
+        return True
+    if current != expected:
+        return False
+    unlink_owner_receipt(data_dir)
+    return True
 
 
 def reclaim_or_refuse_owner(
@@ -683,62 +525,150 @@ def remove_published_owner_receipt_if_still_ours(
         return "published owner receipt cleanup is uncertain"
 
 
-def _await_handle_exit(
-    handle: OwnedProcessHandle, receipt: OwnerReceipt, wait: StopWait
-) -> None:
-    """Wait through the same handle that was signalled, or refuse.
-
-    The handle names the process, so nothing that later takes its pid can make
-    this loop report success. SIGTERM was sent once, before this call.
-    """
-
-    deadline = wait.monotonic() + wait.timeout_seconds
-    while True:
-        exited = handle.has_exited()
-        if exited:
-            return
-        if exited is None:
-            raise EntryError(
-                "REMOTE_PROTOCOL_INVALID", f"owner exit could not be confirmed pid={receipt.pid}"
-            )
-        if wait.monotonic() >= deadline:
-            raise EntryError(
-                "REMOTE_LOCK_OWNED",
-                f"owner did not exit within {wait.timeout_seconds:g}s pid={receipt.pid}",
-            )
-        wait.sleep(wait.poll_seconds)
 
 
-def _stop_through_owned_handle(
-    receipt: OwnerReceipt, controller: ProcessController, wait: StopWait
-) -> None:
-    """Signal and confirm through one handle bound to the recorded process.
+def _stop_owned_locked(
+    data_dir: Path,
+    *,
+    expected_hash: str,
+    expected_data: str,
+    wait: StopWait,
+    unsignalled_wait: StopWait,
+) -> _Decision:
+    """The whole stop decision, with the receipt guard already held."""
 
-    The pin, the liveness poll, the signal and the wait are the same handle, so
-    a pid reused at any point in that sequence cannot be signalled and cannot
-    be mistaken for the owner exiting.  The handle is closed exactly once.
-    """
-
-    handle = controller.open_owned_process(receipt.pid, receipt.start_identity)
-    if handle is None:
-        # The pid holds no process at all, which is the end a stop asks for.
-        return
     try:
-        exited = handle.has_exited()
-        if exited is None:
-            raise EntryError(
-                "REMOTE_PROTOCOL_INVALID",
-                f"owner liveness could not be read through its handle pid={receipt.pid}",
+        found = read_owner_receipt_bytes(data_dir)
+    except EntryError as error:
+        return _refusal(STOP_REFUSED_RECEIPT_INVALID, error)
+    if found is None:
+        # Nothing claims this data directory, and that is all it says. No
+        # process was observed either way, so both the exit evidence and the
+        # owner state stay unknown: an owner that exited and cleaned up, a
+        # receipt that was never written, and one removed by hand all look
+        # like this, and calling it "dead" would pick one of the three
+        # without having observed anything.
+        return (
+            StopResult(
+                code=STOP_RECEIPT_ABSENT,
+                state="unknown",
+                detail="no owner receipt claims this data directory",
+            ),
+            None,
+        )
+    receipt, raw = found
+    if not hmac.compare_digest(receipt.data_dir_digest, expected_data):
+        return _refusal(
+            STOP_REFUSED_WORKSPACE_MISMATCH,
+            EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt identity mismatch"),
+        )
+    if not hmac.compare_digest(receipt.token_hash, expected_hash):
+        # A different session owns this receipt, or this session's token was
+        # lost and regenerated. Either way this caller is not the owner; that
+        # is a distinct fact from a legacy receipt and from a foreign host.
+        #
+        # It is a fact about authority and not about liveness. The refusal
+        # lands before any controller is consulted, so nothing has looked at
+        # the recorded pid: a receipt whose token does not match may name a
+        # process that is running, one that exited minutes ago, or a pid now
+        # held by something unrelated. The state therefore stays unknown, and
+        # the operator step is the one the token mismatch names.
+        return _refusal(
+            STOP_REFUSED_TOKEN_MISMATCH,
+            EntryError("REMOTE_LOCK_OWNED", f"pid={receipt.pid}"),
+            state="unknown",
+            token_available=False,
+        )
+    controller = get_process_controller()
+    pidfd = controller_pidfd_available(controller)
+    state = classify_owner(receipt, controller)
+    if state == "unfenced":
+        return _refusal(
+            STOP_REFUSED_UNFENCED_RECEIPT,
+            EntryError("REMOTE_LOCK_OWNED", UNFENCED_RECOVERY_DETAIL),
+            state="unfenced",
+            token_available=True,
+            pidfd_available=pidfd,
+        )
+    if state == "foreign":
+        marker = (receipt.host_identity or "")[:12]
+        return _refusal(
+            STOP_REFUSED_FOREIGN_HOST,
+            EntryError(
+                "REMOTE_LOCK_OWNED",
+                f"owner receipt belongs to another host host={marker}",
+            ),
+            state="foreign",
+            token_available=True,
+            pidfd_available=pidfd,
+        )
+    if state == "ambiguous":
+        return _refusal(
+            STOP_AMBIGUOUS_LIVENESS,
+            EntryError("REMOTE_PROTOCOL_INVALID", "owner liveness is ambiguous"),
+            state="unknown",
+            token_available=True,
+            pidfd_available=pidfd,
+        )
+    if state == "replaced":
+        return _replaced_refusal(receipt, pidfd_available=pidfd)
+    if state == "dead":
+        _unlink_receipt_if_unchanged_locked(data_dir, raw)
+        return _confirmed(STOP_CONFIRMED_ALREADY_EXITED, pidfd_available=pidfd)
+    result, refusal = _stop_through_owned_handle(receipt, controller, wait, unsignalled_wait)
+    if result.confirmed:
+        _unlink_receipt_if_unchanged_locked(data_dir, raw)
+    return result, refusal
+
+
+def _stop_owned(
+    data_dir: Path,
+    session_token: str,
+    wait: StopWait,
+    guard: GuardWait,
+    unsignalled_wait: StopWait | None,
+) -> _Decision:
+    expected_hash = token_hash(session_token)
+    expected_data = local_path_digest(data_dir)
+    try:
+        with _receipt_guard(data_dir, guard):
+            return _stop_owned_locked(
+                data_dir,
+                expected_hash=expected_hash,
+                expected_data=expected_data,
+                wait=wait,
+                unsignalled_wait=unsignalled_wait or _unsignalled_budget(wait),
             )
-        if exited:
-            return
-        try:
-            handle.send_terminate()
-        except ProcessHandleUnavailable as error:
-            raise EntryError("REMOTE_PROTOCOL_INVALID", str(error)) from error
-        _await_handle_exit(handle, receipt, wait)
-    finally:
-        handle.close()
+    except EntryError as error:
+        # Only the guard itself raises out of that block; everything inside it
+        # returns its refusal instead, so this really is "the critical section
+        # could not be entered" and nothing was read, signalled or removed.
+        return _refusal(STOP_REFUSED_GUARD, error)
+
+
+def stop_owned_result(
+    data_dir: Path,
+    session_token: str,
+    wait: StopWait = StopWait(),
+    guard: GuardWait = GuardWait(),
+    *,
+    unsignalled_wait: StopWait | None = None,
+) -> StopResult:
+    """Stop the owner this session started and report what was established.
+
+    Same authority and same effects as :func:`run_stop_owned`; the difference
+    is that every condition comes back as one bounded symbolic outcome instead
+    of as a raise, so the caller can tell a refusal apart from an unconfirmed
+    stop and record the exit evidence rather than the fact that a command ran.
+
+    ``listener_release`` and ``lease_release`` are left unknown here on
+    purpose.  This module never opens the writer lease and never binds a port,
+    so it has measured neither; a caller that has really observed one attaches
+    it with :meth:`StopResult.with_observations`.
+    """
+
+    result, _ = _stop_owned(data_dir, session_token, wait, guard, unsignalled_wait)
+    return result
 
 
 def run_stop_owned(
@@ -748,6 +678,11 @@ def run_stop_owned(
     guard: GuardWait = GuardWait(),
 ) -> None:
     """Stop the owner this session started, and only after proving it stopped.
+
+    The raising form, kept for the remote entry point's existing exit-status
+    contract: it returns for a confirmed stop and raises the refusal for every
+    other condition.  :func:`stop_owned_result` is the same decision without
+    the loss of detail that collapsing every condition into one raise causes.
 
     The session token is admitted before anything is removed, so a caller that
     does not hold the owner's token deletes nothing here, not even a receipt
@@ -765,26 +700,6 @@ def run_stop_owned(
     signalling on.  A timeout or an unreadable handle also keeps the receipt.
     """
 
-    expected_hash = token_hash(session_token)
-    expected_data = local_path_digest(data_dir)
-    with _receipt_guard(data_dir, guard):
-        found = read_owner_receipt_bytes(data_dir)
-        if found is None:
-            return
-        receipt, raw = found
-        if not hmac.compare_digest(receipt.data_dir_digest, expected_data):
-            raise EntryError("REMOTE_PROTOCOL_INVALID", "owner receipt identity mismatch")
-        if not hmac.compare_digest(receipt.token_hash, expected_hash):
-            raise EntryError("REMOTE_LOCK_OWNED", f"pid={receipt.pid}")
-        controller = get_process_controller()
-        state = classify_owner(receipt, controller)
-        _refuse_unowned_state(receipt, state)
-        if state == "replaced":
-            raise EntryError(
-                "REMOTE_PROTOCOL_INVALID",
-                f"owner pid {receipt.pid} now carries a different start identity, so "
-                "this session cannot tell whether its owner exited; receipt kept",
-            )
-        if state != "dead":
-            _stop_through_owned_handle(receipt, controller, wait)
-        _unlink_receipt_if_unchanged_locked(data_dir, raw)
+    _, refusal = _stop_owned(data_dir, session_token, wait, guard, None)
+    if refusal is not None:
+        raise refusal
