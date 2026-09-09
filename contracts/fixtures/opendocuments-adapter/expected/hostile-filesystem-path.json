@@ -1,0 +1,107 @@
+{
+  "ok": true,
+  "result": {
+    "format": "workstack.opendocuments-adapter.proposed",
+    "schema_version": 0,
+    "mapping_status": "proposed",
+    "request_id": "33333333-3333-4333-8333-333333333333",
+    "connection_id": "conn_opendocuments_pilot_1",
+    "query": "Show the shared drive notes",
+    "retriever": {
+      "id": "opendocuments",
+      "role": "retriever",
+      "capabilities": [
+        "search"
+      ],
+      "unsupported": [
+        "verify_origin",
+        "open_origin",
+        "collection_filter",
+        "conversation_persistence",
+        "source_document_identity"
+      ]
+    },
+    "engine": {
+      "query_id": "44444444-4444-4444-8444-444444444444",
+      "route": "rag",
+      "profile": "balanced",
+      "confidence": {
+        "score": 0.4,
+        "level": "medium",
+        "kind": "engine_relevance",
+        "reason": "Partial match found"
+      }
+    },
+    "generated_answer": "discarded",
+    "candidates": [
+      {
+        "indexed_identity": {
+          "retriever_id": "opendocuments",
+          "connection_id": "conn_opendocuments_pilot_1",
+          "indexed_document_id": "cccccccc-dddd-4eee-8fff-000000000001",
+          "indexed_chunk_id": "cccccccc-dddd-4eee-8fff-000000000001_chunk_0",
+          "identity_scope": "opendocuments_index"
+        },
+        "source": {
+          "kind": "local",
+          "declared_source_type": "local",
+          "type_locator_agreement": "agree",
+          "locator": {
+            "type": "display_label",
+            "value": "document",
+            "reason": null
+          },
+          "identity": {
+            "status": "unknown",
+            "value": null,
+            "basis": "chat_response_cannot_prove_source_identity"
+          }
+        },
+        "title": "Notes",
+        "locator": {
+          "type": "chunk_index",
+          "position": 0,
+          "index_chunk_id": "cccccccc-dddd-4eee-8fff-000000000001_chunk_0",
+          "source_locator": false
+        },
+        "index_heading_path": {
+          "segments": [
+            "Notes"
+          ],
+          "addressable": false
+        },
+        "excerpt": "Quarterly notes for the pilot corpus.",
+        "excerpt_truncated": false,
+        "excerpt_sanitized": false,
+        "engine_score": 0.5,
+        "source_version": {
+          "status": "unavailable",
+          "value": null,
+          "basis": "chat_response"
+        },
+        "content_hash": {
+          "status": "unavailable",
+          "value": null,
+          "basis": "chat_response"
+        },
+        "verification": {
+          "status": "indexed_snapshot_unverified",
+          "checked_at": null,
+          "origin_current": false
+        },
+        "trust": "external_reference",
+        "read_only": true
+      }
+    ],
+    "omitted": [],
+    "limitations": {
+      "query_logging_attempted_by_route": true,
+      "query_log_persistence_confirmed": false,
+      "source_version_from_chat": false,
+      "origin_verified": false,
+      "collection_filter_applied": false,
+      "source_document_identity_proven": false,
+      "non_workspace_results_omitted": true
+    }
+  }
+}

@@ -123,4 +123,39 @@ describe('connection registry schemas', () => {
       expect(connectionProfileWriteSchema.safeParse({ ...sshProfile, remote_python }).success).toBe(false)
     }
   })
+
+  test('preserves optional knowledge_drivers_config through read, draft, and write', () => {
+    const python = '/opt/workstack/venv/bin/python'
+    const config = '/srv/workstack/knowledge-drivers.json'
+    const sshProfile = {
+      profile_id: localProfile.profile_id,
+      label: localProfile.label,
+      kind: 'ssh' as const,
+      enabled: localProfile.enabled,
+      live_updates: localProfile.live_updates,
+      expected_workspace_id: localProfile.expected_workspace_id,
+      ssh_host_alias: 'work-linux',
+      remote_app_dir: '/srv/workstack/app',
+      remote_data_dir: '/srv/workstack/ssot',
+      preferred_forward_port: 24_567,
+      remote_port: 8_765,
+      remote_python: python,
+    }
+    expect(connectionRegistrySchema.parse(registry([sshProfile])).profiles[0]).toEqual(sshProfile)
+    const withConfig = { ...sshProfile, knowledge_drivers_config: config }
+    const read = connectionRegistrySchema.parse(registry([withConfig])).profiles[0]
+    expect(read).toEqual(withConfig)
+    const draft = connectionProfileDraftSchema.parse({ ...read, expected_workspace_id: workspaceId })
+    expect(draft).toEqual(withConfig)
+    expect(connectionProfileWriteSchema.parse(draft)).toEqual(withConfig)
+    expect(connectionProfileWriteSchema.parse(sshProfile)).toEqual(sshProfile)
+    expect(connectionProfileDraftSchema.parse({ ...sshProfile, expected_workspace_id: null, remote_python: python })).not.toHaveProperty('knowledge_drivers_config')
+    for (const knowledge_drivers_config of [null, '', 'C:\\drivers.json', 'drivers.json', '/', '/srv/../etc/drivers.json', '/srv/./drivers.json']) {
+      expect(connectionRegistrySchema.safeParse(registry([{ ...sshProfile, knowledge_drivers_config }])).success).toBe(false)
+      expect(connectionProfileDraftSchema.safeParse({ ...sshProfile, knowledge_drivers_config }).success).toBe(false)
+      expect(connectionProfileWriteSchema.safeParse({ ...sshProfile, knowledge_drivers_config }).success).toBe(false)
+    }
+    expect(connectionRegistrySchema.safeParse(registry([{ ...localProfile, knowledge_drivers_config: config }])).success).toBe(false)
+    expect(connectionProfileWriteSchema.safeParse({ ...withConfig, unknown_setting: true }).success).toBe(false)
+  })
 })

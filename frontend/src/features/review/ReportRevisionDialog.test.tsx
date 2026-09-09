@@ -19,6 +19,8 @@ const LATER = '2026-09-06T13:00:00Z'
 const GENERATED = '2026-09-06T11:59:00Z'
 const MARKDOWN = '# Hello <script>alert(1)</script>\n\n| a | b |\n'
 const KEY_PREFIX = 'workstack:'
+/** Whatever the workspace says about a refusal is never the reader's copy. */
+const REMOTE_PROSE = 'remote prose that must never be shown'
 
 function period() {
   return { kind: 'day' as const, date: '2026-09-06' }
@@ -471,6 +473,50 @@ test('authored markdown stays inert text and fallbacks stay enabled after a refu
   expect(screen.getByRole('button', { name: 'Download .md' })).toBeEnabled()
   await userEvent.click(screen.getByRole('button', { name: 'Copy Markdown' }))
   await waitFor(() => expect(writeText).toHaveBeenCalledWith(MARKDOWN + 'more'))
+})
+
+/**
+ * The revision dialog stringifies the refusal helper into a template, so before the
+ * table was closed a workspace code of `constructor` put `function Object() { [native
+ * code] }` — and `__proto__` put `[object Object]` — in front of the reader, in place of
+ * the authored fallback. The edited buffer and both ways of keeping it must survive.
+ */
+test.each([
+  'constructor',
+  '__proto__',
+  'toString',
+  'hasOwnProperty',
+  'valueOf',
+  'report_code_no_table_holds',
+])('a revision refused with the code %s reads as authored copy and keeps the edit', async (code) => {
+  const fetchMock = sessionFetch((url) => {
+    if (url.includes('/revisions?')) {
+      return jsonResponse({ error: { code, message: REMOTE_PROSE } }, 409)
+    }
+    if (url.startsWith(`/api/v1/reports/${REPORT_UID}?`)) {
+      return jsonResponse({ data: readDocument({ revisions: [content({ markdown: MARKDOWN })] }) })
+    }
+    if (url.startsWith('/api/v1/reports?')) return jsonResponse({ data: listPage([listItem()]) })
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  renderPanel()
+  await userEvent.click(await screen.findByText(/Report version 1/))
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit report' }))
+  fireEvent.change(editor(), { target: { value: MARKDOWN + 'more' } })
+  await userEvent.click(screen.getByRole('button', { name: 'Save new version' }))
+
+  const alert = await screen.findByRole('alert')
+  expect(alert).toHaveTextContent(/This saved report could not be updated, so nothing was written\./)
+  expect(alert).toHaveTextContent(/Your text is still here/)
+  expect(document.body.textContent).not.toContain('native code')
+  expect(document.body.textContent).not.toContain('[object Object]')
+  expect(document.body.textContent).not.toContain(REMOTE_PROSE)
+
+  // Nothing was written: the edit stands, the exports still work, one write left.
+  expect(editor()).toHaveValue(MARKDOWN + 'more')
+  expect(screen.getByRole('button', { name: 'Copy Markdown' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Download .md' })).toBeEnabled()
+  expect(posts(fetchMock, '/revisions?')).toHaveLength(1)
 })
 
 test('an invalid workspace identity never opens a revision write', async () => {

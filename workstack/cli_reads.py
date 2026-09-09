@@ -4,7 +4,9 @@ GET /api/v1/workspace, /api/v1/tasks/{id}, /api/v1/review and
 /api/v1/objectives/{id} are GUI projections. They add fields such as
 context_count and drop others such as status_fact_id, so they are not a
 parity source. Owner-held workspaces use the frozen CLI GET routes instead
-of a second local lease or a filtered GUI GET.
+of a second local lease or a filtered GUI GET. worklog.latest-checkpoint is
+the exception that reuses existing GET /api/v1/review/checkpoints with no
+query: that handler already returns WorkStack.list_checkpoint_audit().
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ PARITY_READ_KEYS = frozenset(
         "okr.list",
         "okr.rollup",
         "worklog.list",
+        "worklog.latest-checkpoint",
         "weekly",
     }
 )

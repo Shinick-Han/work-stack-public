@@ -55,6 +55,11 @@ class SshConnectionProfile:
     live_updates: bool = True
     kind: str = "ssh"
     remote_python: str | None = None
+    #: Absolute POSIX path of the operator's knowledge-driver registry on the
+    #: remote host. Appended last so every existing positional construction
+    #: keeps its meaning; only an SSH profile may carry one, and ``None`` means
+    #: the profile carries no path rather than an explicit null.
+    knowledge_drivers_config: str | None = None
 
 
 ConnectionProfile: TypeAlias = LocalConnectionProfile | SshConnectionProfile
@@ -200,7 +205,7 @@ def _validate_profile(raw: object, index: int) -> dict[str, object]:
                 "remote_port",
             },
             f"profiles[{index}]",
-            optional={"remote_python"},
+            optional={"remote_python", "knowledge_drivers_config"},
         )
         alias = _bounded_string(raw["ssh_host_alias"], "ssh_host_alias", 255)
         if not SSH_HOST_ALIAS_PATTERN.fullmatch(alias):
@@ -220,6 +225,12 @@ def _validate_profile(raw: object, index: int) -> dict[str, object]:
         }
         if "remote_python" in raw:
             ssh_values["remote_python"] = _remote_path(raw["remote_python"], "remote_python")
+        if "knowledge_drivers_config" in raw:
+            # Appended last so a record written before this field keeps its
+            # exact canonical bytes. Absent stays absent; it never becomes null.
+            ssh_values["knowledge_drivers_config"] = _remote_path(
+                raw["knowledge_drivers_config"], "knowledge_drivers_config"
+            )
         return ssh_values
     raise RuntimeError(f"profiles[{index}].kind must be 'local' or 'ssh'")
 
@@ -310,6 +321,11 @@ def _profile_from_document(raw: dict[str, object]) -> ConnectionProfile:
         remote_python=(
             str(raw["remote_python"]) if raw.get("remote_python") is not None else None
         ),
+        knowledge_drivers_config=(
+            str(raw["knowledge_drivers_config"])
+            if raw.get("knowledge_drivers_config") is not None
+            else None
+        ),
     )
 
 
@@ -350,6 +366,8 @@ def registry_to_document(registry: ConnectionRegistry) -> dict[str, object]:
             )
             if profile.remote_python is not None:
                 common["remote_python"] = profile.remote_python
+            if profile.knowledge_drivers_config is not None:
+                common["knowledge_drivers_config"] = profile.knowledge_drivers_config
         profiles.append(common)
     return validate_connection_registry(
         {
@@ -440,6 +458,70 @@ def _fsync_directory_best_effort(directory: Path) -> None:
         os.close(descriptor)
 
 
+def _admitted_legacy_ssh_alias(raw: dict[object, object]) -> str:
+    """The legacy draft's closed SSH shape, then its host alias."""
+
+    required = {
+        "storage_mode",
+        "ssh_host_alias",
+        "remote_app_dir",
+        "remote_data_dir",
+        "local_forward_port",
+        "workspace_id",
+    }
+    allowed = required | {"remote_port", "remote_python", "knowledge_drivers_config"}
+    missing = required - set(raw)
+    unexpected = set(raw) - allowed
+    if missing:
+        raise RuntimeError(
+            f"Legacy SSH connection draft is missing: {', '.join(sorted(missing))}"
+        )
+    if unexpected:
+        fields = ", ".join(sorted(str(field) for field in unexpected))
+        raise RuntimeError(
+            f"Legacy SSH connection draft has unsupported fields: {fields}"
+        )
+    alias = _bounded_string(raw["ssh_host_alias"], "ssh_host_alias", 255)
+    if not SSH_HOST_ALIAS_PATTERN.fullmatch(alias):
+        raise RuntimeError(
+            "ssh_host_alias must be a configured OpenSSH alias without spaces or shell characters"
+        )
+    return alias
+
+
+def _ssh_profile_from_legacy_draft(
+    raw: dict[object, object], profile_id: str, label: str | None
+) -> SshConnectionProfile:
+    """One legacy SSH draft as a registry profile, optional fields included.
+
+    ``remote_python`` and ``knowledge_drivers_config`` stay absent when the
+    draft carried none: neither is invented, and neither becomes an explicit
+    null on the migrated profile.
+    """
+
+    alias = _admitted_legacy_ssh_alias(raw)
+    return SshConnectionProfile(
+        profile_id=profile_id,
+        label=alias if label is None else label,
+        ssh_host_alias=alias,
+        remote_app_dir=_remote_path(raw["remote_app_dir"], "remote_app_dir"),
+        remote_data_dir=_remote_path(raw["remote_data_dir"], "remote_data_dir"),
+        expected_workspace_id=_canonical_uuid(raw["workspace_id"], "workspace_id"),
+        preferred_forward_port=_port(raw["local_forward_port"], "local_forward_port"),
+        remote_port=_port(raw.get("remote_port", 8765), "remote_port"),
+        remote_python=(
+            _remote_path(raw["remote_python"], "remote_python")
+            if "remote_python" in raw
+            else None
+        ),
+        knowledge_drivers_config=(
+            _remote_path(raw["knowledge_drivers_config"], "knowledge_drivers_config")
+            if "knowledge_drivers_config" in raw
+            else None
+        ),
+    )
+
+
 def migrate_singleton_draft(
     raw: object,
     *,
@@ -477,48 +559,7 @@ def migrate_singleton_draft(
             ),
         )
     elif mode == "ssh-remote":
-        required = {
-            "storage_mode",
-            "ssh_host_alias",
-            "remote_app_dir",
-            "remote_data_dir",
-            "local_forward_port",
-            "workspace_id",
-        }
-        allowed = required | {"remote_port", "remote_python"}
-        missing = required - set(raw)
-        unexpected = set(raw) - allowed
-        if missing:
-            raise RuntimeError(
-                f"Legacy SSH connection draft is missing: {', '.join(sorted(missing))}"
-            )
-        if unexpected:
-            fields = ", ".join(sorted(str(field) for field in unexpected))
-            raise RuntimeError(
-                f"Legacy SSH connection draft has unsupported fields: {fields}"
-            )
-        alias = _bounded_string(raw["ssh_host_alias"], "ssh_host_alias", 255)
-        if not SSH_HOST_ALIAS_PATTERN.fullmatch(alias):
-            raise RuntimeError(
-                "ssh_host_alias must be a configured OpenSSH alias without spaces or shell characters"
-            )
-        profile = SshConnectionProfile(
-            profile_id=generated_id,
-            label=alias if label is None else label,
-            ssh_host_alias=alias,
-            remote_app_dir=_remote_path(raw["remote_app_dir"], "remote_app_dir"),
-            remote_data_dir=_remote_path(raw["remote_data_dir"], "remote_data_dir"),
-            expected_workspace_id=_canonical_uuid(raw["workspace_id"], "workspace_id"),
-            preferred_forward_port=_port(
-                raw["local_forward_port"], "local_forward_port"
-            ),
-            remote_port=_port(raw.get("remote_port", 8765), "remote_port"),
-            remote_python=(
-                _remote_path(raw["remote_python"], "remote_python")
-                if "remote_python" in raw
-                else None
-            ),
-        )
+        profile = _ssh_profile_from_legacy_draft(raw, generated_id, label)
     else:
         raise RuntimeError("Legacy storage_mode must be 'local' or 'ssh-remote'")
     registry = ConnectionRegistry(REGISTRY_SCHEMA_VERSION, generated_id, (profile,))
@@ -547,4 +588,6 @@ def singleton_draft_from_registry(registry: ConnectionRegistry) -> dict[str, obj
     }
     if profile.remote_python is not None:
         draft["remote_python"] = profile.remote_python
+    if profile.knowledge_drivers_config is not None:
+        draft["knowledge_drivers_config"] = profile.knowledge_drivers_config
     return draft

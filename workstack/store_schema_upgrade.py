@@ -1,4 +1,4 @@
-"""Detecting the collection version on disk and upgrading it to v5.
+"""Detecting the collection version on disk and upgrading it to v6.
 
 An upgrade rewrites every authoritative document, so the whole of this module is
 about earning the right to start one: which version this directory actually is,
@@ -19,6 +19,7 @@ import secrets
 from pathlib import Path
 from typing import Any, Mapping
 
+from . import store_knowledge_migration
 from . import store_report_migration
 from . import store_rosters
 from .store_document_validation import StoreReadiness, validate_document_values
@@ -35,7 +36,7 @@ __all__ = ["StoreSchemaUpgradeMixin"]
 
 
 class StoreSchemaUpgradeMixin:
-    """Schema detection and the v5 upgrade for the composed ``Store``.
+    """Schema detection and the v6 upgrade for the composed ``Store``.
 
     Collaborators the composed Store owns: ``root``, ``path``,
     ``_read_documents_locked``, ``_decoded_documents``,
@@ -54,7 +55,12 @@ class StoreSchemaUpgradeMixin:
         already used.
         """
 
+        if existing == set(store_rosters.V6_DOCUMENT_NAMES):
+            return 6
         if existing == set(store_rosters.V5_DOCUMENT_NAMES):
+            # A v5 directory is exactly the ten v5 names. A v6 one carries
+            # knowledge.json as well, so it can never be admitted as v5 and
+            # then be judged against v5's evidence and v5's roster.
             return 5
         if existing == set(store_rosters.V1_DOCUMENT_NAMES):
             if (
@@ -206,7 +212,7 @@ class StoreSchemaUpgradeMixin:
         target, verified_digest = self._persist_prebackup_locked(
             detected, bodies, readiness
         )
-        writes, operation_id = store_report_migration.plan_upgrade(
+        writes, operation_id = store_knowledge_migration.plan_upgrade(
             detected, values, digest, now=_utc_stamp()
         )
         self._rebind_prebackup_locked(target, verified_digest)

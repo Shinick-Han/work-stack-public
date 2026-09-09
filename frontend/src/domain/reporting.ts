@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CAPTURE_STATUSES } from './types'
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -60,6 +61,87 @@ function utf8JsonBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).length
 }
 
+/** Frozen R44 catalogue bounds: 32 rows, existing admitted Capture display title. */
+export const MAX_DAILY_PREVIEW_CONTEXT_ITEMS = 32
+export const MAX_DAILY_PREVIEW_CONTEXT_TITLE_CHARS = 500
+const CAPTURE_ID = /^C-[0-9]{4,}$/
+const TASK_ID = /^T-[0-9]{4,}$/
+
+const contextCatalogItemSchema = z.object({
+  capture_id: z.string().regex(CAPTURE_ID, 'capture_id must be an existing C-<n> Capture id'),
+  capture_revision: z.number().int().nonnegative(),
+  title: z.string().min(1).max(MAX_DAILY_PREVIEW_CONTEXT_TITLE_CHARS),
+  linked_task_ids: z.array(z.string().regex(TASK_ID, 'linked_task_ids must be existing T-<n> Task ids'))
+    .min(1)
+    .max(MAX_DAILY_PREVIEW_DAY_ENTRIES),
+  status: z.enum(CAPTURE_STATUSES),
+}).strict()
+
+/** Shared with the weekly preview decoder (R45); the closed R44 catalogue shape. */
+export const contextCatalogSchema = z.object({
+  captured_at: z.string().datetime({ offset: true }),
+  items: z.array(contextCatalogItemSchema).max(MAX_DAILY_PREVIEW_CONTEXT_ITEMS),
+  omitted_count: z.number().int().nonnegative(),
+}).strict()
+
+export type DailyReportContextCatalog = z.infer<typeof contextCatalogSchema>
+export type DailyReportContextItem = z.infer<typeof contextCatalogItemSchema>
+
+/**
+ * Natural order for a zero-padded `<prefix>-<digits>` wire id: fewer
+ * significant digits sort first, so C-00010 follows C-0009 the way the
+ * backend enumerates Captures.
+ */
+function naturalIdOrder(left: string, right: string): number {
+  const leftDigits = left.replace(/^[A-Z]+-0*/, '')
+  const rightDigits = right.replace(/^[A-Z]+-0*/, '')
+  if (leftDigits.length !== rightDigits.length) return leftDigits.length - rightDigits.length
+  if (leftDigits === rightDigits) return 0
+  return leftDigits < rightDigits ? -1 : 1
+}
+
+function isNaturalAscending(ids: readonly string[]): boolean {
+  return ids.every((id, index) => index === 0 || naturalIdOrder(ids[index - 1], id) < 0)
+}
+
+function refuseContext(ctx: z.RefinementCtx, message: string, path: (string | number)[]) {
+  ctx.addIssue({ code: 'custom', message, path: ['context_catalog', ...path] })
+}
+
+/**
+ * The catalogue is a snapshot of the SAME preview generation, so it may only
+ * name that preview's provenance tasks and must arrive already deduplicated,
+ * naturally ordered and truthfully truncated. A malformed present catalogue is
+ * refused here rather than laundered into a partially trusted panel.
+ *
+ * The preview argument is structural, so the weekly preview reuses this exact
+ * predicate against its own generated_at and provenance.task_ids.
+ */
+export function refineContextCatalog(
+  catalog: DailyReportContextCatalog,
+  preview: { generated_at: string; provenance: { task_ids: string[] } },
+  ctx: z.RefinementCtx,
+) {
+  if (catalog.captured_at !== preview.generated_at) {
+    refuseContext(ctx, 'context_catalog captured_at is not the preview generation time', ['captured_at'])
+  }
+  const dayTaskIds = new Set(preview.provenance.task_ids)
+  if (!isNaturalAscending(catalog.items.map((item) => item.capture_id))) {
+    refuseContext(ctx, 'context_catalog items are not in unique natural Capture id order', ['items'])
+  }
+  catalog.items.forEach((item, index) => {
+    if (!isNaturalAscending(item.linked_task_ids)) {
+      refuseContext(ctx, 'linked_task_ids are not unique and natural-sorted', ['items', index, 'linked_task_ids'])
+    }
+    if (item.linked_task_ids.some((taskId) => !dayTaskIds.has(taskId))) {
+      refuseContext(ctx, 'linked_task_ids must intersect this preview\'s provenance tasks', ['items', index, 'linked_task_ids'])
+    }
+  })
+  if (catalog.omitted_count > 0 && catalog.items.length !== MAX_DAILY_PREVIEW_CONTEXT_ITEMS) {
+    refuseContext(ctx, 'omitted_count is only possible once the item bound is reached', ['omitted_count'])
+  }
+}
+
 export const dailyReportPreviewPayloadSchema = z.object({
   workspace_uid: workspaceUidSchema,
   source_digest: z.string().regex(SOURCE_DIGEST, 'source_digest must be sha256:<64 lowercase hex>'),
@@ -80,7 +162,10 @@ export const dailyReportPreviewPayloadSchema = z.object({
     }).strict(),
     markdown: z.string().max(MAX_DAILY_PREVIEW_MARKDOWN_CHARS),
   }).strict(),
+  // Absent on servers before R44; the daily preview stays fully usable without it.
+  context_catalog: contextCatalogSchema.optional(),
 }).strict().superRefine((value, ctx) => {
+  if (value.context_catalog) refineContextCatalog(value.context_catalog, value.preview, ctx)
   if (value.preview.period.date !== value.preview.provenance.date) {
     ctx.addIssue({
       code: 'custom',

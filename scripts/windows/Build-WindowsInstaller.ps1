@@ -78,7 +78,45 @@ try {
         throw 'Bundled Work Stack package was not copied into the payload root.'
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $payload 'frontend'), (Join-Path $payload 'scripts') | Out-Null
+    # ---- admitted frontend dist -----------------------------------------
+    # Bind frontend\dist to the source content it was built from before a single
+    # byte of it is copied. One bounded invocation of the shared release gate: it
+    # captures the frontend build inputs into a private scratch tree, runs the
+    # real `npm run build` out of that capture, and records the captured bytes
+    # beside the emitted tree. An already matching tree is left byte-for-byte
+    # untouched. mtimes and the git commit are not evidence here; only content
+    # digests are. The gate never installs dependencies -- an uninstalled
+    # frontend\node_modules refuses instead of packaging a stale bundle.
+    $distGate = & python (Join-Path $sourcePath 'scripts\release_gate.py') refresh-dist --repo $sourcePath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "The frontend dist/source gate refused to package this tree: $($distGate -join ' ')"
+    }
+    # Keep what the gate ADMITTED. frontend\dist is generated and git-ignored, so
+    # any other process on this machine may rewrite it the instant this call
+    # returns; the admitted digest is the only thing that can bind the bytes this
+    # installer ships to the receipt the gate just wrote.
+    $distSummary = @($distGate | ForEach-Object { $_.ToString() } | Where-Object { $_.Trim() }) |
+        Select-Object -Last 1
+    $admittedDist = $null
+    try { $admittedDist = $distSummary | ConvertFrom-Json } catch { $admittedDist = $null }
+    if (-not $admittedDist -or -not $admittedDist.dist_digest) {
+        throw "The frontend dist/source gate reported no admitted dist digest: $($distGate -join ' ')"
+    }
+    Write-Host "Frontend dist gate admitted $($admittedDist.dist_file_count) file(s): $($admittedDist.dist_digest)"
     Copy-Item -LiteralPath (Join-Path $sourcePath 'frontend\dist') -Destination (Join-Path $payload 'frontend\dist') -Recurse
+    # Everything shipped from here on is this private payload copy, and it is now
+    # compared to the admitted digest rather than to a fresh reading of the live
+    # tree. A file mutated, added or removed between the gate call and the copy --
+    # including a live change that is restored again afterwards -- leaves the copy
+    # disagreeing with what was admitted and fails packaging closed. The live
+    # frontend\dist is never read again.
+    $stagedDist = Join-Path $payload 'frontend\dist'
+    $stagedDistCheck = & python (Join-Path $sourcePath 'scripts\release_gate.py') verify-staged-dist --staged $stagedDist --expect $admittedDist.dist_digest 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "The packaged frontend\dist is not the tree the gate admitted: $($stagedDistCheck -join ' ')"
+    }
+    Write-Host "Frontend dist staged $($stagedDistCheck -join ' ')"
+    # ---- end admitted frontend dist ---------------------------------------
     Copy-Item -LiteralPath (Join-Path $sourcePath 'scripts\windows') -Destination (Join-Path $payload 'scripts\windows') -Recurse
     foreach ($file in @('run_work_stack.py', 'requirements.txt', 'requirements-windows-desktop.txt', 'README.md', 'LICENSE', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md')) {
         Copy-Item -LiteralPath (Join-Path $sourcePath $file) -Destination (Join-Path $payload $file)

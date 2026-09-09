@@ -6,8 +6,9 @@ The rosters below are historical facts, so the assertions repeat every name by
 hand instead of deriving one constant from another — a test that computed the
 expected set the same way the module does would pass through any edit.
 
-Nothing here activates schema 5. ``V5_DOCUMENT_NAMES`` is recorded, and the
-suite asserts that ``reports.json`` is still unsupported everywhere.
+This build writes schema 6. ``V5_DOCUMENT_NAMES`` and every set older than it
+are historical facts that did not move when it did, and the suite asserts they
+still describe their own stores.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from workstack.store import (
     _compact_json,
 )
 from workstack.store_document_validation import _validate_auxiliary_store
+from workstack.knowledge_ledger_document import KNOWLEDGE_DOCUMENT_NAME
 from workstack.store_rosters import (
     REPORTS_DOCUMENT_NAME,
     V1_DOCUMENT_NAMES,
@@ -40,6 +42,7 @@ from workstack.store_rosters import (
     V3_LEGACY_MARKER_NAMES,
     V3_SORTED_DOCUMENT_NAMES,
     V5_DOCUMENT_NAMES,
+    V6_DOCUMENT_NAMES,
     auxiliary_store_defect,
 )
 from workstack.storage.document_repository import WorkspaceDocument
@@ -257,37 +260,58 @@ class AuxiliaryDefaultShapeTest(unittest.TestCase):
         self.assertNotIsInstance(refused.exception, StoreCorruptError)
 
 
-class CurrentBuildWritesV5Test(unittest.TestCase):
-    """What this build writes now, stated against the frozen v5 roster.
+class CurrentBuildWritesV6Test(unittest.TestCase):
+    """What this build writes now, stated against the frozen v6 roster.
 
-    These four moved from three to five when schema 5 was activated. The
-    historical sets above did not move with them, which is the whole point of
-    keeping the two questions apart.
+    These moved from three to five when schema 5 was activated and from five
+    to six when schema 6 was. The historical sets above did not move with
+    them, which is the whole point of keeping the two questions apart.
     """
 
-    def test_defaults_are_exactly_the_frozen_v5_roster(self) -> None:
-        self.assertEqual(frozenset(DEFAULTS), V5_DOCUMENT_NAMES)
-        self.assertEqual(len(DEFAULTS), 10)
+    def test_defaults_are_exactly_the_frozen_v6_roster(self) -> None:
+        self.assertEqual(frozenset(DEFAULTS), V6_DOCUMENT_NAMES)
+        self.assertEqual(len(DEFAULTS), 11)
 
-    def test_schema_version_is_five(self) -> None:
-        self.assertEqual(STORE_SCHEMA_VERSION, 5)
+    def test_schema_version_is_six(self) -> None:
+        self.assertEqual(STORE_SCHEMA_VERSION, 6)
 
-    def test_reports_is_a_supported_document_of_this_build_only(self) -> None:
+    def test_reports_is_a_supported_document_since_schema_five(self) -> None:
         self.assertIn(REPORTS_DOCUMENT_NAME, DEFAULTS)
         self.assertIn(REPORTS_DOCUMENT_NAME, V5_DOCUMENT_NAMES)
+        self.assertIn(REPORTS_DOCUMENT_NAME, V6_DOCUMENT_NAMES)
         self.assertNotIn(REPORTS_DOCUMENT_NAME, V3_DOCUMENT_NAMES)
         self.assertNotIn(REPORTS_DOCUMENT_NAME, V3_SOURCE_FILES)
         self.assertIn("REPORTS", {member.name for member in WorkspaceDocument})
 
-    def test_a_fresh_store_writes_ten_files_including_empty_reports(self) -> None:
+    def test_knowledge_is_a_supported_document_of_this_build_only(self) -> None:
+        self.assertIn(KNOWLEDGE_DOCUMENT_NAME, DEFAULTS)
+        self.assertIn(KNOWLEDGE_DOCUMENT_NAME, V6_DOCUMENT_NAMES)
+        self.assertNotIn(KNOWLEDGE_DOCUMENT_NAME, V5_DOCUMENT_NAMES)
+        self.assertNotIn(KNOWLEDGE_DOCUMENT_NAME, V3_DOCUMENT_NAMES)
+        self.assertNotIn(KNOWLEDGE_DOCUMENT_NAME, V3_SOURCE_FILES)
+
+    def test_a_fresh_store_writes_eleven_files_including_both_new_documents(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             Store(root).initialize()
             written = {item.name for item in root.iterdir() if item.suffix == ".json"}
-            self.assertEqual(written, set(V5_DOCUMENT_NAMES))
+            self.assertEqual(written, set(V6_DOCUMENT_NAMES))
             self.assertEqual(
                 json.loads((root / REPORTS_DOCUMENT_NAME).read_text(encoding="utf-8")),
                 {"version": 1, "reports": [], "idempotency": []},
+            )
+            self.assertEqual(
+                json.loads(
+                    (root / KNOWLEDGE_DOCUMENT_NAME).read_text(encoding="utf-8")
+                ),
+                {
+                    "version": 1,
+                    "policy_revision": 0,
+                    "connections": [],
+                    "requests": [],
+                },
             )
 
 
@@ -428,14 +452,14 @@ class LegacyStoreMigrationTest(unittest.TestCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(readiness.workspace_uid, WORKSPACE_UID)
         self.assertEqual(readiness.task_count, 1)
         self.assertEqual(readiness.migration_origin, "migrated_v1")
 
         # The v1 semantics are unchanged; only the destination version moved.
         metadata = json.loads((self.root / "store-meta.json").read_text(encoding="utf-8"))
-        self.assertEqual(metadata["store_schema_version"], 5)
+        self.assertEqual(metadata["store_schema_version"], 6)
         self.assertEqual(
             metadata["migrations"]["identity"]["id"], "workstack.store.v1-to-v2"
         )
@@ -457,12 +481,12 @@ class LegacyStoreMigrationTest(unittest.TestCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(readiness.workspace_uid, WORKSPACE_UID)
         self.assertEqual(readiness.migration_origin, "fresh")
 
         metadata = json.loads((self.root / "store-meta.json").read_text(encoding="utf-8"))
-        self.assertEqual(metadata["store_schema_version"], 5)
+        self.assertEqual(metadata["store_schema_version"], 6)
         expected = "sha256:" + hashlib.sha256(_compact_json(dict(values))).hexdigest()
         self.assertEqual(
             metadata["migrations"]["planning_status"]["source_sha256"], expected

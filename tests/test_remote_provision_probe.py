@@ -26,7 +26,7 @@ if str(SHELL) not in sys.path:
 
 from workstack.service import WorkStack
 from workstack.store import Store, StoreCorruptError
-from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES
+from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES, V6_DOCUMENT_NAMES
 
 PROBE_PATH = SHELL / "remote_provision_probe.py"
 COLLECTOR_PATH = SHELL / "remote_provision_collector.py"
@@ -100,6 +100,24 @@ def _authority_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def disposable_v6_authority():
+    temporary = tempfile.TemporaryDirectory(prefix="ws-remote-v6-")
+    store = Store(Path(temporary.name))
+    readiness = store.initialize()
+    values = {
+        name: json.loads((store.root / name).read_text(encoding="utf-8"))
+        for name in V6_DOCUMENT_NAMES
+    }
+    oracle = Store.validate_document_values(values, schema_version=6)
+    if oracle.workspace_uid != readiness.workspace_uid:
+        raise AssertionError("initialize UID and oracle UID diverged")
+    if oracle.schema_version != 6:
+        raise AssertionError("current initialize did not admit schema 6")
+    meta = (store.root / "store-meta.json").read_bytes()
+    workspace = (store.root / "workspace.json").read_bytes()
+    return temporary, oracle, values, meta, workspace
+
+
 def disposable_v5_authority():
     temporary = tempfile.TemporaryDirectory(prefix="ws-remote-v5-")
     store = Store(Path(temporary.name))
@@ -108,10 +126,17 @@ def disposable_v5_authority():
         name: json.loads((store.root / name).read_text(encoding="utf-8"))
         for name in V5_DOCUMENT_NAMES
     }
+    # This build writes schema 6, so a genuine v5 authority is the ten v5 names
+    # with the metadata stepped back: the current version and the evidence
+    # record schema 6 introduced. The remaining nine payloads are already
+    # exactly what a v5 store held.
+    metadata = values["store-meta.json"]
+    metadata["store_schema_version"] = 5
+    metadata["migrations"].pop("knowledge", None)
     oracle = Store.validate_document_values(values, schema_version=5)
     if oracle.workspace_uid != readiness.workspace_uid:
         raise AssertionError("initialize UID and oracle UID diverged")
-    meta = (store.root / "store-meta.json").read_bytes()
+    meta = _authority_bytes(metadata)
     workspace = (store.root / "workspace.json").read_bytes()
     return temporary, oracle, values, meta, workspace
 
@@ -1508,7 +1533,7 @@ class RemoteProvisionIsolationAndRaceTest(unittest.TestCase):
 
 
 class RemoteProvisionSchemaAdmissionTest(unittest.TestCase):
-    """Collector admits exact v3/v5 metadata+workspace; the 10-document oracle stays in tests."""
+    """Collector admits exact v3/v5/v6 metadata+workspace; v5/v6 oracles stay in tests."""
 
     def plant(self, meta_bytes: bytes, workspace_bytes: bytes) -> tuple[Path, MappedFS]:
         root, mapped = make_tree(existing_data=True)
@@ -1530,9 +1555,32 @@ class RemoteProvisionSchemaAdmissionTest(unittest.TestCase):
         mutator(metadata)
         return _authority_bytes(metadata)
 
+    def test_genuine_v6_initialize_bytes_return_oracle_uid(self) -> None:
+        temporary, oracle, values, meta, workspace = disposable_v6_authority()
+        self.addCleanup(temporary.cleanup)
+        parsed = json.loads(meta.decode("utf-8"))
+        self.assertEqual(parsed["store_schema_version"], 6)
+        self.assertEqual(
+            set(parsed["migrations"]),
+            {"identity", "planning_status", "reports", "knowledge"},
+        )
+        knowledge = parsed["migrations"]["knowledge"]
+        self.assertEqual(knowledge["id"], "workstack.knowledge.v6")
+        self.assertEqual(knowledge["origin"], "fresh")
+        self.assertIsNone(knowledge["source_sha256"])
+        self.assertEqual(oracle.schema_version, 6)
+        self.assertNotEqual(oracle.schema_version, 5)
+        self.assertEqual(set(values), set(V6_DOCUMENT_NAMES))
+        root, _mapped = self.plant(meta, workspace)
+        facts = self.facts_unwritten(root)
+        self.assertEqual(facts["data"]["workspace_id"], oracle.workspace_uid)
+
     def test_genuine_v5_initialize_bytes_return_oracle_uid(self) -> None:
         temporary, oracle, _values, meta, workspace = disposable_v5_authority()
         self.addCleanup(temporary.cleanup)
+        parsed = json.loads(meta.decode("utf-8"))
+        self.assertEqual(parsed["store_schema_version"], 5)
+        self.assertNotIn("knowledge", parsed["migrations"])
         root, _mapped = self.plant(meta, workspace)
         facts = self.facts_unwritten(root)
         self.assertEqual(facts["data"]["workspace_id"], oracle.workspace_uid)
@@ -1567,6 +1615,27 @@ class RemoteProvisionSchemaAdmissionTest(unittest.TestCase):
                 facts = self.facts_unwritten(root)
                 self.assertEqual(facts["data"]["workspace_id"], oracle.workspace_uid)
 
+    def test_migrated_knowledge_evidence_is_admitted(self) -> None:
+        temporary, oracle, values, _meta, workspace = disposable_v6_authority()
+        self.addCleanup(temporary.cleanup)
+        for origin in ("migrated_v1", "migrated_v2", "migrated_v3", "migrated_v5"):
+            with self.subTest(origin=origin):
+                def mutate(metadata, chosen=origin):
+                    metadata["migrations"]["knowledge"] = {
+                        "id": "workstack.knowledge.v5-to-v6",
+                        "origin": chosen,
+                        "source_sha256": ARTIFACT_DIGEST,
+                    }
+
+                meta = self.mutated_meta(values, mutate)
+                Store.validate_document_values(
+                    {**values, "store-meta.json": json.loads(meta.decode("utf-8"))},
+                    schema_version=6,
+                )
+                root, _mapped = self.plant(meta, workspace)
+                facts = self.facts_unwritten(root)
+                self.assertEqual(facts["data"]["workspace_id"], oracle.workspace_uid)
+
     def test_bool_float_and_unsupported_schema_versions_null_without_writes(self) -> None:
         temporary, _oracle, values, _meta, workspace = disposable_v5_authority()
         self.addCleanup(temporary.cleanup)
@@ -1578,7 +1647,8 @@ class RemoteProvisionSchemaAdmissionTest(unittest.TestCase):
             ("schema_1", lambda metadata: metadata.__setitem__("store_schema_version", 1)),
             ("schema_2", lambda metadata: metadata.__setitem__("store_schema_version", 2)),
             ("schema_4", lambda metadata: metadata.__setitem__("store_schema_version", 4)),
-            ("schema_future", lambda metadata: metadata.__setitem__("store_schema_version", 6)),
+            ("schema_6_without_knowledge", lambda metadata: metadata.__setitem__("store_schema_version", 6)),
+            ("schema_future", lambda metadata: metadata.__setitem__("store_schema_version", 7)),
         )
         for name, mutator in cases:
             with self.subTest(name=name):
@@ -1602,11 +1672,46 @@ class RemoteProvisionSchemaAdmissionTest(unittest.TestCase):
         def extra_top(metadata):
             metadata["extra"] = 1
 
+        def v5_with_knowledge(metadata):
+            metadata["migrations"]["knowledge"] = {
+                "id": "workstack.knowledge.v6",
+                "origin": "fresh",
+                "source_sha256": None,
+            }
+
         for name, mutator in (
             ("partial_v5", drop_reports),
             ("extra_record", extra_record),
             ("v3_with_reports", mixed_v3_reports),
             ("extra_top_field", extra_top),
+            ("v5_with_knowledge", v5_with_knowledge),
+        ):
+            with self.subTest(name=name):
+                root, _mapped = self.plant(self.mutated_meta(values, mutator), workspace)
+                facts = self.facts_unwritten(root)
+                self.assertIsNone(facts["data"]["workspace_id"])
+
+    def test_partial_v6_roster_and_v7_null_without_writes(self) -> None:
+        temporary, _oracle, values, _meta, workspace = disposable_v6_authority()
+        self.addCleanup(temporary.cleanup)
+
+        def drop_knowledge(metadata):
+            del metadata["migrations"]["knowledge"]
+
+        def drop_reports(metadata):
+            del metadata["migrations"]["reports"]
+
+        def future(metadata):
+            metadata["store_schema_version"] = 7
+
+        def relabel_v5(metadata):
+            metadata["store_schema_version"] = 5
+
+        for name, mutator in (
+            ("partial_v6_no_knowledge", drop_knowledge),
+            ("partial_v6_no_reports", drop_reports),
+            ("v6_relabeled_v5", relabel_v5),
+            ("schema_7", future),
         ):
             with self.subTest(name=name):
                 root, _mapped = self.plant(self.mutated_meta(values, mutator), workspace)
@@ -1637,6 +1742,30 @@ class RemoteProvisionSchemaAdmissionTest(unittest.TestCase):
                 facts = self.facts_unwritten(root)
                 self.assertIsNone(facts["data"]["workspace_id"])
 
+    def test_invalid_knowledge_evidence_null_without_writes(self) -> None:
+        temporary, _oracle, values, _meta, workspace = disposable_v6_authority()
+        self.addCleanup(temporary.cleanup)
+
+        def set_knowledge(metadata, **fields):
+            metadata["migrations"]["knowledge"].update(fields)
+
+        cases = (
+            ("fresh_digest", {"source_sha256": ARTIFACT_DIGEST}),
+            ("wrong_fresh_id", {"id": "workstack.knowledge.v5-to-v6"}),
+            ("unknown_origin", {"origin": "migrated_v4", "id": "workstack.knowledge.v5-to-v6", "source_sha256": ARTIFACT_DIGEST}),
+            ("migrated_null_digest", {"origin": "migrated_v5", "id": "workstack.knowledge.v5-to-v6", "source_sha256": None}),
+            ("migrated_wrong_id", {"origin": "migrated_v5", "id": "workstack.knowledge.v6", "source_sha256": ARTIFACT_DIGEST}),
+            ("uppercase_digest", {"origin": "migrated_v5", "id": "workstack.knowledge.v5-to-v6", "source_sha256": ARTIFACT_DIGEST.replace("abcdef", "ABCDEF")}),
+        )
+        for name, fields in cases:
+            with self.subTest(name=name):
+                root, _mapped = self.plant(
+                    self.mutated_meta(values, lambda metadata, payload=fields: set_knowledge(metadata, **payload)),
+                    workspace,
+                )
+                facts = self.facts_unwritten(root)
+                self.assertIsNone(facts["data"]["workspace_id"])
+
     def test_noncanonical_and_nil_uid_null_without_writes(self) -> None:
         temporary, _oracle, _values, meta, _workspace = disposable_v5_authority()
         self.addCleanup(temporary.cleanup)
@@ -1658,14 +1787,14 @@ class RemoteProvisionSchemaAdmissionTest(unittest.TestCase):
         service.add_task("Held task")
         values = {
             name: json.loads((Path(temporary.name) / name).read_text(encoding="utf-8"))
-            for name in V5_DOCUMENT_NAMES
+            for name in V6_DOCUMENT_NAMES
         }
-        original = Store.validate_document_values(values, schema_version=5)
+        original = Store.validate_document_values(values, schema_version=6)
         task_uid = values["backlog.json"]["tasks"][0]["uid"]
         mixed = json.loads(json.dumps(values))
         mixed["workspace.json"]["id"] = task_uid
         with self.assertRaises(StoreCorruptError):
-            Store.validate_document_values(mixed, schema_version=5)
+            Store.validate_document_values(mixed, schema_version=6)
         meta = (Path(temporary.name) / "store-meta.json").read_bytes()
         workspace = _authority_bytes(mixed["workspace.json"])
         root, _mapped = self.plant(meta, workspace)

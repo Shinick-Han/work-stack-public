@@ -5,6 +5,7 @@ import { TaskContextTimeline } from './TaskDrawerTimelines'
 import { TaskReplySection } from './TaskReplySection'
 import { toResumeProgressFacts } from './taskResumeProgressAdapter'
 import type { TaskDrawerSelection } from './taskDrawerSelectors'
+import { useCaptureLinkRemoval } from './useCaptureLinkRemoval'
 import type { TaskResumeFactsResult } from './useTaskResumeFacts'
 
 export function TaskContextSubview({
@@ -38,6 +39,15 @@ export function TaskContextSubview({
 }) {
   // Leaving is state only. Focus is returned by the drawer chrome once React has
   // committed the surface change and the control to return to is mounted again.
+  //
+  // R22: the Task-context feature owns the link-removal request, its lock and its
+  // messages. The shared timeline only renders what this hook hands it, so the graph
+  // popover — which passes nothing — stays read-only.
+  //
+  // R33: this surface is where the full production identity exists, so it is passed
+  // whole. A display id alone would let the same `T-0001` in another workspace, or a
+  // replacement of this Task, inherit a live Undo offer and its idempotency key.
+  const linkRemoval = useCaptureLinkRemoval({ workspaceUid, taskUid: task.uid, taskId })
   return (
     <div className="task-context-subview">
       <TaskKnowledgePanel
@@ -56,7 +66,7 @@ export function TaskContextSubview({
         taskId={taskId}
         unavailableSources={selection.replyUnavailableSources}
       />
-      <TaskContextTimeline context={context} providerGates={providerGates} />
+      <TaskContextTimeline context={context} providerGates={providerGates} removal={linkRemoval} />
     </div>
   )
 }

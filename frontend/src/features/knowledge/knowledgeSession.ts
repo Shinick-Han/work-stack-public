@@ -5,6 +5,7 @@ import {
   MAX_KNOWLEDGE_SEARCH_MATCHES,
   knowledgeBindingFor,
   knowledgeSearchQuerySchema,
+  sameKnowledgeBinding,
   type KnowledgeBinding,
   type KnowledgeReadReference,
   type KnowledgeSavedReference,
@@ -38,6 +39,7 @@ export interface KnowledgeSearchState {
 export type KnowledgeErrorAction = 'reload' | 'refresh-preview' | null
 
 export interface KnowledgePanelState {
+  binding: KnowledgeBinding | null
   documentPath: string
   endLine: string
   error: string | null
@@ -74,6 +76,7 @@ export function emptyKnowledgeForm() {
 export function initialKnowledgeState(): KnowledgePanelState {
   return {
     ...emptyKnowledgeForm(),
+    binding: null,
     error: null,
     errorAction: null,
     errorCode: null,
@@ -89,6 +92,31 @@ export function initialKnowledgeState(): KnowledgePanelState {
   }
 }
 
+export interface KnowledgePreviewRequest {
+  binding: KnowledgeBinding
+  documentPath: string
+  endLine: number
+  startLine: number
+  vaultId: string
+}
+
+/** The vault/path/span half of a request, without the Task snapshot it was read under. */
+export type KnowledgePreviewSpanRequest = Omit<KnowledgePreviewRequest, 'binding'>
+
+const boundPreviewRequests = new WeakMap<KnowledgeReadReference, KnowledgePreviewRequest>()
+
+export function bindKnowledgePreview(
+  reference: KnowledgeReadReference,
+  request: KnowledgePreviewRequest,
+): KnowledgeReadReference {
+  boundPreviewRequests.set(reference, request)
+  return reference
+}
+
+export function knowledgePreviewRequest(preview: KnowledgeReadReference) {
+  return boundPreviewRequests.get(preview)
+}
+
 export function parseKnowledgeLineSpan(startText: string, endText: string) {
   const start = startText.trim() === '' ? DEFAULT_KNOWLEDGE_START_LINE : Number(startText)
   const end = endText.trim() === '' ? DEFAULT_KNOWLEDGE_END_LINE : Number(endText)
@@ -101,19 +129,99 @@ export function parseKnowledgeLineSpan(startText: string, endText: string) {
   return { start_line: start, end_line: end }
 }
 
+function formMatchesPreviewRequest(
+  vaultId: string,
+  documentPath: string,
+  startLine: string,
+  endLine: string,
+  request: KnowledgePreviewSpanRequest,
+) {
+  if (request.vaultId !== vaultId || request.documentPath !== documentPath.trim()) return false
+  try {
+    const span = parseKnowledgeLineSpan(startLine, endLine)
+    return span.start_line === request.startLine && span.end_line === request.endLine
+  } catch {
+    return false
+  }
+}
+
+export function previewSpanMatchesRequest(
+  preview: KnowledgeReadReference,
+  request: KnowledgePreviewSpanRequest,
+) {
+  return preview.vault_id === request.vaultId
+    && preview.document_path === request.documentPath
+    && preview.start_line === request.startLine
+    && preview.end_line >= request.startLine
+    && preview.end_line <= request.endLine
+}
+
+export function previewBindingMatches(
+  request: KnowledgePreviewRequest,
+  currentBinding: KnowledgeBinding | null,
+) {
+  return currentBinding !== null && sameKnowledgeBinding(request.binding, currentBinding)
+}
+
 export function previewMatchesInput(
   preview: KnowledgeReadReference | null,
   vaultId: string,
   documentPath: string,
   startLine: string,
   endLine: string,
+  currentBinding?: KnowledgeBinding | null,
 ): preview is KnowledgeReadReference {
   if (!preview || preview.vault_id !== vaultId || preview.document_path !== documentPath.trim()) return false
-  try {
-    const span = parseKnowledgeLineSpan(startLine, endLine)
-    return preview.start_line === span.start_line && preview.end_line === span.end_line
-  } catch {
-    return false
+  const request = boundPreviewRequests.get(preview)
+  if (!request) {
+    // An unbound preview carries no Task snapshot, so it can never authorize a pin.
+    if (currentBinding !== undefined) return false
+    const own: KnowledgePreviewSpanRequest = {
+      documentPath: preview.document_path,
+      endLine: preview.end_line,
+      startLine: preview.start_line,
+      vaultId: preview.vault_id,
+    }
+    return formMatchesPreviewRequest(vaultId, documentPath, startLine, endLine, own)
+      && previewSpanMatchesRequest(preview, own)
+  }
+  if (currentBinding !== undefined && !previewBindingMatches(request, currentBinding)) return false
+  return formMatchesPreviewRequest(vaultId, documentPath, startLine, endLine, request)
+    && previewSpanMatchesRequest(preview, request)
+}
+
+export function applyPreviewResult(
+  current: KnowledgePanelState,
+  reference: KnowledgeReadReference,
+  request: KnowledgePreviewRequest,
+): KnowledgePanelState {
+  if (!previewBindingMatches(request, current.binding)) {
+    // The Task snapshot moved on (a new revision, Task, or workspace) while this read was in flight.
+    return { ...current, pending: null }
+  }
+  if (!formMatchesPreviewRequest(
+    current.selectedVaultId,
+    current.documentPath,
+    current.startLine,
+    current.endLine,
+    request,
+  )) {
+    return { ...current, pending: null }
+  }
+  if (!previewSpanMatchesRequest(reference, request)) {
+    return failState(current, new KnowledgeHostError(
+      'invalid_line_range',
+      'The previewed span does not match the requested document range.',
+    ))
+  }
+  return {
+    ...current,
+    error: null,
+    errorAction: null,
+    errorCode: null,
+    opened: null,
+    pending: null,
+    preview: bindKnowledgePreview(reference, request),
   }
 }
 
@@ -218,7 +326,15 @@ export function applySearchMatch(current: KnowledgePanelState, match: KnowledgeR
     errorCode: changed ? 'source_revision_conflict' : null,
     notice: null,
     opened: null,
-    preview: changed ? null : match,
+    preview: changed || current.binding === null
+      ? null
+      : bindKnowledgePreview(match, {
+        binding: current.binding,
+        documentPath: match.document_path,
+        endLine: match.end_line,
+        startLine: match.start_line,
+        vaultId: match.vault_id,
+      }),
     startLine: String(match.start_line),
   }
 }

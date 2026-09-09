@@ -174,7 +174,7 @@ class VerifiedArchiveCharacterizationTest(unittest.TestCase):
         self.assertEqual(verified.path, self.artifact.path.resolve())
         self.assertEqual(verified.workspace_id, self.artifact.workspace_id)
         self.assertEqual(verified.digest, self.digest(self.artifact.path.read_bytes()))
-        self.assertEqual(verified.file_count, 10)
+        self.assertEqual(verified.file_count, 11)
 
 
 if __name__ == "__main__":

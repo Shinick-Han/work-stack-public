@@ -91,12 +91,12 @@ class StoreIdentityTest(unittest.TestCase):
         self.assertEqual(task["uid"], expected_uid)
         self.assertEqual(task["revision"], 0)
         self.assertRegex(task["status_fact_id"], r"^PS-[0-9]{6,}$")
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(readiness.workspace_uid, WORKSPACE_UID)
         self.assertEqual(readiness.migration_origin, "migrated_v1")
 
         metadata = first.load("store-meta.json")
-        self.assertEqual(metadata["store_schema_version"], 5)
+        self.assertEqual(metadata["store_schema_version"], 6)
         self.assertEqual(metadata["migrations"]["identity"]["id"], "workstack.store.v1-to-v2")
         self.assertRegex(
             metadata["migrations"]["identity"]["source_sha256"],
@@ -154,7 +154,7 @@ class StoreIdentityTest(unittest.TestCase):
 
         recovered = Store(self.root)
         readiness = recovered.initialize()
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(readiness.migration_origin, "migrated_v1")
         self.assertFalse((self.root / ".workstack-journal.json").exists())
         self.assertEqual(
@@ -170,6 +170,7 @@ class StoreIdentityTest(unittest.TestCase):
                 "replies.json",
                 "activity.json",
                 "reports.json",
+                "knowledge.json",
             }),
         )
 

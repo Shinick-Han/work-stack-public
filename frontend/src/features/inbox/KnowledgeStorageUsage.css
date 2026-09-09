@@ -1,0 +1,78 @@
+/* The storage usage region inside the knowledge launcher. Colours, spacing and the
+   reading scale are the shared tokens the launcher already uses; the literal fallbacks
+   keep this file correct on its own. Nothing here restyles the dialog or a primitive.
+   The grid is single-column and every text node wraps, so it fits a 390px viewport. */
+
+.knowledge-usage {
+  border-top: 1px solid var(--ws-border-subtle);
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  min-width: 0;
+  padding-top: 12px;
+}
+
+.knowledge-usage__title {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.knowledge-usage__meter {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.knowledge-usage__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.knowledge-usage__label {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-meta, 12px);
+  overflow-wrap: anywhere;
+}
+
+.knowledge-usage__value {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-usage__bar {
+  background: var(--ws-surface-sunken);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 99px;
+  height: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.knowledge-usage__bar > span {
+  background: var(--ws-brand-accent);
+  display: block;
+  height: 100%;
+}
+
+.knowledge-usage__observed,
+.knowledge-usage__note {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-usage__bound {
+  color: var(--ws-status-warning-text, var(--ws-text-primary));
+  font-size: var(--ws-type-reading-meta, 12px);
+  margin: 0;
+  overflow-wrap: anywhere;
+}

@@ -21,8 +21,9 @@ preview = preview_weekly_report(
 )
 ```
 
-The function is pure. The HTTP adapter loads one review projection and
-passes it through. The core never reads documents, never writes, and never
+The function is pure. The HTTP adapter loads one review projection and the
+admitted Captures under the same `Store.consistent_read`, then passes the
+projection through. The core never reads documents, never writes, and never
 calls `WorkStack.review_projection`.
 
 ## HTTP adapter
@@ -65,9 +66,13 @@ Handler order is exact:
 4. Inspect `sync_status` (precheck).
 5. Enter `Store.consistent_read`.
 6. Re-inspect sync, then compare snapshot UID.
-7. Call `review_projection(end_date, 7)` exactly once.
+7. Call `review_projection(end_date, 7)` exactly once, then
+   `list_captures(status="all")` under the same held read.
 8. Re-inspect sync.
-9. Render the core preview and `weekly_source_digest` from that same projection.
+9. Render the core preview and `weekly_source_digest` from that same
+   projection, then `build_context_catalog` from that preview's
+   `provenance.task_ids` (the week's explicit Task IDs, not the end day
+   alone).
 
 Missing admitted readiness is `422` `report_preview_unavailable`. A requested
 UUID that does not match that admitted owner is `409` `workspace_mismatch`
@@ -91,13 +96,42 @@ Success `200` key order is exact:
   "data": {
     "workspace_uid": "<actual owning Store UUID>",
     "source_digest": "sha256:<64 lowercase hex>",
-    "preview": { }
+    "preview": { },
+    "context_catalog": {
+      "captured_at": "<same generated_at as preview>",
+      "items": [
+        {
+          "capture_id": "C-0001",
+          "capture_revision": 1,
+          "title": "Synthetic context",
+          "linked_task_ids": ["T-0001"],
+          "status": "linked"
+        }
+      ],
+      "omitted_count": 0
+    }
   }
 }
 ```
 
 `preview` is the exact `preview_weekly_report` object. Empty active weeks
 use `"absence": "no records"` and never `"no work"`.
+
+`context_catalog` is a sibling of `preview`, not a field inside it. The
+seven-day projection and Captures are read under the same
+`Store.consistent_read` snapshot already used for the preview.
+`captured_at` copies `preview.generated_at`. Each item is a Capture whose
+current explicit `linked_task_ids` intersect `preview.provenance.task_ids`
+(unique, natural-sorted). That provenance lists the week's Task IDs, not
+only the end day's. Converted provenance alone is not a link. Unrelated
+and unlinked rows are omitted. Empty weeks yield empty `items`. At most 32
+items appear, in natural Capture ID order, with `omitted_count` naming
+additional qualifying Captures. The actual Capture status is included, so
+a dismissed Capture that still has explicit links is not shown as active.
+Titles are the admitted Capture `source.display_title` strings. The
+catalogue is not part of `preview.markdown`, copy output, saved report
+create/revise/finalize payloads, `provenance`, `source_digest`, or
+`reports.json`.
 
 `source_digest` is computed only after the core accepts the projection. Same
 weekly facts at a different server clock yield the same digest. An end-day

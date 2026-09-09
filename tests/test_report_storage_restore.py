@@ -34,6 +34,7 @@ from workstack.store_rosters import (
     REPORTS_DOCUMENT_NAME,
     V3_DOCUMENT_NAMES,
     V5_DOCUMENT_NAMES,
+    V6_DOCUMENT_NAMES,
 )
 
 
@@ -69,6 +70,7 @@ class RestoreCase(unittest.TestCase):
         )["id"]
         metadata["store_schema_version"] = 3
         del metadata["migrations"]["reports"]
+        del metadata["migrations"]["knowledge"]
         bodies = {
             name: (root / name).read_bytes()
             for name in V3_DOCUMENT_NAMES
@@ -106,7 +108,7 @@ class RestoreCase(unittest.TestCase):
     def documents(self, root: Path) -> dict[str, Any]:
         return {
             name: json.loads((root / name).read_text(encoding="utf-8"))
-            for name in V5_DOCUMENT_NAMES
+            for name in V6_DOCUMENT_NAMES
         }
 
     def json_bytes(self, root: Path) -> dict[str, bytes]:
@@ -180,24 +182,24 @@ class ReadOnlyVerificationTest(RestoreCase):
         self.assertEqual(metadata["store_schema_version"], 3)
         self.assertNotIn("reports", metadata["migrations"])
 
-    def test_a_v5_archive_verifies_with_ten_members(self) -> None:
+    def test_a_current_archive_verifies_with_eleven_members(self) -> None:
         archive, workspace_uid = self.v5_archive()
 
         verified = verify_backup(archive)
 
-        self.assertEqual(verified.file_count, 10)
+        self.assertEqual(verified.file_count, 11)
         self.assertEqual(verified.workspace_id, workspace_uid)
 
     def test_an_unsupported_or_newer_schema_refuses(self) -> None:
         root = self._fresh_store("source-unsupported")
-        bodies = {name: (root / name).read_bytes() for name in V5_DOCUMENT_NAMES}
+        bodies = {name: (root / name).read_bytes() for name in V6_DOCUMENT_NAMES}
         workspace_uid = json.loads(
             (root / "workspace.json").read_text(encoding="utf-8")
         )["id"]
-        good = self._pack(bodies, workspace_uid, 5, "claims.zip")
+        good = self._pack(bodies, workspace_uid, 6, "claims.zip")
         with zipfile.ZipFile(good) as opened:
             members = {name: opened.read(name) for name in opened.namelist()}
-        for claimed in (0, 4, 6, 99):
+        for claimed in (0, 4, 7, 99):
             with self.subTest(store_schema_version=claimed):
                 manifest = json.loads(members["manifest.json"].decode("utf-8"))
                 manifest["store_schema_version"] = claimed
@@ -221,7 +223,7 @@ class ArchiveAdmissionOrderTest(RestoreCase):
 
     def test_an_unknown_newer_or_v4_claim_refuses_before_any_payload(self) -> None:
         archive, _uid = self.v5_archive("order-source.zip")
-        for claimed in (0, 4, 6, 99):
+        for claimed in (0, 4, 7, 99):
             with self.subTest(store_schema_version=claimed):
                 target = self.repacked(
                     archive,
@@ -302,18 +304,18 @@ class RestoreConversionTest(RestoreCase):
 
         self.assertEqual(receipt.workspace_id, workspace_uid)
         readiness = Store(destination).initialize()
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(readiness.workspace_uid, workspace_uid)
         documents = self.documents(destination)
         self.assertEqual(documents[REPORTS_DOCUMENT_NAME], EMPTY_REPORTS)
         migrations = documents["store-meta.json"]["migrations"]
-        self.assertEqual(documents["store-meta.json"]["store_schema_version"], 5)
+        self.assertEqual(documents["store-meta.json"]["store_schema_version"], 6)
         self.assertEqual(migrations["reports"]["origin"], "migrated_v3")
         self.assertRegex(
             migrations["reports"]["source_sha256"], r"^sha256:[0-9a-f]{64}$"
         )
 
-    def test_a_restored_v3_authority_is_not_v3_metadata_on_a_v5_roster(self) -> None:
+    def test_a_restored_v3_authority_is_not_v3_metadata_on_a_current_roster(self) -> None:
         archive, _uid = self.v3_archive()
         destination = self.base / "restored-coherent"
 
@@ -322,9 +324,12 @@ class RestoreConversionTest(RestoreCase):
         written = {
             item.name for item in destination.iterdir() if item.suffix == ".json"
         }
-        self.assertEqual(written, set(V5_DOCUMENT_NAMES))
+        self.assertEqual(written, set(V6_DOCUMENT_NAMES))
         metadata = self.documents(destination)["store-meta.json"]
-        self.assertEqual(set(metadata["migrations"]), {"identity", "planning_status", "reports"})
+        self.assertEqual(
+            set(metadata["migrations"]),
+            {"identity", "planning_status", "reports", "knowledge"},
+        )
 
     def test_restoring_a_v5_archive_round_trips(self) -> None:
         archive, workspace_uid = self.v5_archive()
@@ -333,7 +338,7 @@ class RestoreConversionTest(RestoreCase):
         restore_store(archive, destination)
 
         readiness = Store(destination).initialize()
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(readiness.workspace_uid, workspace_uid)
         self.assertEqual(
             self.documents(destination)[REPORTS_DOCUMENT_NAME], EMPTY_REPORTS

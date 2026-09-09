@@ -9,7 +9,14 @@ from typing import Literal, Protocol
 
 from workstack.agent_context_pack import (
     apply_planning_contract_fixture,
+    planning_envelope_fields,
     validate_planning_data,
+)
+from workstack.agent_cli_fixture_literals import (
+    _ADMISSION,
+    _BACKEND_RESULTS,
+    _ENVELOPE,
+    _TRANSPORT_RULES,
 )
 
 
@@ -103,7 +110,7 @@ _PLANNING_CONTEXT_DATA_FIELDS = _CONTEXT_DATA_FIELDS | set(_PLANNING_BLOCKS)
 class AuthorityAdmission:
     data_dir: pathlib.Path
     workspace_uid: str
-    storage_format: Literal["v3", "v5"]
+    storage_format: Literal["v3", "v5", "v6"]
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -352,7 +359,7 @@ def _validate_status_data(data: dict[str, object], workspace_uid: str) -> None:
         if type(data[field]) is not bool:
             raise ValueError("invalid status boolean")
     if type(data["storage_format"]) is not str or data["storage_format"] not in {
-        "unknown", "v3", "v4", "v5",
+        "unknown", "v3", "v4", "v5", "v6",
     }:
         raise ValueError("invalid status storage format")
 
@@ -388,8 +395,8 @@ def _validate_worklog_data(value: object) -> str:
 def _validate_context_data(
     data: dict[str, object], *, task_id: str, workspace_uid: str
 ) -> None:
-    planning = set(data) == _PLANNING_CONTEXT_DATA_FIELDS
-    fields = _PLANNING_CONTEXT_DATA_FIELDS if planning else _CONTEXT_DATA_FIELDS
+    planning_fields = planning_envelope_fields(data)
+    fields = planning_fields if planning_fields is not None else _CONTEXT_DATA_FIELDS
     data = _exact_dict(data, fields, "context data")
     if data["workspace_uid"] != workspace_uid or not _is_workspace_uid(
         data["workspace_uid"]
@@ -402,7 +409,7 @@ def _validate_context_data(
     dates = [_validate_worklog_data(entry) for entry in recent]
     if dates != sorted(dates, reverse=True):
         raise ValueError("recent worklog is not newest first")
-    if planning:
+    if planning_fields is not None:
         validate_planning_data(data, core_overflow_marker=_OVERFLOW_MARKER)
         return
     omitted = data["omitted"]
@@ -558,48 +565,6 @@ def render_outcome(*, outcome: AgentOutcome) -> bytes:
     return rendered
 
 
-_ADMISSION = {
-    "approved_store_free_seam": "B1 uses bounded direct document reads of authority documents (workspace.json identity and format marker documents); it imports neither Store nor any workstack.storage module and creates no files or directories",
-    "order": [
-        "require explicit --data-dir and --workspace-uid",
-        "resolve the data path without creating it",
-        "require an existing directory and recognizable Work Stack authority",
-        "inspect format and workspace identity without importing or constructing Store",
-        "refuse v4 with capability_not_enabled; refuse missing, unknown and unrecognizable authorities with invalid_authority",
-        "require actual workspace UID equal to expected workspace UID before any Task content is returned or mutation sent",
-        "only then construct the v3 Store or contact its declared loopback server owner",
-    ],
-    "uid_rule": "the workspace UID is the canonical non-nil lowercase RFC 4122 UUID read from workspace.json id; expected and actual values are compared as canonical strings",
-}
-
-_BACKEND_RESULTS = {
-    "checkpoint": {
-        "commit_state": "committed|unknown",
-        "entry": "the committed or replayed review-entry data mapping, null when commit_state is unknown",
-        "replayed": "bool",
-    },
-    "context": {
-        "entries": "raw worklog entries for the bounded 31-day window",
-        "entry_keys": ["blockers", "date", "done", "next", "task_id"],
-        "task": "the raw Task detail mapping",
-        "workspace_uid": "str",
-    },
-    "status": {
-        "keys": [
-            "actual_workspace_uid",
-            "capability_reason",
-            "capability_supported",
-            "contract",
-            "data_dir_available",
-            "exclusive_local_available",
-            "expected_workspace_uid",
-            "ready",
-            "running_server_available",
-            "storage_format",
-        ]
-    },
-}
-
 _CLI_CONTRACT = {"contract_string": _CONTRACT}
 
 _COMMAND_DECLARATION = {
@@ -611,123 +576,6 @@ _COMMAND_DECLARATION = {
     "meta_command_prefix": "agent.",
     "registry": "workstack.agent_commands.COMMANDS",
     "values": [STATUS_COMMAND, CONTEXT_COMMAND, CHECKPOINT_COMMAND],
-}
-
-_ENVELOPE = {
-    "data_shapes": {
-        "agent.checkpoint": {
-            "keys": ["blockers", "date", "done", "next", "task", "task_id"],
-            "source": "the existing review-entry response data returned by WorkStack.add_worklog_v1 and POST /api/v1/review/entries",
-        },
-        "agent.context": {
-            "keys": ["omitted", "recent_worklog", "task", "workspace_uid"],
-            "omitted_categories": [
-                "attachments",
-                "captures",
-                "objectives",
-                "relationships",
-                "work_sessions",
-            ],
-            "overflow_marker": "recent_worklog_overflow",
-            "overflow_marker_channel": "data.omitted",
-            "recent_worklog_entry_keys": ["blockers", "date", "done", "next"],
-            "source": "the CLI-v1 context data shape with golden tests",
-            "task_allowlist": [
-                "detail",
-                "due",
-                "id",
-                "priority",
-                "revision",
-                "status",
-                "title",
-                "uid",
-            ],
-        },
-        "agent.status": {
-            "keys": [
-                "actual_workspace_uid",
-                "capability_reason",
-                "capability_supported",
-                "contract",
-                "data_dir_available",
-                "exclusive_local_available",
-                "expected_workspace_uid",
-                "ready",
-                "running_server_available",
-                "storage_format",
-            ],
-            "source": "the AgentBackend.status result mapping",
-        },
-    },
-    "failure": {
-        "error_optional": {"retryable": "bool"},
-        "error_required": {"code": "str", "details": "object", "message": "str"},
-        "forbidden": ["data"],
-        "required": {"contract": "str", "error": "object", "meta": "object"},
-        "variants": {
-            "commit_unknown": {
-                "error_code": "commit_unknown",
-                "meta_required": {
-                    "command": "agent.checkpoint",
-                    "commit_state": "unknown",
-                    "intent_id": "str",
-                    "task_id": "str",
-                    "transport": "running-server",
-                    "workspace_uid": "str",
-                },
-            },
-            "ordinary_command_failure": {
-                "meta_forbidden": ["commit_state"],
-                "meta_required": {"command": "agent.<command>"},
-            },
-        },
-    },
-    "renderer": "compact sorted-key UTF-8 JSON, exactly one object, one trailing LF",
-    "rules": [
-        "success and failure are mutually exclusive: success has data and no error; failure has error and no data",
-        "a field that does not apply to the executed command is omitted, never filled with a placeholder",
-        "commit_state=committed appears only on successful agent.checkpoint",
-        "commit_state=unknown appears only on commit_unknown after a POST mutation attempt and failed identical replay",
-        "final serialized envelope, not merely data, is bounded to 32 KiB",
-        "paths, CSRF values, tokens and raw server bodies never enter error details",
-        "successful status emits data_dir_available as a boolean and never emits the resolved absolute path",
-        "retryable appears only when the CLI can give a sound retry recommendation",
-    ],
-    "success": {
-        "forbidden": ["error"],
-        "required": {"contract": "str", "data": "object", "meta": "object"},
-        "variants": {
-            "agent.checkpoint": {
-                "meta_optional": {},
-                "meta_required": {
-                    "command": "agent.checkpoint",
-                    "commit_state": "committed",
-                    "intent_id": "str",
-                    "replayed": "bool",
-                    "task_id": "str",
-                    "transport": "running-server|exclusive-local",
-                    "workspace_uid": "str",
-                },
-            },
-            "agent.context": {
-                "meta_optional": {},
-                "meta_required": {
-                    "command": "agent.context",
-                    "task_id": "str",
-                    "transport": "running-server|exclusive-local",
-                    "workspace_uid": "str",
-                },
-            },
-            "agent.status": {
-                "meta_optional": {},
-                "meta_required": {
-                    "command": "agent.status",
-                    "transport": "running-server|exclusive-local",
-                    "workspace_uid": "str",
-                },
-            },
-        },
-    },
 }
 
 _ERRORS = {
@@ -760,23 +608,9 @@ _LIMITS = {
         "port_min": 1,
         "version": 1,
     },
-    "storage_format_values": ["unknown", "v3", "v4", "v5"],
+    "storage_format_values": ["unknown", "v3", "v4", "v5", "v6"],
     "task_id_pattern": "T-[0-9]{4,}",
     "workspace_uid": "canonical non-nil lowercase RFC 4122 UUID",
-}
-
-_TRANSPORT_RULES = {
-    "automatic_retry_policy": "only one identical replay is automatic after possible POST response loss; session, storage, GET and pre-POST failures are never retried",
-    "commit_unknown_precondition": "valid only after a POST may have reached the server and the identical bounded replay also cannot establish the result",
-    "context_daily_review_gets": {
-        "count": 31,
-        "date_order": "today through today minus 30 days, newest first",
-        "weekly_projection_forbidden": True,
-    },
-    "identical_replay": "both POST attempts reuse pre-serialized bytes and the same Idempotency-Key",
-    "no_fresh_key_on_response_loss": True,
-    "post_attempt_maximum": 2,
-    "session_failure_omits_commit_state": True,
 }
 
 

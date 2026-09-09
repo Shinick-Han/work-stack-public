@@ -227,9 +227,11 @@ class NamedExclusions(unittest.TestCase):
             "okr.list",
             "okr.rollup",
             "worklog.list",
+            "worklog.latest-checkpoint",
             "weekly",
             "snapshot.preview",
             "capture.ingest",
+            "report.create",
             "maintenance.backup",
             "maintenance.verify",
             "maintenance.restore",
@@ -294,6 +296,11 @@ class ImmutableImport(unittest.TestCase):
                 "--stdin", "--idempotency-key", "intent-01",
             ],
             "worklog.list": ["worklog", "list"],
+            "worklog.latest-checkpoint": [
+                "worklog", "latest-checkpoint",
+                "--workspace-uid", "11111111-1111-4111-8111-111111111111",
+                "--task", "T-0001",
+            ],
             "weekly": ["weekly"],
             "note": ["note", "hello"],
             "capture.ingest": ["capture", "ingest", "--stdin"],
@@ -344,6 +351,7 @@ class ImmutableImport(unittest.TestCase):
             "maintenance.initialize": ["maintenance", "initialize"],
             "graph.export": ["graph", "export"],
             "graph.serve": ["graph", "serve"],
+            "report.create": ["report", "create", "--date", "2026-08-30"],
         }
         self.assertEqual(set(argv_by_key), set(caps.registry_command_keys()))
         for key, argv in argv_by_key.items():
@@ -383,6 +391,14 @@ class ImmutableImport(unittest.TestCase):
         self.assertEqual(
             caps.command_family(by_key["backlog.list"]),
             caps.FAMILY_ADMITTED,
+        )
+        self.assertEqual(
+            caps.command_family(by_key["worklog.latest-checkpoint"]),
+            caps.FAMILY_ADMITTED,
+        )
+        self.assertEqual(
+            caps.command_family(by_key["report.create"]),
+            caps.FAMILY_OWNER_REQUIRED,
         )
 
     def test_source_does_not_mention_store_network_environment_or_clock(self) -> None:

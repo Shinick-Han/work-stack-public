@@ -14,11 +14,21 @@ import argparse
 def _add_context_arguments(agent_context: argparse.ArgumentParser) -> None:
     """`agent context` flags. `--view` is opt-in: omitting it keeps core-v1,
     and an unknown value is a parser refusal (exit 2), never a silent default.
+    `--format` is opt-in Markdown of the same validated result; omitting it
+    keeps JSON.
     """
 
     agent_context.add_argument("--task", required=True)
     agent_context.add_argument(
-        "--view", choices=("core-v1", "planning-v1"), default="core-v1"
+        "--view",
+        choices=("core-v1", "planning-v1", "planning-v2"),
+        default="core-v1",
+    )
+    agent_context.add_argument(
+        "--format",
+        dest="context_format",
+        choices=("json", "markdown"),
+        default="json",
     )
 
 
@@ -153,6 +163,13 @@ def add_graph_parser(sub: argparse._SubParsersAction) -> None:
         "--seed-demo",
         action="store_true",
         help="copy tracked demo fixtures only when runtime data is empty",
+    )
+    server.add_argument(
+        "--knowledge-drivers-config",
+        help=(
+            "absolute path to one workstack.knowledge-drivers.v1 file, read once "
+            "before the store is opened; omitting it pins no driver"
+        ),
     )
 
 

@@ -1,0 +1,118 @@
+{
+  "accepted_data": {
+    "items": [
+      {
+        "item_id": "11111111-1111-4111-8111-111111111111",
+        "normalized": {
+          "action_items": [
+            {
+              "detail": "",
+              "due": null,
+              "priority": "P2",
+              "title": "Confirm the rollback owner"
+            },
+            {
+              "detail": "",
+              "due": "2026-09-30",
+              "priority": "P1",
+              "title": "Re-run the gate after the fix"
+            }
+          ],
+          "context": "Carried out of band by the owner.",
+          "summary": "Reviewed the connected search result",
+          "tags": [
+            "rollback"
+          ]
+        },
+        "retrieval": {
+          "answer_scope": "single_source",
+          "capture_schema_version": "1.1",
+          "confidence": {
+            "level": "medium",
+            "score": 0.62
+          },
+          "evidence": [
+            {
+              "chunk_ref": "chunk-0004abcd",
+              "document_ref": "od-page-7f3ba1d34f50c884600112ab",
+              "indexed_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "source_type": "notion.page",
+              "source_version": "od-version-14",
+              "title": "Release quality gate",
+              "web_url": null
+            }
+          ],
+          "query_id": "engine-q-00194f5a",
+          "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "schema": "workstack.capture-retrieval.v1.1",
+          "truncated": false
+        },
+        "title": "Release quality gate"
+      }
+    ],
+    "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "schema": "workstack.knowledge-import.v1"
+  },
+  "generated_action_ids": [
+    "A-c8747a190cf13428",
+    "A-a17e8762e8526a0c"
+  ],
+  "internal_digest_data": {
+    "items": [
+      {
+        "item_id": "11111111-1111-4111-8111-111111111111",
+        "normalized": {
+          "action_items": [
+            {
+              "detail": "",
+              "due": null,
+              "id": "A-c8747a190cf13428",
+              "priority": "P2",
+              "title": "Confirm the rollback owner"
+            },
+            {
+              "detail": "",
+              "due": "2026-09-30",
+              "id": "A-a17e8762e8526a0c",
+              "priority": "P1",
+              "title": "Re-run the gate after the fix"
+            }
+          ],
+          "context": "Carried out of band by the owner.",
+          "summary": "Reviewed the connected search result",
+          "tags": [
+            "rollback"
+          ]
+        },
+        "retrieval": {
+          "answer_scope": "single_source",
+          "capture_schema_version": "1.1",
+          "confidence": {
+            "level": "medium",
+            "score": 0.62
+          },
+          "evidence": [
+            {
+              "chunk_ref": "chunk-0004abcd",
+              "document_ref": "od-page-7f3ba1d34f50c884600112ab",
+              "indexed_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "source_type": "notion.page",
+              "source_version": "od-version-14",
+              "title": "Release quality gate",
+              "web_url": null
+            }
+          ],
+          "query_id": "engine-q-00194f5a",
+          "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "schema": "workstack.capture-retrieval.v1.1",
+          "truncated": false
+        },
+        "title": "Release quality gate"
+      }
+    ],
+    "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "schema": "workstack.knowledge-import.v1"
+  },
+  "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "result_limit": 10
+}

@@ -24,7 +24,7 @@ STATUS_WIRE = "agent.status"
 CONTEXT_WIRE = "agent.context"
 CHECKPOINT_WIRE = "agent.checkpoint"
 EXPECTED_FIXTURE_SHA256 = (
-    "f85678576139aa2f67a6a0f2ec1f44f41d732a56e623b7ab32e55305be693421"
+    "28540cac90d879ff0821d13752da0ecb80b8e3eaf984224c72c0c78b79061444"
 )
 EXPECTED_EXPORTS = (
     "AuthorityAdmission",
@@ -266,7 +266,9 @@ class PublicAbiTests(unittest.TestCase):
         hints = typing.get_type_hints(contract.AuthorityAdmission)
         self.assertEqual(hints["data_dir"], Path)
         self.assertEqual(hints["workspace_uid"], str)
-        self.assertEqual(set(typing.get_args(hints["storage_format"])), {"v3", "v5"})
+        self.assertEqual(
+            set(typing.get_args(hints["storage_format"])), {"v3", "v5", "v6"}
+        )
         self.assertEqual(
             typing.get_type_hints(contract.ServerCoordinates),
             {"host": str, "port": int},
@@ -392,7 +394,7 @@ class FixtureAndIsolationTests(unittest.TestCase):
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         keys = manifest["digest_recipes"]["contract_fixture_projection"]
         oracle = {key: copy.deepcopy(manifest[key]) for key in keys}
-        live_values = ["unknown", "v3", "v4", "v5"]
+        live_values = ["unknown", "v3", "v4", "v5", "v6"]
         self.assertEqual(oracle["limits"]["storage_format_values"], live_values)
         actual = contract.contract_fixture_bytes()
         decoded = json.loads(actual)
@@ -400,7 +402,7 @@ class FixtureAndIsolationTests(unittest.TestCase):
         self.assertEqual(decoded["limits"]["storage_format_values"], live_values)
         for key in keys:
             self.assertEqual(decoded[key], manifest[key])
-        self.assertEqual(len(actual), 9805)
+        self.assertEqual(len(actual), 11658)
         self.assertEqual(hashlib.sha256(actual).hexdigest(), EXPECTED_FIXTURE_SHA256)
 
     def test_fixture_builder_is_deterministic_and_uses_no_filesystem(self) -> None:
@@ -422,7 +424,17 @@ class FixtureAndIsolationTests(unittest.TestCase):
                 imported.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module)
-        allowed = {"__future__", "dataclasses", "datetime", "json", "pathlib", "re", "typing", "workstack.agent_context_pack"}
+        allowed = {
+            "__future__",
+            "dataclasses",
+            "datetime",
+            "json",
+            "pathlib",
+            "re",
+            "typing",
+            "workstack.agent_cli_fixture_literals",
+            "workstack.agent_context_pack",
+        }
         self.assertEqual(imported - allowed, set())
         forbidden_calls = {"open", "exec", "eval", "compile", "__import__"}
         called_names = {
@@ -431,6 +443,44 @@ class FixtureAndIsolationTests(unittest.TestCase):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         }
         self.assertFalse(called_names & forbidden_calls)
+        literals_tree = ast.parse(
+            (ROOT / "workstack" / "agent_cli_fixture_literals.py").read_text(encoding="utf-8")
+        )
+        self.assertTrue(ast.get_docstring(literals_tree))
+        self.assertFalse(
+            any(
+                isinstance(node, (ast.Import, ast.ImportFrom, ast.Call))
+                for node in ast.walk(literals_tree)
+            )
+        )
+        self.assertIsInstance(literals_tree.body[0], ast.Expr)
+        assigns = [node for node in literals_tree.body[1:] if isinstance(node, ast.Assign)]
+        self.assertEqual(len(literals_tree.body), 5)
+        self.assertEqual(len(assigns), 4)
+        self.assertEqual(
+            [
+                target.id
+                for node in assigns
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            ],
+            ["_ADMISSION", "_BACKEND_RESULTS", "_ENVELOPE", "_TRANSPORT_RULES"],
+        )
+
+        def is_literal(node: ast.AST) -> bool:
+            if isinstance(node, ast.Constant):
+                return True
+            if isinstance(node, ast.Dict):
+                return all(
+                    key is not None and is_literal(key) and is_literal(value)
+                    for key, value in zip(node.keys, node.values)
+                )
+            if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+                return all(is_literal(elt) for elt in node.elts)
+            return False
+
+        for node in assigns:
+            self.assertTrue(is_literal(node.value))
 
     def test_manifest_owned_paths_register_helper_and_pack_tests(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -954,12 +1004,15 @@ class OutcomeRendererTests(unittest.TestCase):
             changed[name] = 1
             with self.subTest(type_field=name), self.assertRaises(ValueError):
                 contract.render_outcome(outcome=_outcome(data=changed))
-        changed = dict(baseline, storage_format="v6")
+        changed = dict(baseline, storage_format="v7")
         with self.assertRaises(ValueError):
             contract.render_outcome(outcome=_outcome(data=changed))
-        accepted = dict(baseline, storage_format="v5")
-        rendered = contract.render_outcome(outcome=_outcome(data=accepted))
-        self.assertEqual(json.loads(rendered)["data"]["storage_format"], "v5")
+        for accepted_format in ("v5", "v6"):
+            accepted = dict(baseline, storage_format=accepted_format)
+            rendered = contract.render_outcome(outcome=_outcome(data=accepted))
+            self.assertEqual(
+                json.loads(rendered)["data"]["storage_format"], accepted_format
+            )
         for name in ("actual_workspace_uid", "expected_workspace_uid"):
             changed = dict(baseline)
             changed[name] = "NOT-A-CANONICAL-UUID"
@@ -1290,6 +1343,88 @@ class PlanningContextRenderTests(unittest.TestCase):
                 self.assertNotIn("error", parsed)
                 self.assertIn("objectives", parsed["data"])
                 self.assertTrue(rendered.endswith(b"\n"))
+
+
+class PlanningV2RenderTests(unittest.TestCase):
+    def test_render_outcome_refuses_v1_sources_with_evidence(self) -> None:
+        data = _planning_context_data(
+            sources=[
+                _planning_source(
+                    evidence={
+                        "answer_scope": "single_source",
+                        "attested": False,
+                        "confidence_level": "medium",
+                        "evidence_count": 1,
+                        "truncated": False,
+                    }
+                )
+            ]
+        )
+        with self.assertRaises(ValueError):
+            contract.render_outcome(outcome=_planning_outcome(data))
+
+    def test_render_outcome_accepts_v2_view_without_sources(self) -> None:
+        data = _planning_context_data(sources=[], view="planning-v2")
+        rendered, parsed = _rendered(_planning_outcome(data))
+        self.assertEqual(parsed["data"]["view"], "planning-v2")
+        self.assertEqual(parsed["data"]["sources"], [])
+        self.assertNotIn("error", parsed)
+        self.assertTrue(rendered.endswith(b"\n"))
+
+    def test_render_outcome_refuses_attested_true(self) -> None:
+        data = _planning_context_data(
+            view="planning-v2",
+            sources=[
+                _planning_source(
+                    evidence={
+                        "answer_scope": "single_source",
+                        "attested": True,
+                        "confidence_level": "medium",
+                        "evidence_count": 1,
+                        "truncated": False,
+                    }
+                )
+            ],
+        )
+        with self.assertRaises(ValueError):
+            contract.render_outcome(outcome=_planning_outcome(data))
+
+    def test_render_outcome_refuses_unknown_evidence_field(self) -> None:
+        data = _planning_context_data(
+            view="planning-v2",
+            sources=[
+                _planning_source(
+                    evidence={
+                        "answer_scope": "single_source",
+                        "attested": False,
+                        "confidence_level": "medium",
+                        "evidence_count": 1,
+                        "query_id": "engine-q-LEAK",
+                        "truncated": False,
+                    }
+                )
+            ],
+        )
+        with self.assertRaises(ValueError):
+            contract.render_outcome(outcome=_planning_outcome(data))
+
+    def test_render_outcome_refuses_boolean_evidence_count(self) -> None:
+        data = _planning_context_data(
+            view="planning-v2",
+            sources=[
+                _planning_source(
+                    evidence={
+                        "answer_scope": "single_source",
+                        "attested": False,
+                        "confidence_level": "medium",
+                        "evidence_count": True,
+                        "truncated": False,
+                    }
+                )
+            ],
+        )
+        with self.assertRaises(ValueError):
+            contract.render_outcome(outcome=_planning_outcome(data))
 
 
 if __name__ == "__main__":

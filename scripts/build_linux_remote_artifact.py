@@ -63,10 +63,36 @@ ROSTER_FILES = (
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
 )
+# Exactly the roster dist_source_gate binds frontend/dist to, including the
+# Python theme output the prebuild check reads, the fixture tsconfig.app pulls
+# in from outside frontend/, and the Vite mode env files whose presence would
+# change emitted bytes.
+GENERATED_SOURCE_PATHS = (
+    "desktop/python-webview-shell/generated/theme_tokens.py",
+    "frontend/.env",
+    "frontend/.env.local",
+    "frontend/.env.production",
+    "frontend/.env.production.local",
+    "frontend/index.html",
+    "frontend/package-lock.json",
+    "frontend/package.json",
+    "frontend/public",
+    "frontend/src",
+    "frontend/tsconfig.app.json",
+    "frontend/tsconfig.json",
+    "frontend/tsconfig.node.json",
+    "frontend/vite.config.ts",
+    "scripts/generate-theme-tokens.mjs",
+    "tests/fixtures/checkpoint_change_v1.json",
+    "theme/theme-tokens.json",
+)
 ADMISSION_PATHS = ROSTER_DIRS + ROSTER_FILES + ("requirements.txt",)
 GENERATED_DIR = "frontend/dist"
 FROZEN_DIRS = tuple(path for path in ROSTER_DIRS if path != GENERATED_DIR)
 FROZEN_ROOTS = tuple(path for path in ADMISSION_PATHS if path != GENERATED_DIR)
+# Cleanliness only. These inputs are never payload: the gate binds frontend/dist to
+# their content, and this pathspec binds their content to source_commit.
+CLEAN_PATHS = ADMISSION_PATHS + GENERATED_SOURCE_PATHS
 SKIP_PARTS = frozenset({".git", ".venv", "__pycache__", "venv"})
 APPROVED_LOCK = {
     "attrs": "26.1.0",
@@ -117,6 +143,7 @@ def load_sibling(filename: str, attribute: str | None = None) -> Any:
 
 GIT = load_sibling("linux_remote_artifact_git.py")
 ZIP = load_sibling("linux_remote_artifact_zip.py")
+DIST_GATE = load_sibling("dist_source_gate.py")
 ZIP_TIMESTAMP = ZIP.ZIP_TIMESTAMP
 FILE_MODE = ZIP.FILE_MODE
 ZIP_MEMBER_MODE = ZIP.ZIP_MEMBER_MODE
@@ -414,12 +441,14 @@ def porcelain_relpath(line: str) -> str:
 def assert_clean_source(source: Path) -> None:
     tracked = GIT.git_text(
         source,
-        ("status", "--porcelain=v1", "-uall", "--", *ADMISSION_PATHS),
+        ("status", "--porcelain=v1", "-uall", "--", *CLEAN_PATHS),
         ArtifactBuildError,
     )
     dirty = [line for line in tracked.splitlines() if line and not is_cache_path(porcelain_relpath(line))]
     if dirty:
-        raise ArtifactBuildError("SOURCE_DIRTY", "payload roster or requirements lock is dirty")
+        raise ArtifactBuildError(
+            "SOURCE_DIRTY", "payload roster, requirements lock or frontend build inputs are dirty"
+        )
 
 
 def read_literals(data: bytes) -> tuple[str, int]:
@@ -444,6 +473,37 @@ def read_literals(data: bytes) -> tuple[str, int]:
     if not isinstance(protocol, int):
         raise ArtifactBuildError("SOURCE_DIRTY", "remote protocol literal is missing")
     return version, protocol
+
+def assert_dist_matches_source(source: Path) -> dict[str, Any]:
+    """Refuse a dist that is not the tree its recorded build inputs produced.
+
+    Content only: the receipt binds frontend/dist to a SHA-256 digest of the
+    frontend build inputs, and assert_clean_source separately binds those
+    inputs to source_commit. Neither the commit nor a mtime is evidence here.
+    """
+
+    try:
+        return DIST_GATE.verify(source)
+    except DIST_GATE.DistSourceGateError as failure:
+        raise ArtifactBuildError(failure.code, failure.detail) from failure
+
+
+def assert_staged_dist_admitted(payload: Path, admitted: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind the dist bytes actually staged for the archive to the admitted tree.
+
+    frontend/dist is generated and git-ignored, so an ordinary concurrent
+    process may rewrite it between the gate call above and the copy inside
+    materialize_payload -- and may put it back afterwards. Recomputing a hash of
+    the staged copy on its own would only certify whatever was copied. This
+    compares that private copy to the manifest assert_dist_matches_source
+    admitted, and the live directory is never read again after it.
+    """
+
+    try:
+        return DIST_GATE.verify_staged_dist(payload / "frontend" / "dist", admitted)
+    except DIST_GATE.DistSourceGateError as failure:
+        raise ArtifactBuildError(failure.code, failure.detail) from failure
+
 
 def list_generated_files(source: Path) -> list[Path]:
     files: list[Path] = []
@@ -663,12 +723,14 @@ def build_artifact(source_root: Path, wheelhouse: Path, output_dir: Path, target
         locked = parse_requirements(lock_bytes.decode("utf-8"))
         require_approved_lock(locked)
         wheels = admit_wheels(wheels_root, locked)
+        admitted_dist = assert_dist_matches_source(source)
         list_generated_files(source)
         output, identity = exclusive_output(output_dir)
         staging = output / "staging"
         payload = staging / "payload"
         payload.mkdir(parents=True)
         materialize_payload(source, payload, wheels, payload_blobs)
+        assert_staged_dist_admitted(payload, admitted_dist)
         files = file_records(payload)
         manifest = build_manifest(
             version=version,

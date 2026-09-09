@@ -1,10 +1,10 @@
 {
-  "config_digest": "3fbcdb28c85880f76856024f1067dc0709646bc5de0332b97e9e57a79a664faa",
+  "config_digest": "8d4c1bbc427e5738c3deecb3eb9267f517cb07eb30363e9e4ec07f9dfb91d0e8",
   "coverage_floors": {},
   "critical_complexity_debt": {},
   "critical_typescript_complexity_debt": {},
-  "measurement_commit": "b7fdf99592e0efe4038013187f2313e2ebb990b8",
-  "measurement_source_digest": "04946382fb57018aa839aaf2093d65cdbd249eb3f7557c91d02ff5e652b5b73a",
+  "measurement_commit": "46de379",
+  "measurement_source_digest": "091f28831b217d8d57c6c63beb82b1317c440e56dca006f00ef196113f158564",
   "production_file_length_debt": {
     "desktop/python-webview-shell/connection_registry_startup.py": 916,
     "desktop/python-webview-shell/workstack_desktop.py": 3487,
@@ -36,11 +36,13 @@
   },
   "schema_version": 1,
   "source_populations": {
-    "frontend_production": 196,
-    "python_core": 162,
-    "python_desktop": 41,
+    "frontend_production": 249,
+    "python_core": 195,
+    "python_desktop": 51,
     "python_entrypoint": 1,
-    "quality_tooling": 14
+    "python_knowledge_launcher": 1,
+    "python_opendocuments": 18,
+    "quality_tooling": 17
   },
   "temporary_exceptions": [],
   "typescript_complexity_debt": {

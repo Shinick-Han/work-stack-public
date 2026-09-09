@@ -218,7 +218,7 @@ class RunningServerMetadataContractTest(unittest.TestCase):
     def test_v4_and_unknown_schema_remain_unsupported_without_local_fallback(self) -> None:
         cases = (
             (4, "v4"),
-            (6, "unknown"),
+            (7, "unknown"),
             (True, "unknown"),
             ("5", "unknown"),
         )

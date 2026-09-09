@@ -11,7 +11,7 @@ from unittest import mock
 
 from workstack.planning_status import validate_and_project
 from workstack.store import Store
-from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES
+from workstack.store_rosters import V3_DOCUMENT_NAMES, V6_DOCUMENT_NAMES
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "store-v3"
@@ -79,7 +79,7 @@ class StoreV3ContractInventoryTest(unittest.TestCase):
         # The fixture stays a frozen v3 document set; opening a copy of it with
         # this build upgrades that copy, and every payload except the metadata
         # record has to survive the upgrade untouched.
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         after = {
             filename: json.loads((root / filename).read_text(encoding="utf-8"))
             for filename in documents
@@ -89,7 +89,7 @@ class StoreV3ContractInventoryTest(unittest.TestCase):
             after, {name: before[name] for name in before if name != "store-meta.json"}
         )
         written = {item.name for item in root.iterdir() if item.suffix == ".json"}
-        self.assertEqual(written, set(V5_DOCUMENT_NAMES))
+        self.assertEqual(written, set(V6_DOCUMENT_NAMES))
         return store, before
 
     def setUp(self) -> None:

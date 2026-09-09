@@ -5,6 +5,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import {
   MultiProfileConnectionCenter,
   activationReplacementKind,
+  authorityFingerprint,
   decideActivationPersist,
   decideMetadataSave,
   registryWriteConflictError,
@@ -883,4 +884,66 @@ test('decideActivationPersist previews replacements and activates when no live p
     expect(self.candidate.active_profile_id).toBe(profileId)
     expect(self.candidate.profiles).toEqual([{ ...localProfile, enabled: true }])
   }
+})
+
+test('preserves knowledge_drivers_config on host records and invalidates authority when only that path changes', async () => {
+  const host = installHost()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  const configPath = '/srv/workstack/knowledge-drivers.json'
+  const sshWithConfig = {
+    profile_id: profileId,
+    label: 'Work Linux',
+    kind: 'ssh' as const,
+    enabled: true,
+    live_updates: true,
+    expected_workspace_id: workspaceId,
+    ssh_host_alias: 'work-linux',
+    remote_app_dir: '/srv/workstack/app',
+    remote_data_dir: '/srv/workstack/ssot',
+    preferred_forward_port: 18_765,
+    remote_port: 8_765,
+    remote_python: remotePython,
+    knowledge_drivers_config: configPath,
+  }
+  render(<MultiProfileConnectionCenter activationEnabled onClose={vi.fn()} open enabled />)
+  loadRegistry(host, { schema_version: 1, active_profile_id: profileId, profiles: [sshWithConfig] })
+
+  expect(screen.queryByLabelText(/knowledge/i)).not.toBeInTheDocument()
+  expect(screen.queryByText(/validated remotely/i)).not.toBeInTheDocument()
+  await userEvent.clear(screen.getByLabelText('Profile label'))
+  await userEvent.type(screen.getByLabelText('Profile label'), 'Renamed remote')
+  await userEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+  const testRequest = lastRequest(host, 'test-profile')
+  expect(testRequest.profile.knowledge_drivers_config).toBe(configPath)
+  expect(testRequest.profile.remote_python).toBe(remotePython)
+  host.receive(success(testRequest, {
+    profile_id: profileId, kind: 'ssh', status: 'ready', actual_workspace_id: workspaceId,
+    product_version: '1.0.6', protocol_version: 1, proof_id: proofId,
+  }))
+  await userEvent.click(screen.getByRole('button', { name: 'Save profile' }))
+  const saveRequest = lastRequest(host, 'save-registry')
+  expect(saveRequest.registry.profiles[0]).toEqual({ ...sshWithConfig, label: 'Renamed remote' })
+  host.receive(success(saveRequest, {
+    registry: saveRequest.registry,
+    registry_digest: `sha256:${'b'.repeat(64)}`,
+  }))
+
+  expect(authorityFingerprint(sshWithConfig)).toBe(authorityFingerprint({ ...sshWithConfig, label: 'Renamed remote' }))
+  expect(authorityFingerprint(sshWithConfig)).not.toBe(authorityFingerprint({
+    ...sshWithConfig,
+    knowledge_drivers_config: '/srv/workstack/other-drivers.json',
+  }))
+  expect(authorityFingerprint(sshWithConfig)).not.toBe(authorityFingerprint({
+    ...sshWithConfig,
+    knowledge_drivers_config: undefined,
+  }))
+
+  await userEvent.click(screen.getByRole('button', { name: 'Add SSH' }))
+  host.receive(success(lastRequest(host, 'discover-ssh-aliases'), { aliases: ['work-linux'] }))
+  await fillSshDraft('Brand new')
+  await userEvent.type(screen.getByLabelText('Remote Python executable'), remotePython)
+  await userEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+  const newProfile = lastRequest(host, 'test-profile').profile
+  expect(newProfile.knowledge_drivers_config).toBeUndefined()
+  expect(newProfile.label).toBe('Brand new')
 })

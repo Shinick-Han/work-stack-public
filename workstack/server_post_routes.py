@@ -14,7 +14,14 @@ from http import HTTPStatus
 from typing import Any
 from urllib.parse import unquote
 
+from .capture_unlink_policy import (
+    CaptureUnlinkPolicyError,
+    admit_displayed_capture_revision,
+)
+from .capture_unlink_receipt import CaptureUnlinkReceiptError, admit_receipt_id
 from .http_route_types import IDEMPOTENT_POST_ROUTES, PostRoute, V1_POST_ROUTES
+from .knowledge_captures_http import IMPORT_BODY_LIMIT, IMPORT_PATH
+from .knowledge_requests_http import KNOWLEDGE_BODY_LIMIT, KNOWLEDGE_PATH_PREFIX
 from .report_documents_http import is_report_route_alias
 from .server_admission import CAPTURE_BODY_LIMIT, DEFAULT_BODY_LIMIT
 from .server_errors import RequestError
@@ -60,11 +67,20 @@ class PostRouteMixin:
     def _read_post_body(self, path: str) -> tuple[dict[str, Any], str] | None:
         """The bounded body, or None once the surrogate refusal was answered."""
 
-        maximum = (
-            CAPTURE_BODY_LIMIT
-            if path.startswith(_CAPTURE_PATH_PREFIX)
-            else DEFAULT_BODY_LIMIT
-        )
+        maximum = DEFAULT_BODY_LIMIT
+        if path.startswith(_CAPTURE_PATH_PREFIX):
+            maximum = CAPTURE_BODY_LIMIT
+        elif path == IMPORT_PATH:
+            # The one knowledge route that carries evidence rather than a
+            # query. It is given the released Capture budget, measured over the
+            # WHOLE raw request -- not per item -- and the two policy/issue
+            # routes below keep their 16 KiB bound untouched.
+            maximum = IMPORT_BODY_LIMIT
+        elif path.startswith(KNOWLEDGE_PATH_PREFIX):
+            # A bounded query plus identity, or eight nonsecret connection
+            # policies. Tighter than the default; the Capture budget is not
+            # widened, borrowed or reused for it.
+            maximum = KNOWLEDGE_BODY_LIMIT
         try:
             return self.read_json(maximum)
         except UnicodeEncodeError:
@@ -492,6 +508,49 @@ class PostRouteMixin:
         self._send_service_result(
             self.stack.link_capture(
                 unquote(match.group(1)), body["task_id"], idempotency_key,
+                request_digest, path=path,
+            )
+        )
+
+    def _post_capture_unlink(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if set(body) != {"task_id", "revision"} or not isinstance(body["task_id"], str):
+            raise RequestError(
+                "invalid_body", "unlink requires task_id and revision", 400
+            )
+        try:
+            revision = admit_displayed_capture_revision(body["revision"])
+        except CaptureUnlinkPolicyError as error:
+            raise RequestError(
+                "invalid_body", "unlink requires task_id and revision", 400
+            ) from error
+        self._send_service_result(
+            self.stack.unlink_capture(
+                unquote(match.group(1)), body["task_id"], revision, idempotency_key,
+                request_digest, path=path,
+            )
+        )
+
+    def _post_capture_undo_unlink(
+        self, path: str, match: re.Match[str], body: dict[str, Any],
+        request_digest: str, idempotency_key: str,
+    ) -> None:
+        if set(body) != {"receipt_id", "revision"} or not isinstance(body["receipt_id"], str):
+            raise RequestError(
+                "invalid_body", "undo-unlink requires receipt_id and revision", 400
+            )
+        try:
+            receipt_id = admit_receipt_id(body["receipt_id"])
+            revision = admit_displayed_capture_revision(body["revision"])
+        except (CaptureUnlinkPolicyError, CaptureUnlinkReceiptError) as error:
+            raise RequestError(
+                "invalid_body", "undo-unlink requires receipt_id and revision", 400
+            ) from error
+        self._send_service_result(
+            self.stack.undo_capture_unlink(
+                unquote(match.group(1)), receipt_id, revision, idempotency_key,
                 request_digest, path=path,
             )
         )

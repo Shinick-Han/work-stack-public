@@ -356,6 +356,7 @@ class DesktopSshRemoteProfileTest(unittest.TestCase):
         MODULE.initialize_attempt_resources(host)
         host.downloaded_update = object()
         host.install_update_on_exit = True
+        host.remote_profile = None
         host._set_update_status = mock.Mock()
         rollback = MODULE.OlderUpdateManifest("1.0.5", "1.0.6")
 

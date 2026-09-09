@@ -1,7 +1,6 @@
 # Work Stack
 
-**Source version: 1.0.12 (2026-09-08).** Fixes Windows desktop upgrades while an SSH connection is selected and installation initiated from the app directory.
-**Windows downloads:** [latest release](https://github.com/Shinick-Han/work-stack-public/releases/latest). See the [1.0.12 upgrade notes](docs/WORKSTACK-1.0.12-UPGRADE.ko.md) for verification scope and instructions.
+**Source snapshot: 1.0.13 (2026-09-09).** This source update does not publish a new Windows release. The latest published binary remains [v1.0.12](https://github.com/Shinick-Han/work-stack-public/releases/tag/v1.0.12). See the [product boundary and closeout](docs/WORKSTACK-CLOSEOUT-2026-09-09.ko.md).
 
 For the current Task/Knowledge capabilities and the remaining OpenDocuments integration
 work, see [Knowledge integration status (2026-09-08, Korean)](docs/KNOWLEDGE-INTEGRATION-STATUS-2026-09-08.ko.md).

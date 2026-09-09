@@ -32,6 +32,16 @@
       "exclude_globs": []
     },
     {
+      "name": "python_opendocuments",
+      "roots": [
+        "integrations/opendocuments"
+      ],
+      "extensions": [
+        ".py"
+      ],
+      "exclude_globs": []
+    },
+    {
       "name": "quality_tooling",
       "roots": [
         "scripts/check_coverage.py",
@@ -47,7 +57,10 @@
         "scripts/create_dogfood_fixture.py",
         "scripts/build_linux_remote_artifact.py",
         "scripts/linux_remote_artifact_git.py",
-        "scripts/linux_remote_artifact_zip.py"
+        "scripts/linux_remote_artifact_zip.py",
+        "scripts/dist_source_gate.py",
+        "scripts/dist_source_gate_manifest.py",
+        "scripts/dist_source_gate_receipt.py"
       ],
       "extensions": [
         ".py",
@@ -68,8 +81,19 @@
         "**/*.test.ts",
         "**/*.test.tsx",
         "frontend/src/test/**",
+        "frontend/src/features/inbox/knowledgeCaptureFixture.ts",
         "**/*.d.ts"
       ]
+    },
+    {
+      "name": "python_knowledge_launcher",
+      "roots": [
+        "scripts/knowledge_driver_launcher.py"
+      ],
+      "extensions": [
+        ".py"
+      ],
+      "exclude_globs": []
     }
   ],
   "config_inputs": [
@@ -216,6 +240,226 @@
       ]
     },
     {
+      "name": "py_knowledge_request",
+      "globs": [
+        "workstack/knowledge_request.py"
+      ],
+      "may_import": [
+        "py_foundation"
+      ]
+    },
+    {
+      "name": "py_capture_retrieval",
+      "globs": [
+        "workstack/capture_retrieval.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_knowledge_request"
+      ]
+    },
+    {
+      "name": "py_knowledge_ledger_document",
+      "globs": [
+        "workstack/knowledge_ledger_document.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_knowledge_request"
+      ]
+    },
+    {
+      "name": "py_knowledge_owner_requests",
+      "globs": [
+        "workstack/knowledge_owner_requests.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_knowledge_request",
+        "py_knowledge_ledger_document"
+      ]
+    },
+    {
+      "name": "py_store_knowledge_migration",
+      "globs": [
+        "workstack/store_knowledge_migration.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_store_migration",
+        "py_knowledge_ledger_document"
+      ]
+    },
+    {
+      "name": "py_bounded_process_exchange",
+      "globs": [
+        "workstack/bounded_process_exchange.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_knowledge_driver_exchange",
+      "globs": [
+        "workstack/knowledge_driver_exchange.py"
+      ],
+      "may_import": [
+        "py_bounded_process_exchange"
+      ]
+    },
+    {
+      "name": "py_knowledge_execution_runtime",
+      "globs": [
+        "workstack/knowledge_execution_runtime.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_capture_retrieval",
+        "py_knowledge_attempt_guard",
+        "py_knowledge_capture_packets",
+        "py_knowledge_driver_exchange",
+        "py_knowledge_execution_admission",
+        "py_knowledge_execution_proposal",
+        "py_knowledge_ledger_document",
+        "py_knowledge_request",
+        "py_knowledge_verification_protocol"
+      ]
+    },
+    {
+      "name": "py_knowledge_execution_http",
+      "globs": [
+        "workstack/knowledge_execution_http.py"
+      ],
+      "may_import": [
+        "py_knowledge_attempt_guard",
+        "py_knowledge_execution_runtime",
+        "py_knowledge_ledger_document",
+        "py_knowledge_request",
+        "py_knowledge_request_issuer",
+        "py_knowledge_requests_http",
+        "py_transport"
+      ]
+    },
+    {
+      "name": "py_knowledge_execution_proposal",
+      "globs": [
+        "workstack/knowledge_execution_proposal.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_knowledge_request",
+        "py_knowledge_capture_packets"
+      ]
+    },
+    {
+      "name": "py_knowledge_execution_admission",
+      "globs": [
+        "workstack/knowledge_execution_admission.py"
+      ],
+      "may_import": [
+        "py_knowledge_request",
+        "py_knowledge_ledger_document",
+        "py_knowledge_owner_requests"
+      ]
+    },
+    {
+      "name": "py_knowledge_attempt_guard",
+      "globs": [
+        "workstack/knowledge_attempt_guard.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_knowledge_request",
+        "py_knowledge_ledger_document"
+      ]
+    },
+    {
+      "name": "py_knowledge_request_issuer",
+      "globs": [
+        "workstack/knowledge_request_issuer.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_knowledge_request",
+        "py_knowledge_ledger_document",
+        "py_knowledge_owner_requests"
+      ]
+    },
+    {
+      "name": "py_knowledge_requests_http",
+      "globs": [
+        "workstack/knowledge_requests_http.py"
+      ],
+      "may_import": [
+        "py_transport",
+        "py_legacy_store",
+        "py_knowledge_request",
+        "py_knowledge_ledger_document",
+        "py_knowledge_request_issuer",
+        "py_knowledge_attempt_guard",
+        "py_knowledge_owner_requests"
+      ]
+    },
+    {
+      "name": "py_knowledge_capture_packets",
+      "globs": [
+        "workstack/knowledge_capture_packets.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_knowledge_request",
+        "py_capture_retrieval"
+      ]
+    },
+    {
+      "name": "py_knowledge_capture_import",
+      "globs": [
+        "workstack/knowledge_capture_import.py"
+      ],
+      "may_import": [
+        "py_knowledge_request",
+        "py_knowledge_ledger_document",
+        "py_knowledge_owner_requests",
+        "py_knowledge_capture_packets",
+        "py_service_domain"
+      ]
+    },
+    {
+      "name": "py_knowledge_captures_http",
+      "globs": [
+        "workstack/knowledge_captures_http.py"
+      ],
+      "may_import": [
+        "py_transport",
+        "py_capture_retrieval",
+        "py_knowledge_request",
+        "py_knowledge_ledger_document",
+        "py_knowledge_request_issuer",
+        "py_knowledge_requests_http",
+        "py_knowledge_capture_packets",
+        "py_knowledge_capture_import"
+      ]
+    },
+    {
+      "name": "py_opendocuments_adapter",
+      "globs": [
+        "integrations/opendocuments/manual_import.py",
+        "integrations/opendocuments/manual_query.py",
+        "integrations/opendocuments/nas_paths.py",
+        "integrations/opendocuments/od_client.py",
+        "integrations/opendocuments/od_client_config.py",
+        "integrations/opendocuments/od_client_transport.py",
+        "integrations/opendocuments/retrieval_mapper.py",
+        "integrations/opendocuments/retrieval_mapper_fields.py",
+        "integrations/opendocuments/source_access.py",
+        "integrations/opendocuments/source_access_nas.py",
+        "integrations/opendocuments/source_access_types.py"
+      ],
+      "may_import": [
+        "py_knowledge_request",
+        "py_capture_retrieval"
+      ]
+    },
+    {
       "name": "py_foundation",
       "globs": [
         "workstack/__init__.py",
@@ -232,7 +476,8 @@
         "workstack/store_errors.py",
         "workstack/store_rosters.py",
         "workstack/task_display_id.py",
-        "workstack/unicode17.py"
+        "workstack/unicode17.py",
+        "workstack/report_context_catalog.py"
       ],
       "may_import": []
     },
@@ -270,7 +515,10 @@
         "workstack/store_document_validation.py"
       ],
       "may_import": [
-        "py_foundation"
+        "py_foundation",
+        "py_knowledge_ledger_document",
+        "py_knowledge_capture_packets",
+        "py_capture_observations"
       ]
     },
     {
@@ -298,7 +546,8 @@
         "py_store_recovery",
         "py_store_sync",
         "py_store_rebind",
-        "py_store_schema_upgrade"
+        "py_store_schema_upgrade",
+        "py_store_capture_observations"
       ]
     },
     {
@@ -310,6 +559,28 @@
       "may_import": [
         "py_foundation",
         "py_store_migration",
+        "py_legacy_store",
+        "py_store_knowledge_migration",
+        "py_capture_unlink_policy",
+        "py_capture_unlink_receipt"
+      ]
+    },
+    {
+      "name": "py_service_errors",
+      "globs": [
+        "workstack/service_errors.py"
+      ],
+      "may_import": [
+        "py_snapshot"
+      ]
+    },
+    {
+      "name": "py_service_domain",
+      "globs": [
+        "workstack/service_domain.py"
+      ],
+      "may_import": [
+        "py_service_errors",
         "py_legacy_store"
       ]
     },
@@ -324,8 +595,6 @@
         "workstack/service_cli_commands.py",
         "workstack/service_composition.py",
         "workstack/service_contracts.py",
-        "workstack/service_domain.py",
-        "workstack/service_errors.py",
         "workstack/service_graph.py",
         "workstack/service_idempotency.py",
         "workstack/service_objectives.py",
@@ -350,7 +619,12 @@
         "py_checkpoint_contract",
         "py_context_projection",
         "py_outcome_write_invariant",
-        "py_mutation_service"
+        "py_mutation_service",
+        "py_service_errors",
+        "py_service_domain",
+        "py_knowledge_capture_packets",
+        "py_capture_unlink_policy",
+        "py_capture_unlink_receipt"
       ]
     },
     {
@@ -375,7 +649,17 @@
         "py_legacy_store",
         "py_sse_encoder",
         "py_mutation_service",
-        "py_cli_read_contract"
+        "py_cli_read_contract",
+        "py_knowledge_requests_http",
+        "py_knowledge_captures_http",
+        "py_knowledge_execution_http",
+        "py_knowledge_execution_runtime",
+        "py_knowledge_attempt_guard",
+        "py_knowledge_verification_guard",
+        "py_knowledge_verification_http",
+        "py_capture_unlink_policy",
+        "py_capture_observation_http",
+        "py_capture_unlink_receipt"
       ]
     },
     {
@@ -384,7 +668,9 @@
         "workstack/agent_cli_contract.py",
         "workstack/agent_context_pack.py"
       ],
-      "may_import": []
+      "may_import": [
+        "py_agent_contract_literals"
+      ]
     },
     {
       "name": "py_agent_authority",
@@ -466,7 +752,8 @@
         "py_agent_registry",
         "py_agent_transport",
         "py_owner_authority",
-        "py_legacy_store"
+        "py_legacy_store",
+        "py_agent_context_brief"
       ]
     },
     {
@@ -479,6 +766,13 @@
         "py_cli_routing",
         "py_owner_authority"
       ]
+    },
+    {
+      "name": "py_cli_output",
+      "globs": [
+        "workstack/cli_output.py"
+      ],
+      "may_import": []
     },
     {
       "name": "py_composition",
@@ -499,13 +793,19 @@
         "py_checkpoint_cli",
         "py_cli_capabilities",
         "py_cli_routing",
-        "py_cli_parser"
+        "py_cli_parser",
+        "py_cli_output",
+        "py_cli_storage_receipts",
+        "py_knowledge_driver_registry",
+        "py_cli_writer_reports",
+        "py_checkpoint_resume_facts"
       ]
     },
     {
       "name": "py_desktop",
       "globs": [
         "desktop/python-webview-shell/bounded_request_worker.py",
+        "desktop/python-webview-shell/desktop_update_process.py",
         "desktop/python-webview-shell/brand_assets.py",
         "desktop/python-webview-shell/connection_activation_evidence.py",
         "desktop/python-webview-shell/connection_registry.py",
@@ -524,6 +824,10 @@
         "desktop/python-webview-shell/remote_provision_plan.py",
         "desktop/python-webview-shell/remote_provision_payload.py",
         "desktop/python-webview-shell/remote_provision_command.py",
+        "desktop/python-webview-shell/bounded_process_exchange.py",
+        "desktop/python-webview-shell/remote_provision_artifact.py",
+        "desktop/python-webview-shell/remote_provision_evidence.py",
+        "desktop/python-webview-shell/remote_provision_driver.py",
         "desktop/python-webview-shell/remote_provision_probe.py",
         "desktop/python-webview-shell/remote_provision_collector.py",
         "desktop/python-webview-shell/remote_provision_installer.py",
@@ -536,15 +840,19 @@
         "desktop/python-webview-shell/v4_activation_binding.py",
         "desktop/python-webview-shell/workstack_desktop.py",
         "desktop/python-webview-shell/workstack_update.py",
+        "desktop/python-webview-shell/workstack_update_status.py",
         "desktop/python-webview-shell/remote_attempt_resources.py",
         "desktop/python-webview-shell/remote_owner.py",
         "desktop/python-webview-shell/remote_process_handle.py",
         "desktop/python-webview-shell/remote_receipt_guard.py",
-        "desktop/python-webview-shell/remote_receipt_io.py"
+        "desktop/python-webview-shell/remote_receipt_io.py",
+        "desktop/python-webview-shell/connection_registry_bridge.py",
+        "desktop/python-webview-shell/owner_launch_config.py"
       ],
       "may_import": [
         "py_foundation",
         "py_desktop_rebind",
+        "py_bounded_process_exchange",
         "py_knowledge_host",
         "py_profile_inspection"
       ]
@@ -575,7 +883,9 @@
         "scripts/run_backend_tests.py",
         "scripts/build_linux_remote_artifact.py",
         "scripts/linux_remote_artifact_git.py",
-        "scripts/linux_remote_artifact_zip.py"
+        "scripts/linux_remote_artifact_zip.py",
+        "scripts/dist_source_gate.py",
+        "scripts/dist_source_gate_*.py"
       ],
       "may_import": []
     },
@@ -786,7 +1096,8 @@
       ],
       "may_import": [
         "py_foundation",
-        "py_store_validation"
+        "py_store_validation",
+        "py_knowledge_ledger_document"
       ]
     },
     {
@@ -846,7 +1157,295 @@
         "py_store_validation",
         "py_store_migration",
         "py_store_layout",
-        "py_store_manifest_validation"
+        "py_store_manifest_validation",
+        "py_store_knowledge_migration"
+      ]
+    },
+    {
+      "name": "py_cli_storage_receipts",
+      "globs": [
+        "workstack/cli_storage_receipts.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_opendocuments_driver_config",
+      "globs": [
+        "integrations/opendocuments/driver_config.py"
+      ],
+      "may_import": [
+        "py_opendocuments_adapter",
+        "py_knowledge_ledger_document",
+        "py_knowledge_request"
+      ]
+    },
+    {
+      "name": "py_opendocuments_driver",
+      "globs": [
+        "integrations/opendocuments/driver_main.py"
+      ],
+      "may_import": [
+        "py_opendocuments_driver_config",
+        "py_opendocuments_adapter",
+        "py_knowledge_request",
+        "py_knowledge_request_issuer"
+      ]
+    },
+    {
+      "name": "py_knowledge_driver_launcher",
+      "globs": [
+        "scripts/knowledge_driver_launcher.py"
+      ],
+      "may_import": [
+        "py_opendocuments_driver_config",
+        "py_opendocuments_driver",
+        "py_knowledge_execution_runtime",
+        "py_knowledge_request",
+        "py_transport",
+        "py_application",
+        "py_legacy_store"
+      ]
+    },
+    {
+      "name": "py_knowledge_driver_registry",
+      "globs": [
+        "workstack/knowledge_driver_registry.py"
+      ],
+      "may_import": [
+        "py_knowledge_execution_runtime",
+        "py_knowledge_request"
+      ]
+    },
+    {
+      "name": "py_opendocuments_driver_entry",
+      "globs": [
+        "integrations/opendocuments/driver_entry.py"
+      ],
+      "may_import": [
+        "py_opendocuments_driver"
+      ]
+    },
+    {
+      "name": "py_knowledge_verification_protocol",
+      "globs": [
+        "workstack/knowledge_verification_protocol.py"
+      ],
+      "may_import": [
+        "py_capture_retrieval",
+        "py_knowledge_ledger_document",
+        "py_knowledge_request"
+      ]
+    },
+    {
+      "name": "py_od_verifier_config",
+      "globs": [
+        "integrations/opendocuments/source_verifier_config.py"
+      ],
+      "may_import": [
+        "py_opendocuments_adapter",
+        "py_knowledge_ledger_document",
+        "py_knowledge_request"
+      ]
+    },
+    {
+      "name": "py_od_verifier_main",
+      "globs": [
+        "integrations/opendocuments/source_verifier_main.py"
+      ],
+      "may_import": [
+        "py_opendocuments_adapter",
+        "py_od_verifier_config",
+        "py_knowledge_request",
+        "py_knowledge_request_issuer",
+        "py_knowledge_verification_protocol",
+        "py_od_verifier_notion"
+      ]
+    },
+    {
+      "name": "py_od_verifier_entry",
+      "globs": [
+        "integrations/opendocuments/source_verifier_entry.py"
+      ],
+      "may_import": [
+        "py_od_verifier_main"
+      ]
+    },
+    {
+      "name": "py_knowledge_verification_admission",
+      "globs": [
+        "workstack/knowledge_verification_admission.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_knowledge_capture_packets",
+        "py_knowledge_ledger_document",
+        "py_knowledge_request",
+        "py_knowledge_verification_protocol"
+      ]
+    },
+    {
+      "name": "py_knowledge_verification_guard",
+      "globs": [
+        "workstack/knowledge_verification_guard.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_knowledge_verification_runtime",
+      "globs": [
+        "workstack/knowledge_verification_runtime.py"
+      ],
+      "may_import": [
+        "py_bounded_process_exchange",
+        "py_foundation",
+        "py_capture_retrieval",
+        "py_knowledge_driver_exchange",
+        "py_knowledge_execution_runtime",
+        "py_knowledge_ledger_document",
+        "py_knowledge_request",
+        "py_knowledge_verification_admission",
+        "py_knowledge_verification_guard",
+        "py_knowledge_verification_protocol"
+      ]
+    },
+    {
+      "name": "py_knowledge_verification_http",
+      "globs": [
+        "workstack/knowledge_verification_http.py"
+      ],
+      "may_import": [
+        "py_knowledge_driver_exchange",
+        "py_knowledge_request_issuer",
+        "py_knowledge_requests_http",
+        "py_knowledge_verification_guard",
+        "py_knowledge_verification_runtime",
+        "py_transport"
+      ]
+    },
+    {
+      "name": "py_capture_unlink_policy",
+      "globs": [
+        "workstack/capture_unlink_policy.py"
+      ],
+      "may_import": [
+        "py_store_validation"
+      ]
+    },
+    {
+      "name": "py_od_verifier_notion",
+      "globs": [
+        "integrations/opendocuments/source_verifier_notion.py"
+      ],
+      "may_import": [
+        "py_opendocuments_adapter",
+        "py_knowledge_request"
+      ]
+    },
+    {
+      "name": "py_capture_observations",
+      "globs": [
+        "workstack/capture_observations.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_knowledge_request",
+        "py_knowledge_verification_protocol"
+      ]
+    },
+    {
+      "name": "py_store_capture_observations",
+      "globs": [
+        "workstack/store_capture_observations.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_capture_observations",
+        "py_store_validation",
+        "py_store_layout"
+      ]
+    },
+    {
+      "name": "py_capture_observation_runtime",
+      "globs": [
+        "workstack/capture_observation_runtime.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_capture_observations",
+        "py_file_lease",
+        "py_knowledge_verification_admission",
+        "py_knowledge_verification_runtime"
+      ]
+    },
+    {
+      "name": "py_capture_observation_http",
+      "globs": [
+        "workstack/capture_observation_http.py"
+      ],
+      "may_import": [
+        "py_capture_observation_runtime",
+        "py_capture_observations",
+        "py_file_lease",
+        "py_foundation",
+        "py_knowledge_driver_exchange",
+        "py_knowledge_request_issuer",
+        "py_knowledge_verification_guard",
+        "py_knowledge_verification_http",
+        "py_knowledge_verification_runtime",
+        "py_transport"
+      ]
+    },
+    {
+      "name": "py_agent_context_brief",
+      "globs": [
+        "workstack/agent_context_brief.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_capture_unlink_receipt",
+      "globs": [
+        "workstack/capture_unlink_receipt.py"
+      ],
+      "may_import": [
+        "py_foundation",
+        "py_capture_unlink_policy"
+      ]
+    },
+    {
+      "name": "py_cli_writer_reports",
+      "globs": [
+        "workstack/cli_writer_reports.py"
+      ],
+      "may_import": [
+        "py_cli_writer",
+        "py_foundation"
+      ]
+    },
+    {
+      "name": "py_agent_contract_literals",
+      "globs": [
+        "workstack/agent_cli_fixture_literals.py"
+      ],
+      "may_import": []
+    },
+    {
+      "name": "py_checkpoint_facts_format",
+      "globs": [
+        "workstack/checkpoint_facts_format.py"
+      ],
+      "may_import": [
+        "py_agent_context_brief",
+        "py_storage"
+      ]
+    },
+    {
+      "name": "py_checkpoint_resume_facts",
+      "globs": [
+        "workstack/checkpoint_facts.py"
+      ],
+      "may_import": [
+        "py_checkpoint_facts_format"
       ]
     }
   ],

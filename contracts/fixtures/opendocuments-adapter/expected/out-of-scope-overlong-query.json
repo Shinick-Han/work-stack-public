@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "code": "invalid_request",
+    "message": "query is empty, too long, or contains controls"
+  }
+}

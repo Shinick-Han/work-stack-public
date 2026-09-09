@@ -1,9 +1,10 @@
 import { useCallback, type Dispatch, type SetStateAction } from 'react'
 
 import { requestKnowledge } from './knowledgeHostBridge'
-import { isAmbiguousKnowledgePin, isKnowledgeCancelled, isKnowledgeSourceConflict } from './knowledgeErrors'
+import { attemptKnowledgePin } from './knowledgePinAttempt'
 import {
   applyCatalog,
+  applyPreviewResult,
   applySearchMatch,
   applySearchResult,
   conflictPinState,
@@ -102,20 +103,35 @@ export function useKnowledgeReferenceActions(
     }
     const { signal, token } = begin('preview')
     const binding = currentKnowledgeBinding(workspaceUid, task)
+    const request = {
+      binding,
+      documentPath: documentPath.trim(),
+      endLine: span.end_line,
+      startLine: span.start_line,
+      vaultId,
+    }
     void run(token, () => requestKnowledge('read-reference', {
       binding,
-      document_path: documentPath.trim(),
-      end_line: span.end_line,
-      start_line: span.start_line,
-      vault_id: vaultId,
+      document_path: request.documentPath,
+      end_line: request.endLine,
+      start_line: request.startLine,
+      vault_id: request.vaultId,
     }, STATUS_TIMEOUT_MS, signal), (data) => {
-      setState((current) => ({ ...current, opened: null, pending: null, preview: data.reference }))
+      setState((current) => applyPreviewResult(current, data.reference, request))
     })
   }, [begin, run, setState, state.selectedVaultId, task, workspaceUid])
 
   const link = useCallback((reason: string) => {
     const previewValue = state.preview
-    if (!previewMatchesInput(previewValue, state.selectedVaultId, state.documentPath, state.startLine, state.endLine)) {
+    const binding = currentKnowledgeBinding(workspaceUid, task)
+    if (!previewMatchesInput(
+      previewValue,
+      state.selectedVaultId,
+      state.documentPath,
+      state.startLine,
+      state.endLine,
+      binding,
+    )) {
       setState((current) => ({
         ...current,
         error: 'Preview the current path and span before linking.',
@@ -125,34 +141,9 @@ export function useKnowledgeReferenceActions(
       return
     }
     const { signal, token } = begin('pin')
-    const binding = currentKnowledgeBinding(workspaceUid, task)
-    void run(token, async () => {
-      try {
-        return {
-          status: 'pinned' as const,
-          data: await requestKnowledge('pin-reference', {
-            binding,
-            document_path: previewValue.document_path,
-            end_line: previewValue.end_line,
-            expected_sha256: previewValue.source_sha256,
-            reason: reason.trim(),
-            start_line: previewValue.start_line,
-            vault_id: previewValue.vault_id,
-          }, STATUS_TIMEOUT_MS, signal),
-        }
-      } catch (error) {
-        if (isKnowledgeCancelled(error)) throw error
-        if (isKnowledgeSourceConflict(error)) return { status: 'conflict' as const, error }
-        if (!isAmbiguousKnowledgePin(error)) throw error
-        try {
-          const listed = await requestKnowledge('list-references', { binding }, STATUS_TIMEOUT_MS, signal)
-          return { status: 'reconciled' as const, error, listed }
-        } catch (listedError) {
-          if (isKnowledgeCancelled(listedError)) throw listedError
-          throw error
-        }
-      }
-    }, (result) => {
+    void run(token, () => (
+      attemptKnowledgePin(binding, previewValue, reason, STATUS_TIMEOUT_MS, signal)
+    ), (result) => {
       if (result.status === 'pinned') {
         setState((current) => ({
           ...current,

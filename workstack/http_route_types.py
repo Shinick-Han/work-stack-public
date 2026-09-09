@@ -54,6 +54,7 @@ V1_POST_ROUTES = (
     ),
     _post_route("capture_ingest", r"/api/v1/captures", "_post_capture_ingest"),
     _post_route("capture_link", r"/api/v1/captures/([^/]+)/link", "_post_capture_link"),
+    _post_route("capture_unlink", r"/api/v1/captures/([^/]+)/unlink", "_post_capture_unlink"),
     _post_route("capture_action_task", r"/api/v1/captures/([^/]+)/actions/([^/]+)/task", "_post_capture_action_task"),
     _post_route("capture_task", r"/api/v1/captures/([^/]+)/task", "_post_capture_task"),
     _post_route("capture_dismiss", r"/api/v1/captures/([^/]+)/dismiss", "_post_capture_dismiss"),
@@ -62,6 +63,63 @@ V1_POST_ROUTES = (
     _post_route("report_create", r"/api/v1/reports", "_post_report_create"),
     _post_route("report_action", r"/api/v1/reports/([^/]+)/(revisions|finalize|archive|restore)", "_post_report_action"),
     _post_route("mutation_notice_undo", r"/api/v1/mutation-notices/([^/]+)/undo", "_post_mutation_notice_undo"),
+    # The owner knowledge surface. Both writes are deliberately absent from
+    # IDEMPOTENT_POST_ROUTES: that mechanism stores the response body in
+    # activity.json, and an issued KnowledgeRequest response carries the user's
+    # query. Idempotence comes from the caller's intent_id instead.
+    _post_route("knowledge_connection_policy", r"/api/v1/knowledge/connections", "_post_knowledge_connections"),
+    _post_route("knowledge_request_issue", r"/api/v1/knowledge/requests", "_post_knowledge_request"),
+    # The manual Capture import. It is not the Capture ingestion surface
+    # and does not borrow its bearer token: the owner browser session and
+    # its CSRF token are the whole of its authentication.
+    _post_route(
+        "knowledge_capture_import",
+        r"/api/v1/knowledge/captures/import",
+        "_post_knowledge_capture_import",
+    ),
+    # Appended, never inserted, for the same reason: executing one
+    # already-issued request answers its own exact path and takes none that an
+    # entry above already answers. It is absent from IDEMPOTENT_POST_ROUTES for
+    # the same reason the two issuing routes are -- its request and its
+    # response both describe a query, and that mechanism would store the whole
+    # response body in activity.json.
+    _post_route(
+        "knowledge_request_execute",
+        r"/api/v1/knowledge/requests/execute",
+        "_post_knowledge_request_execute",
+    ),
+    # Appended, never inserted, for the same reason again: checking one stored
+    # Capture's source versions answers its own exact path and takes none that
+    # an entry above already answers -- the import route matches its own exact
+    # path, so the two `captures/` knowledge routes cannot shadow each other.
+    # It is absent from IDEMPOTENT_POST_ROUTES because that mechanism stores
+    # the whole response body in activity.json, and this response describes the
+    # user's stored evidence at one instant rather than a receipt to replay.
+    _post_route(
+        "knowledge_capture_verify",
+        r"/api/v1/knowledge/captures/verify",
+        "_post_knowledge_capture_verify",
+    ),
+    # Appended, never inserted, for the same reason once more: recording one
+    # source check answers its own exact path, and the three `captures/`
+    # knowledge routes above match their own exact paths, so none of them can
+    # shadow another. It is absent from IDEMPOTENT_POST_ROUTES deliberately --
+    # that mechanism stores the whole response body in activity.json and
+    # replays it for a repeated key, which would turn an explicit new check
+    # into a cached answer and write the observation into a second document.
+    # A repeat of this route is a new check the user asked for, not a retry.
+    _post_route(
+        "knowledge_capture_record_check",
+        r"/api/v1/knowledge/captures/record-check",
+        "_post_knowledge_capture_record_check",
+    ),
+    # Appended, never inserted: exact Capture unlink Undo answers its own
+    # path and takes none that an entry above already answers.
+    _post_route(
+        "capture_undo_unlink",
+        r"/api/v1/captures/([^/]+)/undo-unlink",
+        "_post_capture_undo_unlink",
+    ),
 )
 
 IDEMPOTENT_POST_ROUTES = frozenset({
@@ -123,4 +181,13 @@ V1_GET_ROUTES = (
     _get_route(r"/api/v1/tasks/([^/]+)", "_get_task"),
     _get_route(r"/api/v1/captures", "_get_captures"),
     _get_route(r"/api/v1/mutation-notices", "_get_mutation_notices"),
+    _get_route(r"/api/v1/knowledge/connections", "_get_knowledge_connections"),
+    # Appended, never inserted: reading one Capture's saved source check
+    # answers its own exact path, which no entry above matches, so route order
+    # is not what keeps it from taking another read's target. The handler
+    # compares the raw request-target against that exact path anyway.
+    _get_route(
+        r"/api/v1/knowledge/captures/observation",
+        "_get_knowledge_capture_observation",
+    ),
 )

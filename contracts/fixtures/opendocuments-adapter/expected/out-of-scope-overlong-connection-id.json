@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "code": "invalid_request",
+    "message": "connection_id must be trimmed, control-free, and at most 128 characters"
+  }
+}

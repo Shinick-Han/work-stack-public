@@ -17,10 +17,11 @@ nothing from the product, so it can sit underneath every other layer without
 a cycle. A future document belongs in a new constant, never inside one of
 these.
 
-``V5_DOCUMENT_NAMES`` records what schema 5 *will* contain. It is not
-activated by this module or by anything that imports it: this build still
-writes schema 3 and the nine v3 documents, and ``reports.json`` remains an
-unsupported name everywhere in the product.
+``V5_DOCUMENT_NAMES`` and ``V6_DOCUMENT_NAMES`` record the two rosters that
+followed. Neither is activated by this module or by anything that imports it:
+which roster this build writes is ``workstack.store_layout``'s single
+statement, and every set here stays readable by a historical caller that has
+to judge an older directory as the version it really is.
 
 The one rule applied to a document's *contents* also lives here:
 ``auxiliary_store_defect`` compares a document against the default payload the
@@ -82,8 +83,10 @@ V3_DOCUMENT_NAMES: Final[frozenset[str]] = frozenset(
     }
 )
 
-# Recorded, not activated. Schema 4 belongs to ``workstack.ssot``, so the next
-# collection-layout version is 5 and it is the v3 roster plus one document.
+KNOWLEDGE_DOCUMENT_NAME: Final[str] = "knowledge.json"
+
+# Schema 4 belongs to ``workstack.ssot``, so the next collection-layout version
+# after 3 is 5 and it is the v3 roster plus one document.
 V5_DOCUMENT_NAMES: Final[frozenset[str]] = frozenset(
     {
         "workspace.json",
@@ -96,6 +99,25 @@ V5_DOCUMENT_NAMES: Final[frozenset[str]] = frozenset(
         "replies.json",
         "activity.json",
         "reports.json",
+    }
+)
+
+# Schema 6 is the v5 roster plus the owner-held knowledge ledger. It is the
+# roster this build writes, and like every set above it is a fact written out
+# by name: a later document belongs in a new constant, never inside this one.
+V6_DOCUMENT_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "workspace.json",
+        "backlog.json",
+        "store-meta.json",
+        "okr.json",
+        "worklog.json",
+        "notes.json",
+        "captures.json",
+        "replies.json",
+        "activity.json",
+        "reports.json",
+        "knowledge.json",
     }
 )
 
@@ -136,6 +158,33 @@ V3_DOCUMENT_ORDER: Final[tuple[str, ...]] = (
     "captures.json",
     "replies.json",
     "activity.json",
+)
+
+V5_DOCUMENT_ORDER: Final[tuple[str, ...]] = (
+    "workspace.json",
+    "backlog.json",
+    "store-meta.json",
+    "okr.json",
+    "worklog.json",
+    "notes.json",
+    "captures.json",
+    "replies.json",
+    "activity.json",
+    "reports.json",
+)
+
+V6_DOCUMENT_ORDER: Final[tuple[str, ...]] = (
+    "workspace.json",
+    "backlog.json",
+    "store-meta.json",
+    "okr.json",
+    "worklog.json",
+    "notes.json",
+    "captures.json",
+    "replies.json",
+    "activity.json",
+    "reports.json",
+    "knowledge.json",
 )
 
 # What "this directory holds a collection store" is decided by. workspace.json
@@ -184,6 +233,8 @@ _require_roster(V1_DOCUMENT_ORDER, V1_DOCUMENT_NAMES, "v1")
 _require_roster(V2_DOCUMENT_ORDER, V2_DOCUMENT_NAMES, "v2")
 _require_roster(V3_DOCUMENT_ORDER, V3_DOCUMENT_NAMES, "v3")
 _require_roster(V3_SORTED_DOCUMENT_NAMES, V3_DOCUMENT_NAMES, "v3 sorted")
+_require_roster(V5_DOCUMENT_ORDER, V5_DOCUMENT_NAMES, "v5")
+_require_roster(V6_DOCUMENT_ORDER, V6_DOCUMENT_NAMES, "v6")
 
 if V3_SORTED_DOCUMENT_NAMES != tuple(sorted(V3_DOCUMENT_NAMES)):
     raise RuntimeError("v3 sorted roster is not in sorted order")
@@ -193,6 +244,9 @@ if V1_DOCUMENT_NAMES | {"store-meta.json"} != V2_DOCUMENT_NAMES:
 
 if V5_DOCUMENT_NAMES != V3_DOCUMENT_NAMES | {REPORTS_DOCUMENT_NAME}:
     raise RuntimeError("v5 roster is not v3 plus the reports document")
+
+if V6_DOCUMENT_NAMES != V5_DOCUMENT_NAMES | {KNOWLEDGE_DOCUMENT_NAME}:
+    raise RuntimeError("v6 roster is not v5 plus the knowledge document")
 
 if V3_LEGACY_MARKER_NAMES != V3_DOCUMENT_NAMES - {"workspace.json"}:
     raise RuntimeError("v3 markers are not the v3 roster without the workspace")

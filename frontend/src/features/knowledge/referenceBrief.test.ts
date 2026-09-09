@@ -54,6 +54,13 @@ test('omits a brief that would exceed the 32KiB clipboard cap', () => {
   const reads = savedMany.map((item) => ({ ...readFor(hangul), document_path: item.document_path }))
   const markdown = maybeResumeBriefMarkdown({
     binding,
+    captureContext: [{
+      id: 'C-0001',
+      status: 'linked',
+      source: { provider: 'manual', resource_type: 'knowledge.answer', display_title: 'Catalog row' },
+      ref: { kind: 'capture', id: 'C-0001' },
+      connections: [{ target: { kind: 'task', id: binding.task_id }, reasons: ['capture-link'] }],
+    }],
     progress: noProgress,
     vaults: [],
     reads,
@@ -180,4 +187,21 @@ test('the brief names the source rather than presenting every document as a Mark
   expect(markdown).toContain('- Document: notes · projects/review.md · lines 2–12')
   expect(markdown).toContain('- Linked reason: Quality gate source of truth.')
   expect(markdown).toContain('Copy this brief into your agent session. Nothing is sent automatically.')
+  expect(markdown).not.toContain('## Saved Capture sources')
+})
+
+test('an explicit empty Capture context is named; omitted context leaves the prior brief unchanged', () => {
+  const without = briefWith({ status: 'none' })
+  const empty = buildResumeBriefMarkdown({
+    binding,
+    captureContext: [],
+    progress: { status: 'none' },
+    reads: [readFor('Make the quality gate measurable.')],
+    saved: [saved],
+    task: savedTask,
+    vaults: [{ vault_id: 'personal-wiki', label: 'notes' }],
+  })
+  expect(empty).toContain('## Saved Capture sources')
+  expect(empty).toContain('No linked Capture sources included.')
+  expect(without).not.toContain('## Saved Capture sources')
 })

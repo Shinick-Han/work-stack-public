@@ -9,6 +9,7 @@ import {
   nextHandoffSelection,
   prepareReferenceHandoff,
   ReferenceHandoffError,
+  type PreparedReferenceHandoff,
 } from './referenceHandoff'
 
 const binding: KnowledgeBinding = {
@@ -16,6 +17,14 @@ const binding: KnowledgeBinding = {
   task_uid: '11111111-1111-1111-8111-111111111111',
   task_id: 'T-0001',
   task_revision: 2,
+}
+
+/** Narrows an existing vault-selection preparation so its envelope assertions stay exact. */
+function vaultHandoff(prepared: PreparedReferenceHandoff) {
+  if (prepared.sources !== 'vault-selection') {
+    throw new Error(`expected a vault-selection handoff, got ${prepared.sources}`)
+  }
+  return prepared
 }
 
 const sha = 'a'.repeat(64)
@@ -100,7 +109,7 @@ test('download filename uses the Task identity and omits vault-relative paths', 
 
 test('prepare reads only the selected references and keeps generated false', async () => {
   const requested: string[] = []
-  const prepared = await prepareReferenceHandoff({
+  const prepared = vaultHandoff(await prepareReferenceHandoff({
     binding,
     references: [saved, second],
     selectedIds: [second.reference_id],
@@ -110,10 +119,12 @@ test('prepare reads only the selected references and keeps generated false', asy
       requested.push(item.reference_id)
       return readFor(item, { excerpt_truncated: true, excerpt: 'Other note' })
     },
-  })
+  }))
   expect(requested).toEqual([second.reference_id])
   expect(prepared.envelope.schema).toBe('workstack.knowledge-context.v1')
   expect(prepared.envelope.generated).toBe(false)
+  expect(Object.keys(prepared.envelope).sort()).toEqual(['binding', 'generated', 'references', 'schema'])
+  expect(prepared.briefMarkdown).not.toContain('## Saved Capture sources')
   expect(prepared.envelope.references).toHaveLength(1)
   expect(prepared.envelope.references[0]?.document_path).toBe('projects/other.md')
   expect(prepared.envelope.references[0]?.excerpt_truncated).toBe(true)
@@ -133,14 +144,14 @@ test('malformed paired reads and uncompared pinned reads refuse the whole envelo
 
 test('UTF-8 envelope cap fails visibly without a truncated export', async () => {
   const hangul = '한'.repeat(6000)
-  const first = await prepareReferenceHandoff({
+  const first = vaultHandoff(await prepareReferenceHandoff({
     binding,
     references: [saved],
     selectedIds: [saved.reference_id],
     signal: new AbortController().signal,
     ...liveReaders(),
     readReference: async (item) => readFor(item, { excerpt: '짧다' }),
-  })
+  }))
   expect(knowledgeContextUtf8Bytes(first.json)).toBeLessThanOrEqual(32 * 1024)
 
   await expect(prepareReferenceHandoff({
@@ -281,4 +292,52 @@ test('the resume brief uses the saved live Task fields and the frozen progress r
   expect(prepared.briefMarkdown).toContain('Wire the resume brief into the drawer.')
   expect(prepared.briefMarkdown).toContain('No blockers recorded in this checkpoint.')
   expect(prepared.progressKey).toBe('record:digest-one')
+})
+
+test('the final live Task-detail context wins and stays out of the vault JSON envelope', async () => {
+  const early = [{
+    id: 'C-0001',
+    status: 'linked',
+    source: { provider: 'manual', resource_type: 'knowledge.answer', display_title: 'Early row' },
+    ref: { kind: 'capture', id: 'C-0001' },
+    connections: [{ target: { kind: 'task', id: binding.task_id }, reasons: ['capture-link'] }],
+  }]
+  const final = [{
+    id: 'C-0002',
+    status: 'linked',
+    source: { provider: 'manual', resource_type: 'knowledge.answer', display_title: 'Final live row' },
+    ref: { kind: 'capture', id: 'C-0002' },
+    connections: [{ target: { kind: 'task', id: binding.task_id }, reasons: ['capture-link'] }],
+  }]
+  let reads = 0
+  const prepared = vaultHandoff(await prepareReferenceHandoff({
+    binding,
+    references: [saved],
+    selectedIds: [saved.reference_id],
+    signal: new AbortController().signal,
+    ...liveReaders(),
+    readLiveTask: async () => {
+      reads += 1
+      return {
+        id: binding.task_id,
+        uid: binding.task_uid,
+        revision: binding.task_revision,
+        title: 'Define release quality gate',
+        detail: 'Make release criteria measurable.',
+        status: 'started',
+        context: reads === 1 ? early : final,
+      }
+    },
+    readReference: async (item) => readFor(item),
+  }))
+  expect(reads).toBe(2)
+  expect(prepared.briefMarkdown).toContain('C-0002')
+  expect(prepared.briefMarkdown).toContain('Final live row')
+  expect(prepared.briefMarkdown).not.toContain('C-0001')
+  expect(prepared.briefMarkdown).not.toContain('Early row')
+  const payload = JSON.parse(prepared.json) as { schema: string; references: unknown[] }
+  expect(payload.schema).toBe('workstack.knowledge-context.v1')
+  expect(Object.keys(payload).sort()).toEqual(['binding', 'generated', 'references', 'schema'])
+  expect(prepared.json).not.toContain('C-0002')
+  expect(prepared.json).not.toContain('Final live row')
 })

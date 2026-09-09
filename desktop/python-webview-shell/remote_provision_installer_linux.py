@@ -26,7 +26,8 @@ MAX_FILE = 32 * 1024 * 1024
 MAX_META = 4096
 STAGE_TRIES = 3
 SMOKE_SECS = 15.0
-PRODUCT = "1.0.8"
+# Sole release identity; imported by the admission module, test-pinned to workstack/__init__.py.
+PRODUCT = "1.0.13"
 PROTOCOL = 1
 ENTRYPOINT = "desktop/python-webview-shell/remote_entry.py"
 SOABI = "cpython-312-x86_64-linux-gnu"
@@ -106,24 +107,23 @@ def _data_object(payload: bytes) -> dict[str, object]:
     return value
 
 
-def _evidence_record(value: object, *, planning: bool = False, reports: bool = False) -> bool:
+def _evidence_record(value: object, *, planning: bool = False, reports: bool = False, knowledge: bool = False) -> bool:
     if type(value) is not dict or set(value) != EVIDENCE_KEYS:
         return False
     if type(value["id"]) is not str or type(value["origin"]) is not str:
         return False
-    digest = value["source_sha256"]
-    origin = value["origin"]
-    if reports:
+    digest, origin = value["source_sha256"], value["origin"]
+    if knowledge:
+        expected = "workstack.knowledge.v6" if origin == "fresh" else "workstack.knowledge.v5-to-v6"
+        migrated = {"migrated_v1", "migrated_v2", "migrated_v3", "migrated_v5"}
+    elif reports:
         expected = "workstack.reports.v5" if origin == "fresh" else "workstack.reports.v3-to-v5"
         migrated = {"migrated_v1", "migrated_v2", "migrated_v3"}
     elif planning:
         expected = "workstack.planning-status.v1"
         migrated = {"migrated_v1", "migrated_v2"}
-    elif origin == "fresh":
-        expected = "workstack.store.v2"
-        migrated = {"migrated_v1"}
     else:
-        expected = "workstack.store.v1-to-v2"
+        expected = "workstack.store.v2" if origin == "fresh" else "workstack.store.v1-to-v2"
         migrated = {"migrated_v1"}
     if value["id"] != expected:
         return False
@@ -139,16 +139,16 @@ def _store_meta_ok(value: object) -> bool:
         return False
     if type(value["version"]) is not int or value["version"] != 2:
         return False
-    schema = value["store_schema_version"]
-    migrations = value["migrations"]
-    if type(schema) is not int or schema not in {3, 5} or type(migrations) is not dict:
+    schema, migrations = value["store_schema_version"], value["migrations"]
+    keys = {3: MIGRATION_KEYS, 5: MIGRATION_KEYS | {"reports"}, 6: MIGRATION_KEYS | {"reports", "knowledge"}}
+    if type(schema) is not int or schema not in keys or type(migrations) is not dict or set(migrations) != keys[schema]:
         return False
-    if set(migrations) != (MIGRATION_KEYS if schema == 3 else MIGRATION_KEYS | {"reports"}):
-        return False
-    identity = _evidence_record(migrations["identity"], planning=False)
+    identity = _evidence_record(migrations["identity"])
     planning = _evidence_record(migrations["planning_status"], planning=True)
-    reports = schema != 5 or _evidence_record(migrations["reports"], reports=True)
-    return identity and planning and reports
+    reports = schema == 3 or _evidence_record(migrations["reports"], reports=True)
+    return identity and planning and reports and (
+        schema != 6 or _evidence_record(migrations["knowledge"], knowledge=True)
+    )
 
 
 def _data_uid(value: object) -> str | None:

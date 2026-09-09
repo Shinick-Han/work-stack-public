@@ -10,6 +10,7 @@ import { CaptureDrawer } from '../features/inbox/CaptureDrawer'
 import { CaptureImportDialog } from '../features/inbox/CaptureImportDialog'
 import type { SourceCaptureDraft } from '../features/inbox/sourceCapture'
 import { InboxPage } from '../features/inbox/InboxPage'
+import type { KnowledgeImportEnvelope } from '../domain/knowledgeImport'
 import { MicrosoftOobDialog } from '../features/integrations/MicrosoftOobDialog'
 import { ObjectiveHubPage } from '../features/objectives/ObjectiveHubPage'
 import { QuickTaskDialog } from '../features/tasks/QuickTaskDialog'
@@ -118,6 +119,7 @@ export interface AppMainProps {
   onNotice: (message: string, tone?: Notice['tone'], action?: Notice['action']) => void
   onRefetchCaptures: () => void
   onRefetchWorkspace: () => void
+  onReviewKnowledge?: (envelope: KnowledgeImportEnvelope) => void
   onReviewNavigationLockChange?: (locked: boolean) => void
   providerGates: MicrosoftProviderGates
   state: AppUrlState
@@ -141,6 +143,7 @@ function InboxSurface(props: AppMainProps & { workspace: WorkspaceProjection }) 
     onCopyMicrosoftRequest={props.onMicrosoftRequest}
     onImport={props.onImport}
     onImportAgentResult={props.onImportAgentResult}
+    onReviewKnowledge={props.onReviewKnowledge}
     onLink={(captureId, taskId) => props.onCaptureAction(() => api.linkCapture(captureId, taskId), `Context linked to ${taskId}`)}
     onSearchChange={(search) => props.update({ search }, { replace: true })}
     onSelectCapture={(captureId) => props.update({ captureId, taskId: null })}
@@ -221,10 +224,11 @@ export function AppMain(props: AppMainProps & { writeBlocked: boolean }) {
   </main>
 }
 
-export function AppDrawerLayer({ capture, onCreateCaptureTask, onNotice, providerGates, state, taskNavigationLockRef, update, workspace }: {
+export function AppDrawerLayer({ capture, onCreateCaptureTask, onNotice, onReviewKnowledge, providerGates, state, taskNavigationLockRef, update, workspace }: {
   capture: Capture | null
   onCreateCaptureTask: (input: CaptureTaskInput) => Promise<Task>
   onNotice: (message: string, tone?: Notice['tone'], action?: Notice['action']) => void
+  onReviewKnowledge?: (envelope: KnowledgeImportEnvelope) => void
   providerGates: MicrosoftProviderGates
   state: AppUrlState
   taskNavigationLockRef: { current: boolean }
@@ -247,7 +251,7 @@ export function AppDrawerLayer({ capture, onCreateCaptureTask, onNotice, provide
     />
   </Suspense>
   if (!capture) return null
-  return <CaptureDrawer capture={capture} onClose={() => update({ captureId: null })} onCreateTask={onCreateCaptureTask} providerGates={providerGates} workspace={workspace} />
+  return <CaptureDrawer capture={capture} onClose={() => update({ captureId: null })} onCreateTask={onCreateCaptureTask} onReviewKnowledge={onReviewKnowledge} providerGates={providerGates} workspace={workspace} />
 }
 
 export interface AppDialogLayerProps {

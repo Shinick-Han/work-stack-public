@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest'
+import { MAX_DAILY_PREVIEW_CONTEXT_ITEMS } from './reporting'
 import {
   MAX_WEEKLY_PREVIEW_ITEMS,
   MAX_WEEKLY_PREVIEW_MARKDOWN_CHARS,
@@ -201,5 +202,205 @@ describe('weekly report preview wire schema', () => {
     expect(weeklyReportPreviewPayloadSchema.parse(body).preview.markdown).toHaveLength(
       MAX_WEEKLY_PREVIEW_MARKDOWN_CHARS,
     )
+  })
+})
+
+const GENERATED_AT = '2026-09-06T01:02:03Z'
+
+/**
+ * A recorded week whose provenance names `taskIds`, optionally carrying the
+ * R45 catalogue sibling. Sources mirror the ids so the existing weekly
+ * provenance rules stay satisfied and only the catalogue is under test.
+ */
+function weeklyCatalogPayload(
+  catalog: Record<string, unknown> | undefined,
+  taskIds: string[] = ['T-0001', 'T-0002'],
+) {
+  const base = recordedPreview().preview as Record<string, unknown>
+  const provenance = base.provenance as Record<string, unknown>
+  const body: Record<string, unknown> = {
+    ...recordedPreview(),
+    preview: {
+      ...base,
+      provenance: {
+        ...provenance,
+        task_ids: taskIds,
+        sources: taskIds.map((taskId) => ({
+          kind: 'review.weekly.project',
+          task_id: taskId,
+          dates: ['2026-08-30'],
+        })),
+      },
+    },
+  }
+  if (catalog) body.context_catalog = catalog
+  return body
+}
+
+/** An empty week (absence 'no records', no provenance tasks) plus a catalogue. */
+function emptyWeekCatalogPayload(catalog: Record<string, unknown>) {
+  return { ...payload(), context_catalog: catalog }
+}
+
+function catalogItem(overrides: Record<string, unknown> = {}) {
+  return {
+    capture_id: 'C-0001',
+    capture_revision: 1,
+    title: 'Synthetic context',
+    linked_task_ids: ['T-0001'],
+    status: 'linked',
+    ...overrides,
+  }
+}
+
+function readyCatalog(overrides: Record<string, unknown> = {}) {
+  return {
+    captured_at: GENERATED_AT,
+    items: [catalogItem()],
+    omitted_count: 0,
+    ...overrides,
+  }
+}
+
+function filledItems(count: number) {
+  return Array.from({ length: count }, (_, index) => catalogItem({
+    capture_id: `C-${String(index + 1).padStart(4, '0')}`,
+  }))
+}
+
+describe('optional weekly preview context catalogue', () => {
+  test('a pre-R45 response without the catalogue still decodes and carries no catalogue', () => {
+    const body = weeklyCatalogPayload(undefined)
+    const parsed = weeklyReportPreviewPayloadSchema.parse(body)
+    expect(parsed.context_catalog).toBeUndefined()
+    expect('context_catalog' in parsed).toBe(false)
+    expect(
+      weeklyReportPreviewResponseSchema({ end_date: END, workspace_uid: UID }).parse(body),
+    ).toEqual(body)
+  })
+
+  test('accepts the frozen wire shape, an empty week, and a truncated catalogue', () => {
+    const ready = readyCatalog()
+    const parsed = weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(ready))
+    expect(parsed.context_catalog).toEqual(ready)
+    expect(parsed.preview.markdown).toBe(
+      (recordedPreview().preview as { markdown: string }).markdown,
+    )
+    expect(weeklyReportPreviewPayloadSchema.parse(
+      emptyWeekCatalogPayload(readyCatalog({ items: [] })),
+    ).context_catalog?.items).toEqual([])
+    const truncated = readyCatalog({
+      items: filledItems(MAX_DAILY_PREVIEW_CONTEXT_ITEMS),
+      omitted_count: 4,
+    })
+    const full = weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(truncated))
+    expect(full.context_catalog?.items).toHaveLength(MAX_DAILY_PREVIEW_CONTEXT_ITEMS)
+    expect(full.context_catalog?.omitted_count).toBe(4)
+    expect(weeklyReportPreviewResponseSchema({ end_date: END, workspace_uid: UID })
+      .parse(weeklyCatalogPayload(ready)).context_catalog).toEqual(ready)
+  })
+
+  test('keeps a dismissed Capture honest and refuses an unknown status or invented id', () => {
+    expect(weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ items: [catalogItem({ status: 'dismissed' })] }),
+    )).context_catalog?.items[0].status).toBe('dismissed')
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ items: [catalogItem({ status: 'verified' })] }),
+    ))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ items: [catalogItem({ capture_id: 'C-1' })] }),
+    ))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ items: [catalogItem({ capture_revision: -1 })] }),
+    ))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ items: [catalogItem({ title: '' })] }),
+    ))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ items: [catalogItem({ linked_task_ids: [] })] }),
+    ))).toThrow()
+  })
+
+  test('refuses an unknown catalogue or item field instead of laundering it', () => {
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ rag_query: 'anything' }),
+    ))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ items: [catalogItem({ source_url: 'https://example.invalid' })] }),
+    ))).toThrow()
+  })
+
+  test('binds the catalogue to this weekly generation and its provenance tasks', () => {
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ captured_at: '2026-09-06T01:02:04Z' }),
+    ))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ items: [catalogItem({ linked_task_ids: ['T-0003'] })] }),
+    ))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(
+      emptyWeekCatalogPayload(readyCatalog()),
+    )).toThrow()
+    expect(weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ items: [catalogItem({ linked_task_ids: ['T-0001', 'T-0002'] })] }),
+    )).context_catalog?.items[0].linked_task_ids).toEqual(['T-0001', 'T-0002'])
+  })
+
+  test('requires unique natural order and refuses more than the 32 bound', () => {
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(readyCatalog({
+      items: [catalogItem({ capture_id: 'C-0002' }), catalogItem({ capture_id: 'C-0001' })],
+    })))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(readyCatalog({
+      items: [catalogItem(), catalogItem()],
+    })))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(readyCatalog({
+      items: filledItems(MAX_DAILY_PREVIEW_CONTEXT_ITEMS + 1),
+      omitted_count: 0,
+    })))).toThrow()
+    expect(weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(readyCatalog({
+      items: [
+        catalogItem({ capture_id: 'C-0009' }),
+        catalogItem({ capture_id: 'C-00010' }),
+      ],
+    }))).context_catalog?.items.map((item) => item.capture_id)).toEqual(['C-0009', 'C-00010'])
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(readyCatalog({
+      items: [
+        catalogItem({ capture_id: 'C-00010' }),
+        catalogItem({ capture_id: 'C-0009' }),
+      ],
+    })))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(readyCatalog({
+      items: [catalogItem({ linked_task_ids: ['T-0002', 'T-0001'] })],
+    })))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(readyCatalog({
+      items: [catalogItem({ linked_task_ids: ['T-0001', 'T-0001'] })],
+    })))).toThrow()
+  })
+
+  test('admits omitted_count only at the bound it could come from', () => {
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(
+      readyCatalog({ omitted_count: 1 }),
+    ))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(
+      emptyWeekCatalogPayload(readyCatalog({ items: [], omitted_count: 2 })),
+    )).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(readyCatalog({
+      items: filledItems(MAX_DAILY_PREVIEW_CONTEXT_ITEMS),
+      omitted_count: 1.5,
+    })))).toThrow()
+    expect(() => weeklyReportPreviewPayloadSchema.parse(weeklyCatalogPayload(readyCatalog({
+      items: filledItems(MAX_DAILY_PREVIEW_CONTEXT_ITEMS),
+      omitted_count: -1,
+    })))).toThrow()
+  })
+
+  test('leaves the existing weekly core rules in force beside a valid catalogue', () => {
+    expect(() => weeklyReportPreviewPayloadSchema.parse({
+      ...weeklyCatalogPayload(readyCatalog()),
+      source_digest: 'a'.repeat(64),
+    })).toThrow()
+    expect(() => weeklyReportPreviewResponseSchema({
+      end_date: '2026-08-29',
+      workspace_uid: UID,
+    }).parse(weeklyCatalogPayload(readyCatalog()))).toThrow()
   })
 })

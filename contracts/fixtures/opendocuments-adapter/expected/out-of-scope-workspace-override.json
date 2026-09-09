@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "code": "invalid_request",
+    "message": "adapter workspace binding is connection config, not a chat collection/workspace override"
+  }
+}

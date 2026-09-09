@@ -1,0 +1,57 @@
+{
+  "ok": true,
+  "result": {
+    "format": "workstack.opendocuments-adapter.proposed",
+    "schema_version": 0,
+    "mapping_status": "proposed",
+    "request_id": "55555555-5555-4555-8555-555555555555",
+    "connection_id": "conn_opendocuments_pilot_1",
+    "query": "What is the handbook title?",
+    "retriever": {
+      "id": "opendocuments",
+      "role": "retriever",
+      "capabilities": [
+        "search"
+      ],
+      "unsupported": [
+        "verify_origin",
+        "open_origin",
+        "collection_filter",
+        "conversation_persistence",
+        "source_document_identity"
+      ]
+    },
+    "engine": {
+      "query_id": "66666666-6666-4666-8666-666666666666",
+      "route": "rag",
+      "profile": "balanced",
+      "confidence": {
+        "score": 0.2,
+        "level": "low",
+        "kind": "engine_relevance",
+        "reason": "Weak match -- results may not be accurate"
+      }
+    },
+    "generated_answer": "discarded",
+    "candidates": [],
+    "omitted": [
+      {
+        "index": 0,
+        "reason": "chunk_id_used_as_document_id"
+      },
+      {
+        "index": 1,
+        "reason": "missing_document_id"
+      }
+    ],
+    "limitations": {
+      "query_logging_attempted_by_route": true,
+      "query_log_persistence_confirmed": false,
+      "source_version_from_chat": false,
+      "origin_verified": false,
+      "collection_filter_applied": false,
+      "source_document_identity_proven": false,
+      "non_workspace_results_omitted": true
+    }
+  }
+}

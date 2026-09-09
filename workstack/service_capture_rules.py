@@ -15,6 +15,11 @@ import uuid
 from typing import Any, Callable
 
 from .capture import SHA256_RE, canonical_digest, parse_rfc3339
+from .knowledge_capture_packets import (
+    CAPTURE_SCHEMA_VERSION as IMPORTED_CAPTURE_SCHEMA_VERSION,
+    KnowledgeImportError,
+    stored_retrieval_projection,
+)
 from .service_domain import (
     ERROR_CODE_RE,
     REPLY_CAPABILITIES,
@@ -28,6 +33,7 @@ from .service_errors import (
     SourceRevisionConflictError,
 )
 from .service_text import _microsoft_web_url, _remote_message_reference
+from .store_errors import StoreCorruptError
 
 
 def _capture_review_digest(capture: dict[str, Any]) -> str:
@@ -49,6 +55,49 @@ def _require_matching_capture_review(
     if _capture_review_digest(existing) != _capture_review_digest(incoming):
         raise SourceRevisionConflictError(
             "the same source fingerprint has different reviewed capture content"
+        )
+
+
+def _projected_capture_retrieval(capture: dict[str, Any]) -> dict[str, Any] | None:
+    """The retrieval state a stored 1.1 capture may be shown with, re-derived.
+
+    A stored record keeps only the sanitized retrieval *wire*; the trusted
+    parts of the projection -- ``origin``, ``origin_state``, every
+    ``version_state`` and ``capture_source_type`` -- are recomputed here on
+    every read with **no** caller-supplied ``RetrievalVerification``. Nothing a
+    writer stored can promote them, so a reader is never handed an attestation
+    the host does not hold.
+
+    A stored 1.0 record has no retrieval state at all and is left exactly as it
+    was. A stored 1.1 record whose retrieval no longer validates is a corrupt
+    store, not a capture to display: refusing here is what keeps malformed
+    evidence from being read back as trusted metadata after a restart.
+    """
+
+    if capture.get("schema_version") != IMPORTED_CAPTURE_SCHEMA_VERSION:
+        return None
+    try:
+        return stored_retrieval_projection(capture.get("retrieval"))
+    except KnowledgeImportError as error:
+        raise StoreCorruptError(
+            "captures.json knowledge import record is invalid"
+        ) from error
+
+
+def _refuse_imported_capture_overwrite(existing: dict[str, Any]) -> None:
+    """Generic Capture ingestion stays 1.0-only and never lands on an import.
+
+    The source key and the fingerprint are both derived from values a v1.0
+    packet may spell for itself, so a packet can be built that collides with an
+    imported record. Re-ingesting over one would erase evidence the ledger has
+    already accounted for, so the collision refuses instead. Existing 1.0
+    records keep their released re-ingest, stale and conflict behaviour
+    unchanged.
+    """
+
+    if existing.get("schema_version") == IMPORTED_CAPTURE_SCHEMA_VERSION:
+        raise SourceRevisionConflictError(
+            "the stored capture was imported against a knowledge request"
         )
 
 

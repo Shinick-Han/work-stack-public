@@ -34,6 +34,8 @@ __all__ = (
     "PLANNING_DATA_FIELDS",
     "PLANNING_OMITTED_CATEGORIES",
     "PLANNING_VIEW",
+    "PLANNING_V2_DATA_FIELDS",
+    "PLANNING_V2_VIEW",
     "RELATIONSHIP_KINDS",
     "RELATIONSHIPS_CAP",
     "RESOURCE_TYPE_MAX",
@@ -42,7 +44,9 @@ __all__ = (
     "VIEWS",
     "apply_planning_contract_fixture",
     "build_planning_blocks",
+    "needs_planning_material",
     "overflow_marker",
+    "planning_envelope_fields",
     "planning_omitted",
     "shrink_planning_data",
     "validate_planning_data",
@@ -51,7 +55,8 @@ __all__ = (
 
 CORE_VIEW = "core-v1"
 PLANNING_VIEW = "planning-v1"
-VIEWS = (CORE_VIEW, PLANNING_VIEW)
+PLANNING_V2_VIEW = "planning-v2"
+VIEWS = (CORE_VIEW, PLANNING_VIEW, PLANNING_V2_VIEW)
 
 OBJECTIVES_CAP = 5
 RELATIONSHIPS_CAP = 10
@@ -94,7 +99,10 @@ PLANNING_OMITTED_CATEGORIES = (
 
 _OVERFLOW_SUFFIX = "_overflow"
 
-PLANNING_VIEW_CHOICES = {"default": CORE_VIEW, "values": [CORE_VIEW, PLANNING_VIEW]}
+PLANNING_VIEW_CHOICES = {
+    "default": CORE_VIEW,
+    "values": [CORE_VIEW, PLANNING_VIEW, PLANNING_V2_VIEW],
+}
 PLANNING_BACKEND = {
     "held_local_view": (
         "Store transaction already held; Task, Objectives and relationships "
@@ -159,9 +167,26 @@ PLANNING_ENVELOPE = {
     },
     "title_bound": "envelope 32KiB plus whole-item shrink; no per-field 500",
 }
+PLANNING_V2_ENVELOPE = copy.deepcopy(PLANNING_ENVELOPE)
+PLANNING_V2_ENVELOPE["required_data_view"] = PLANNING_V2_VIEW
+PLANNING_V2_ENVELOPE["source_evidence"] = {
+    "answer_scopes": ["single_source", "synthesized"],
+    "attested": False,
+    "confidence_levels": ["low", "medium", "high"],
+    "evidence_count_max": 10,
+    "evidence_count_min": 1,
+    "fields": [
+        "answer_scope",
+        "attested",
+        "confidence_level",
+        "evidence_count",
+        "truncated",
+    ],
+    "legacy_omits_key": True,
+}
 PLANNING_LIMITS = {
     "context_view_default": CORE_VIEW,
-    "context_views": [CORE_VIEW, PLANNING_VIEW],
+    "context_views": [CORE_VIEW, PLANNING_VIEW, PLANNING_V2_VIEW],
     "planning_display_title_max_characters": DISPLAY_TITLE_MAX,
     "planning_objectives_cap": OBJECTIVES_CAP,
     "planning_relationships_cap": RELATIONSHIPS_CAP,
@@ -197,19 +222,28 @@ def apply_planning_contract_fixture(sections: dict[str, Any]) -> dict[str, Any]:
     projected["envelope"]["data_shapes"]["agent.context"]["planning_v1"] = copy.deepcopy(
         PLANNING_ENVELOPE
     )
+    projected["envelope"]["data_shapes"]["agent.context"]["planning_v2"] = copy.deepcopy(
+        PLANNING_V2_ENVELOPE
+    )
     projected["limits"].update(PLANNING_LIMITS)
     projected["transport_rules"].update(copy.deepcopy(PLANNING_TRANSPORT))
     return projected
 
 
 def is_planning_view(view: object) -> bool:
-    """True only for the exact opt-in view token."""
+    """True only for the exact opt-in planning-v1 token."""
 
     return view == PLANNING_VIEW
 
 
+def needs_planning_material(view: object) -> bool:
+    """True when the backend must supply the shared planning read material."""
+
+    return view in (PLANNING_VIEW, PLANNING_V2_VIEW)
+
+
 def is_known_view(view: object) -> bool:
-    """False for anything but the two exact view tokens."""
+    """False for anything but the exact view tokens."""
 
     return view in VIEWS
 
@@ -330,11 +364,63 @@ def _project_relationship(kind: str, record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _project_source(record: dict[str, Any], reasons: list[str]) -> dict[str, Any]:
+_EVIDENCE_ANSWER_SCOPES = ("single_source", "synthesized")
+_EVIDENCE_CONFIDENCE = ("low", "medium", "high")
+_EVIDENCE_FIELDS = frozenset(
+    {
+        "answer_scope",
+        "attested",
+        "confidence_level",
+        "evidence_count",
+        "truncated",
+    }
+)
+_EVIDENCE_COUNT_MIN = 1
+_EVIDENCE_COUNT_MAX = 10
+
+
+def _project_source_evidence(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Copy counts-only stored v1.1 metadata; never attest or invent values."""
+
+    if "retrieval" not in record:
+        return None
+    retrieval = record.get("retrieval")
+    if type(retrieval) is not dict:
+        raise ValueError("invalid planning Capture retrieval")
+    items = retrieval.get("evidence")
+    if type(items) is not list:
+        raise ValueError("invalid planning Capture retrieval")
+    count = len(items)
+    if count < _EVIDENCE_COUNT_MIN or count > _EVIDENCE_COUNT_MAX:
+        raise ValueError("invalid planning Capture retrieval")
+    confidence = retrieval.get("confidence")
+    if type(confidence) is not dict:
+        raise ValueError("invalid planning Capture retrieval")
+    truncated = retrieval.get("truncated")
+    if type(truncated) is not bool:
+        raise ValueError("invalid planning Capture retrieval")
+    return {
+        "answer_scope": _enum(
+            retrieval.get("answer_scope"),
+            _EVIDENCE_ANSWER_SCOPES,
+            "evidence answer_scope",
+        ),
+        "attested": False,
+        "confidence_level": _enum(
+            confidence.get("level"), _EVIDENCE_CONFIDENCE, "evidence confidence_level"
+        ),
+        "evidence_count": count,
+        "truncated": truncated,
+    }
+
+
+def _project_source(
+    record: dict[str, Any], reasons: list[str], *, include_evidence: bool = False
+) -> dict[str, Any]:
     source = record.get("source")
     if type(source) is not dict:
         raise ValueError("invalid planning Capture source")
-    return {
+    projected = {
         "display_title": _bounded(
             source.get("display_title"), "Capture display title", DISPLAY_TITLE_MAX
         ),
@@ -348,6 +434,11 @@ def _project_source(record: dict[str, Any], reasons: list[str]) -> dict[str, Any
         ),
         "status": _enum(record.get("status"), SOURCE_STATUSES, "Capture status"),
     }
+    if include_evidence:
+        evidence = _project_source_evidence(record)
+        if evidence is not None:
+            projected["evidence"] = evidence
+    return projected
 
 
 def _objectives(task: dict[str, Any], objectives: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -430,7 +521,9 @@ def _link_reasons(item: dict[str, Any], task_id: str) -> list[str] | None:
     return None
 
 
-def _sources(task_id: str, context: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _sources(
+    task_id: str, context: list[dict[str, Any]], *, include_evidence: bool
+) -> list[dict[str, Any]]:
     resolved: list[dict[str, Any]] = []
     for item in context:
         reference = item.get("ref")
@@ -439,7 +532,9 @@ def _sources(task_id: str, context: list[dict[str, Any]]) -> list[dict[str, Any]
         reasons = _link_reasons(item, task_id)
         if reasons is None:
             continue
-        resolved.append(_project_source(item, reasons))
+        resolved.append(
+            _project_source(item, reasons, include_evidence=include_evidence)
+        )
     return sorted(resolved, key=lambda item: item["id"])
 
 
@@ -449,6 +544,7 @@ def build_planning_blocks(
     objectives: object,
     tasks: object,
     context: object,
+    include_evidence: bool = False,
 ) -> tuple[dict[str, list[dict[str, Any]]], tuple[str, ...]]:
     """The three capped planning blocks plus the names of those that overflowed.
 
@@ -464,7 +560,11 @@ def build_planning_blocks(
     resolved = {
         "objectives": _objectives(selected, _records(objectives, "Objectives")),
         "relationships": _relationships(task_id, selected, records),
-        "sources": _sources(task_id, _records(context, "Capture context")),
+        "sources": _sources(
+            task_id,
+            _records(context, "Capture context"),
+            include_evidence=include_evidence,
+        ),
     }
     caps = {
         "objectives": OBJECTIVES_CAP,
@@ -526,6 +626,7 @@ def shrink_planning_data(
 PLANNING_DATA_FIELDS = frozenset(
     {"omitted", "recent_worklog", "task", "workspace_uid"} | set(PLANNING_BLOCKS)
 )
+PLANNING_V2_DATA_FIELDS = PLANNING_DATA_FIELDS | {"view"}
 _BLOCK_FIELDS = {
     "objectives": frozenset({"id", "quarter", "status", "title"}),
     "relationships": frozenset({"id", "kind", "status", "title"}),
@@ -540,10 +641,41 @@ _BLOCK_CAPS = {
 }
 
 
-def _require_item(item: object, block: str) -> dict[str, Any]:
-    if type(item) is not dict or set(item) != _BLOCK_FIELDS[block]:
+def _require_item(
+    item: object, block: str, *, allow_evidence: bool = False
+) -> dict[str, Any]:
+    if type(item) is not dict:
         raise ValueError("invalid planning {} item".format(block))
-    return item
+    keys = set(item)
+    expected = _BLOCK_FIELDS[block]
+    if keys == expected:
+        return item
+    if (
+        allow_evidence
+        and block == "sources"
+        and keys == expected | {"evidence"}
+    ):
+        _validate_evidence_object(item["evidence"])
+        return item
+    raise ValueError("invalid planning {} item".format(block))
+
+
+def _validate_evidence_object(value: object) -> None:
+    if type(value) is not dict or set(value) != _EVIDENCE_FIELDS:
+        raise ValueError("invalid planning source evidence")
+    _enum(value.get("answer_scope"), _EVIDENCE_ANSWER_SCOPES, "evidence answer_scope")
+    if value.get("attested") is not False:
+        raise ValueError("invalid planning source evidence")
+    _enum(
+        value.get("confidence_level"),
+        _EVIDENCE_CONFIDENCE,
+        "evidence confidence_level",
+    )
+    count = value.get("evidence_count")
+    if type(count) is not int or count < _EVIDENCE_COUNT_MIN or count > _EVIDENCE_COUNT_MAX:
+        raise ValueError("invalid planning source evidence")
+    if type(value.get("truncated")) is not bool:
+        raise ValueError("invalid planning source evidence")
 
 
 def _validate_objective_item(item: dict[str, Any]) -> str:
@@ -584,7 +716,9 @@ def _validate_relationships(items: list[object]) -> None:
         raise ValueError("planning relationships is not sorted")
 
 
-def _validate_sorted_block(data: dict[str, Any], block: str) -> None:
+def _validate_sorted_block(
+    data: dict[str, Any], block: str, *, allow_evidence: bool
+) -> None:
     items = data[block]
     if type(items) is not list or len(items) > _BLOCK_CAPS[block]:
         raise ValueError("invalid planning {}".format(block))
@@ -593,7 +727,7 @@ def _validate_sorted_block(data: dict[str, Any], block: str) -> None:
         return
     identifiers = []
     for item in items:
-        record = _require_item(item, block)
+        record = _require_item(item, block, allow_evidence=allow_evidence)
         if block == "objectives":
             identifiers.append(_validate_objective_item(record))
         else:
@@ -604,18 +738,40 @@ def _validate_sorted_block(data: dict[str, Any], block: str) -> None:
         raise ValueError("planning {} is not sorted".format(block))
 
 
+def planning_envelope_fields(data: object) -> frozenset[str] | None:
+    """Exact top-level planning key set, or None when the mapping is not planning."""
+
+    if type(data) is not dict:
+        return None
+    keys = frozenset(data)
+    if keys == PLANNING_V2_DATA_FIELDS:
+        return PLANNING_V2_DATA_FIELDS
+    if keys == PLANNING_DATA_FIELDS:
+        return PLANNING_DATA_FIELDS
+    return None
+
+
 def validate_planning_data(data: dict[str, Any], *, core_overflow_marker: str) -> None:
     """The depth check the frozen renderer delegates to this helper.
 
     The contract validates the core half and the planning key set; everything the
     planning blocks and their omission markers must satisfy is checked here, before
-    the envelope is rendered.
+    the envelope is rendered. planning-v2 is the same blocks plus required data.view
+    and optional counts-only source evidence.
     """
 
-    if type(data) is not dict or set(data) != PLANNING_DATA_FIELDS:
+    if type(data) is not dict:
+        raise ValueError("invalid planning context data")
+    keys = set(data)
+    allow_evidence = False
+    if keys == PLANNING_V2_DATA_FIELDS:
+        if data.get("view") != PLANNING_V2_VIEW:
+            raise ValueError("invalid planning view")
+        allow_evidence = True
+    elif keys != PLANNING_DATA_FIELDS:
         raise ValueError("invalid planning context data")
     for block in PLANNING_BLOCKS:
-        _validate_sorted_block(data, block)
+        _validate_sorted_block(data, block, allow_evidence=allow_evidence)
     omitted = data["omitted"]
     allowed = set(PLANNING_OMITTED_CATEGORIES) | {core_overflow_marker} | {
         overflow_marker(block) for block in PLANNING_BLOCKS

@@ -31,6 +31,7 @@ from workstack.store_rosters import (
     REPORTS_DOCUMENT_NAME,
     V3_DOCUMENT_NAMES,
     V5_DOCUMENT_NAMES,
+    V6_DOCUMENT_NAMES,
 )
 
 
@@ -58,7 +59,7 @@ STORE_FILES = {
 }
 
 ProfileTestStatus: TypeAlias = Literal["ready", "candidate", "identity_mismatch"]
-StorageFormat: TypeAlias = Literal["v3", "v4", "v5"]
+StorageFormat: TypeAlias = Literal["v3", "v4", "v5", "v6"]
 
 
 class ProfileInspectionError(RuntimeError):
@@ -385,7 +386,7 @@ def _occupied_marker_state(path: Path) -> str:
 
 def _present_collection_documents(root: Path) -> set[str]:
     present: set[str] = set()
-    for name in V5_DOCUMENT_NAMES:
+    for name in V6_DOCUMENT_NAMES:
         path = root / name
         try:
             occupied = path.exists() or path.is_symlink()
@@ -400,12 +401,21 @@ def _present_collection_documents(root: Path) -> set[str]:
     return present
 
 
+# Each released collection roster and the schema version it means. Ordered
+# newest first; membership is exact, so a directory holding part of one
+# roster matches none of them.
+_COLLECTION_ROSTERS: tuple[tuple[frozenset[str], int, StorageFormat], ...] = (
+    (V6_DOCUMENT_NAMES, 6, "v6"),
+    (V5_DOCUMENT_NAMES, 5, "v5"),
+    (V3_DOCUMENT_NAMES, 3, "v3"),
+)
+
+
 def _selected_collection_roster(root: Path) -> frozenset[str]:
     present = _present_collection_documents(root)
-    if present == V3_DOCUMENT_NAMES:
-        return V3_DOCUMENT_NAMES
-    if present == V5_DOCUMENT_NAMES:
-        return V5_DOCUMENT_NAMES
+    for roster, _schema, _format in _COLLECTION_ROSTERS:
+        if present == roster:
+            return roster
     code = "partial_store" if present else "local_directory_not_empty"
     message = (
         "The selected directory contains only part of a Work Stack Store."
@@ -427,7 +437,11 @@ def _inspect_local_collection(
             "The selected Store has a pending recovery journal and cannot be activated yet.",
         )
     roster = _selected_collection_roster(root)
-    expected_schema = 5 if roster == V5_DOCUMENT_NAMES else 3
+    expected_schema, expected_format = next(
+        (schema, label)
+        for names, schema, label in _COLLECTION_ROSTERS
+        if names == roster
+    )
     values, snapshots = _read_store_values(root, roster)
     if values["store-meta.json"].get("store_schema_version") != expected_schema:
         raise ProfileInspectionError("invalid_store", _INVALID_STORE_DIRECTORY_MESSAGE)
@@ -437,7 +451,7 @@ def _inspect_local_collection(
         raise ProfileInspectionError("invalid_store", _INVALID_STORE_DIRECTORY_MESSAGE) from error
     _assert_final_collection_admission(root, snapshots, roster)
     workspace_id = readiness.workspace_uid
-    storage_format: StorageFormat = "v5" if expected_schema == 5 else "v3"
+    storage_format: StorageFormat = expected_format
     return ProfileTestResult(
         profile_id=candidate.profile.profile_id,
         kind="local",
@@ -550,7 +564,7 @@ def _validated_authority_inspection(
 ) -> AuthorityInspection:
     if not isinstance(value, AuthorityInspection):
         raise RuntimeError("Authority inspection metadata is invalid")
-    expected_schema = {"v3": 3, "v4": 4, "v5": 5}.get(value.storage_format)
+    expected_schema = {"v3": 3, "v4": 4, "v5": 5, "v6": 6}.get(value.storage_format)
     if expected_schema is None or value.schema_version != expected_schema:
         raise RuntimeError("Authority storage format is invalid")
     if not isinstance(value.authority_manifest_digest, str) or not re.fullmatch(

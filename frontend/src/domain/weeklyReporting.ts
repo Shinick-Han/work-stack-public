@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { contextCatalogSchema, refineContextCatalog } from './reporting'
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -117,8 +118,12 @@ export const weeklyReportPreviewPayloadSchema = z.object({
     }).strict(),
     markdown: z.string().max(MAX_WEEKLY_PREVIEW_MARKDOWN_CHARS),
   }).strict(),
+  // Absent on servers before R45; the weekly preview stays fully usable without it.
+  context_catalog: contextCatalogSchema.optional(),
 }).strict().superRefine((value, ctx) => {
   const { period, provenance, absence } = value.preview
+  // Same R44 catalogue predicate, bound to this week's generation and provenance.
+  if (value.context_catalog) refineContextCatalog(value.context_catalog, value.preview, ctx)
   const expectedStart = shiftIsoDate(period.end, 1 - WEEKLY_COVERAGE_DAYS)
   if (period.start !== expectedStart) {
     ctx.addIssue({

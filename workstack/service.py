@@ -117,6 +117,7 @@ from .service_domain import (
 )
 from .service_errors import (
     CheckpointTransitionConflictError,
+    CaptureUnlinkUndoConflictError,
     DomainError,
     IdempotencyConflictError,
     NotFoundError,

@@ -1,0 +1,98 @@
+{
+  "upstream_sha": "f3aba15f0161f1730e746de47a2ffd1e53cbea44",
+  "workstack_base_sha": "0fb998ebf4b5fb4fd17cfddf21837c22f2c94aae",
+  "revised_from": "ebe0d0c47dc3c81f659d24161ee3d562de9a4cbd",
+  "boundary_fixed_from": "a6ef57fc9e3b66652bd96e7cd22b5712ae3785b9",
+  "mapping_status": "proposed",
+  "not_c1": true,
+  "format": "workstack.opendocuments-adapter.proposed",
+  "schema_version": 0,
+  "cases": [
+    {
+      "name": "happy-sanitized-chat",
+      "kind": "normalize",
+      "request": "input/happy-request.json",
+      "chat": "input/happy-chat.json",
+      "documents": "input/happy-documents.json",
+      "expected": "expected/happy-normalized.json"
+    },
+    {
+      "name": "hostile-filesystem-path",
+      "kind": "normalize",
+      "bundle": "input/hostile-filesystem-path.json",
+      "expected": "expected/hostile-filesystem-path.json"
+    },
+    {
+      "name": "hostile-chunk-as-document",
+      "kind": "normalize",
+      "bundle": "input/hostile-chunk-as-document.json",
+      "expected": "expected/hostile-chunk-as-document.json"
+    },
+    {
+      "name": "hostile-source-type-mismatch",
+      "kind": "normalize",
+      "bundle": "input/hostile-source-type-mismatch.json",
+      "expected": "expected/hostile-source-type-mismatch.json"
+    },
+    {
+      "name": "hostile-credential-url",
+      "kind": "normalize",
+      "bundle": "input/hostile-credential-url.json",
+      "expected": "expected/hostile-credential-url.json"
+    },
+    {
+      "name": "hostile-chunk-identity",
+      "kind": "normalize",
+      "bundle": "input/hostile-chunk-identity.json",
+      "expected": "expected/hostile-chunk-identity.json"
+    },
+    {
+      "name": "hostile-web-search-result",
+      "kind": "normalize",
+      "bundle": "input/hostile-web-search-result.json",
+      "expected": "expected/hostile-web-search-result.json"
+    },
+    {
+      "name": "hostile-overlong-metadata",
+      "kind": "normalize",
+      "bundle": "input/hostile-overlong-metadata.json",
+      "expected": "expected/hostile-overlong-metadata.json"
+    },
+    {
+      "name": "missing-version",
+      "kind": "normalize",
+      "bundle": "input/missing-version.json",
+      "expected": "expected/missing-version.json"
+    },
+    {
+      "name": "out-of-scope-collection-filter",
+      "kind": "refuse",
+      "request": "input/out-of-scope-collection-filter.json",
+      "expected": "expected/out-of-scope-collection-filter.json"
+    },
+    {
+      "name": "out-of-scope-conversation",
+      "kind": "refuse",
+      "request": "input/out-of-scope-conversation.json",
+      "expected": "expected/out-of-scope-conversation.json"
+    },
+    {
+      "name": "out-of-scope-workspace-override",
+      "kind": "refuse",
+      "request": "input/out-of-scope-workspace-override.json",
+      "expected": "expected/out-of-scope-workspace-override.json"
+    },
+    {
+      "name": "out-of-scope-overlong-connection-id",
+      "kind": "refuse",
+      "request": "input/out-of-scope-overlong-connection-id.json",
+      "expected": "expected/out-of-scope-overlong-connection-id.json"
+    },
+    {
+      "name": "out-of-scope-overlong-query",
+      "kind": "refuse",
+      "request": "input/out-of-scope-overlong-query.json",
+      "expected": "expected/out-of-scope-overlong-query.json"
+    }
+  ]
+}

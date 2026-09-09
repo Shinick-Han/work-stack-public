@@ -130,6 +130,123 @@ def _eslint_relative_path(root: Path, result: dict[str, Any]) -> str | None:
         return None
 
 
+_ESLINT_FAILURE_PREFIX = "frontend complexity command failed: "
+_ESLINT_FAILURE_TEXT_LIMIT = 4096
+_ESLINT_FAILURE_MESSAGE_LIMIT = 300
+_ESLINT_FAILURE_ITEM_LIMIT = 20
+_ESLINT_FAILURE_TRUNCATION = "truncated; failure text limited to 4096 characters"
+
+
+def _bounded_failure_text(text: str) -> str:
+    if len(text) <= _ESLINT_FAILURE_TEXT_LIMIT:
+        return text
+    suffix = "\n" + _ESLINT_FAILURE_TRUNCATION
+    keep = _ESLINT_FAILURE_TEXT_LIMIT - len(suffix)
+    if keep < 1:
+        return _ESLINT_FAILURE_TRUNCATION[:_ESLINT_FAILURE_TEXT_LIMIT]
+    return text[:keep] + suffix
+
+
+def _bounded_diagnostic_message(text: str) -> str:
+    if len(text) <= _ESLINT_FAILURE_MESSAGE_LIMIT:
+        return text
+    return text[: _ESLINT_FAILURE_MESSAGE_LIMIT - 1] + "…"
+
+
+def _eslint_display_path(root: Path, result: dict[str, Any]) -> str:
+    relative = _eslint_relative_path(root, result)
+    if relative is not None:
+        return relative
+    raw = result.get("filePath")
+    if raw in (None, ""):
+        return "<unknown>"
+    return str(raw).replace("\\", "/")
+
+
+def _eslint_severity(message: dict[str, Any]) -> int:
+    try:
+        return int(message.get("severity"))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _format_eslint_diagnostic(path: str, message: dict[str, Any]) -> str:
+    line = message.get("line")
+    try:
+        line_text = str(int(line)) if line is not None else "0"
+    except (TypeError, ValueError):
+        line_text = str(line)
+    rule = str(message.get("ruleId") or "-")
+    detail = _bounded_diagnostic_message(str(message.get("message") or ""))
+    return f"{path}:{line_text} {rule}: {detail}"
+
+
+def _eslint_diagnostic_entries(
+    root: Path, payload: list[Any]
+) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    for result in payload:
+        if not isinstance(result, dict):
+            continue
+        messages = result.get("messages")
+        if not isinstance(messages, list):
+            continue
+        path = _eslint_display_path(root, result)
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            formatted = _format_eslint_diagnostic(path, message)
+            if _eslint_severity(message) == 1:
+                warnings.append(formatted)
+            else:
+                errors.append(formatted)
+    return errors, warnings
+
+
+def _eslint_failure_noise(completed: subprocess.CompletedProcess[str]) -> str:
+    stderr = (completed.stderr or "").strip()
+    if stderr:
+        return stderr
+    stdout = (completed.stdout or "").strip()
+    if stdout and not stdout.lstrip().startswith(("[", "{")):
+        return stdout
+    return ""
+
+
+def _format_eslint_command_failure(
+    root: Path, completed: subprocess.CompletedProcess[str]
+) -> str:
+    header = f"{_ESLINT_FAILURE_PREFIX}exit {completed.returncode}"
+    try:
+        parsed: Any = json.loads(completed.stdout or "")
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, list):
+        errors, warnings = _eslint_diagnostic_entries(root, parsed)
+        selected = errors or warnings
+        if selected:
+            kind = "error" if errors else "warning"
+            omitted = max(0, len(selected) - _ESLINT_FAILURE_ITEM_LIMIT)
+            shown = selected[:_ESLINT_FAILURE_ITEM_LIMIT]
+            meta = f"{header}; {len(selected)} {kind}{'' if len(selected) == 1 else 's'}"
+            lines = [meta, *shown]
+            if omitted:
+                lines.append(f"omitted {omitted} more diagnostic(s)")
+            return _bounded_failure_text("\n".join(lines))
+        note = f"{header}; ESLint JSON contained no diagnostic messages"
+        extra = _eslint_failure_noise(completed)
+        if extra:
+            note = note + "\n" + extra
+        return _bounded_failure_text(note)
+    reason = "output is not JSON" if parsed is None else "output is not a JSON array"
+    parts = [f"{header}; {reason}"]
+    extra = _eslint_failure_noise(completed)
+    if extra:
+        parts.append(extra)
+    return _bounded_failure_text("\n".join(parts))
+
+
 def _run_eslint_complexity(
     root: Path, config: dict[str, Any]
 ) -> tuple[list[Any] | None, list[str]]:
@@ -151,11 +268,7 @@ def _run_eslint_complexity(
         errors="replace",
     )
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip().splitlines()
-        return None, [
-            "frontend complexity command failed: "
-            f"{detail[-1] if detail else completed.returncode}"
-        ]
+        return None, [_format_eslint_command_failure(root, completed)]
     try:
         payload = json.loads(completed.stdout or "")
     except json.JSONDecodeError as error:

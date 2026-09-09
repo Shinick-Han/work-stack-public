@@ -22,10 +22,16 @@ _V3_MARKERS: Final[tuple[str, ...]] = (
     "activity.json",
 )
 _REPORTS_MARKER: Final[str] = "reports.json"
+# The document schema 6 adds. Presence separates a v6 collection store from
+# the v5 one it was upgraded from, exactly as reports.json separates v5 from v3.
+_KNOWLEDGE_MARKER: Final[str] = "knowledge.json"
 _MAX_AUTHORITY_DOCUMENT_BYTES: Final[int] = 64 * 1024
 _MARKER_ABSENT: Final[str] = "absent"
 _MARKER_FILE: Final[str] = "file"
 _MARKER_INVALID: Final[str] = "invalid"
+# The label each admitted collection version is reported under. Schema 4 is
+# refused in admit_authority, so it never reaches this table.
+_COLLECTION_STORAGE_FORMATS: Final[dict[int, str]] = {3: "v3", 5: "v5", 6: "v6"}
 
 
 def _canonical_uuid(value: object) -> str | None:
@@ -115,12 +121,34 @@ def _read_metadata_schema(path: pathlib.Path) -> int | None:
 def _admitted_collection_schema(
     metadata_schema: int | None,
     reports_state: str,
+    knowledge_state: str,
     has_other_v3_marker: bool,
 ) -> int | None:
+    """Which collection version this directory claims *and* carries files for.
+
+    Each version is admitted only when the documents that version introduced
+    are present and the ones it never had are absent, so a half-upgraded
+    directory is refused rather than read as either neighbour.
+    """
+
+    if metadata_schema == 6:
+        return (
+            6
+            if reports_state == _MARKER_FILE and knowledge_state == _MARKER_FILE
+            else None
+        )
     if metadata_schema == 5:
-        return 5 if reports_state == _MARKER_FILE else None
+        return (
+            5
+            if reports_state == _MARKER_FILE and knowledge_state == _MARKER_ABSENT
+            else None
+        )
     if metadata_schema == 3 or (metadata_schema is None and has_other_v3_marker):
-        return 3 if reports_state == _MARKER_ABSENT else None
+        return (
+            3
+            if reports_state == _MARKER_ABSENT and knowledge_state == _MARKER_ABSENT
+            else None
+        )
     return None
 
 
@@ -128,14 +156,17 @@ def _detect_format(root: pathlib.Path) -> int | None:
     store_path = root / "store.json"
     metadata_path = root / "store-meta.json"
     reports_path = root / _REPORTS_MARKER
+    knowledge_path = root / _KNOWLEDGE_MARKER
     store_state = _marker_state(store_path)
     metadata_state = _marker_state(metadata_path)
     reports_state = _marker_state(reports_path)
+    knowledge_state = _marker_state(knowledge_path)
     legacy_states = _optional_collection_marker_states(root)
     if _MARKER_INVALID in (
         store_state,
         metadata_state,
         reports_state,
+        knowledge_state,
         *legacy_states,
     ):
         return None
@@ -156,13 +187,14 @@ def _detect_format(root: pathlib.Path) -> int | None:
         metadata_state == _MARKER_FILE
         or has_other_v3_marker
         or reports_state == _MARKER_FILE
+        or knowledge_state == _MARKER_FILE
     )
     if store_state == _MARKER_FILE and has_collection_marker:
         return None
     if store_state == _MARKER_FILE or metadata_schema == 4:
         return 4
     return _admitted_collection_schema(
-        metadata_schema, reports_state, has_other_v3_marker
+        metadata_schema, reports_state, knowledge_state, has_other_v3_marker
     )
 
 
@@ -197,5 +229,5 @@ def admit_authority(
     return workstack.agent_cli_contract.AuthorityAdmission(
         data_dir=resolved,
         workspace_uid=actual_uid,
-        storage_format="v5" if fmt == 5 else "v3",
+        storage_format=_COLLECTION_STORAGE_FORMATS[fmt],
     )

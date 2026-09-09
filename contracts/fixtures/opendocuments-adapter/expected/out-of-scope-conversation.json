@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "code": "conversation_persistence_out_of_scope",
+    "message": "first adapter omits conversationId so answers are not stored on the conversation"
+  }
+}

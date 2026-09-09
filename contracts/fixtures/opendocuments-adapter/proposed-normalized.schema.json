@@ -1,0 +1,374 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workstack.local/contracts/fixtures/opendocuments-adapter/proposed-normalized.schema.json",
+  "title": "Proposed OpenDocuments adapter mapping (not C1, not production)",
+  "description": "Fixture-local evidence shape produced from synthetic OpenDocuments /api/v1/chat responses. Closed evidence: every mapper output in cases.json is validated against this file. Coordinator-owned C1 remains the host contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ok"],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "error": { "$ref": "#/$defs/error" },
+    "result": { "$ref": "#/$defs/success" }
+  },
+  "if": {
+    "properties": { "ok": { "const": true } },
+    "required": ["ok"]
+  },
+  "then": {
+    "required": ["ok", "result"],
+    "not": { "required": ["error"] }
+  },
+  "else": {
+    "required": ["ok", "error"],
+    "not": { "required": ["result"] }
+  },
+  "$defs": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "collection_filter_unsupported",
+            "conversation_persistence_out_of_scope",
+            "invalid_request",
+            "invalid_chat_result"
+          ]
+        },
+        "message": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "success": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "schema_version",
+        "mapping_status",
+        "request_id",
+        "connection_id",
+        "query",
+        "retriever",
+        "engine",
+        "generated_answer",
+        "candidates",
+        "omitted",
+        "limitations"
+      ],
+      "properties": {
+        "format": { "const": "workstack.opendocuments-adapter.proposed" },
+        "schema_version": { "const": 0 },
+        "mapping_status": { "const": "proposed" },
+        "request_id": { "type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+        "connection_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "query": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "generated_answer": { "const": "discarded" },
+        "retriever": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "role", "capabilities", "unsupported"],
+          "properties": {
+            "id": { "const": "opendocuments" },
+            "role": { "const": "retriever" },
+            "capabilities": {
+              "type": "array",
+              "items": { "const": "search" },
+              "minItems": 1,
+              "maxItems": 1
+            },
+            "unsupported": {
+              "type": "array",
+              "uniqueItems": true,
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "enum": [
+                  "verify_origin",
+                  "open_origin",
+                  "collection_filter",
+                  "conversation_persistence",
+                  "source_document_identity"
+                ]
+              }
+            }
+          }
+        },
+        "engine": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["query_id", "route", "profile", "confidence"],
+          "properties": {
+            "query_id": { "type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+            "route": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "profile": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "confidence": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["score", "level", "kind", "reason"],
+              "properties": {
+                "score": { "type": "number", "minimum": 0, "maximum": 1 },
+                "level": { "enum": ["high", "medium", "low", "none"] },
+                "kind": { "const": "engine_relevance" },
+                "reason": { "type": "string", "minLength": 1, "maxLength": 256 }
+              }
+            }
+          }
+        },
+        "candidates": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/candidate" }
+        },
+        "omitted": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["index", "reason"],
+            "properties": {
+              "index": { "type": "integer", "minimum": 0, "maximum": 99 },
+              "reason": {
+                "enum": [
+                  "invalid_source",
+                  "missing_document_id",
+                  "chunk_id_used_as_document_id",
+                  "non_workspace_result",
+                  "invalid_document_id",
+                  "missing_chunk_id",
+                  "invalid_chunk_id",
+                  "mismatched_chunk_id",
+                  "missing_content"
+                ]
+              }
+            }
+          }
+        },
+        "limitations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "query_logging_attempted_by_route",
+            "query_log_persistence_confirmed",
+            "source_version_from_chat",
+            "origin_verified",
+            "collection_filter_applied",
+            "source_document_identity_proven",
+            "non_workspace_results_omitted"
+          ],
+          "properties": {
+            "query_logging_attempted_by_route": { "const": true },
+            "query_log_persistence_confirmed": { "const": false },
+            "source_version_from_chat": { "const": false },
+            "origin_verified": { "const": false },
+            "collection_filter_applied": { "const": false },
+            "source_document_identity_proven": { "const": false },
+            "non_workspace_results_omitted": { "const": true }
+          }
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "indexed_identity",
+        "source",
+        "title",
+        "locator",
+        "index_heading_path",
+        "excerpt",
+        "excerpt_truncated",
+        "excerpt_sanitized",
+        "engine_score",
+        "source_version",
+        "content_hash",
+        "verification",
+        "trust",
+        "read_only"
+      ],
+      "properties": {
+        "indexed_identity": {
+          "description": "OpenDocuments index / retrieval identity. Not the Notion page identity and not the NAS file identity.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "retriever_id",
+            "connection_id",
+            "indexed_document_id",
+            "indexed_chunk_id",
+            "identity_scope"
+          ],
+          "properties": {
+            "retriever_id": { "const": "opendocuments" },
+            "connection_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "indexed_document_id": { "type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+            "indexed_chunk_id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_chunk_[0-9]{1,9}$" },
+            "identity_scope": { "const": "opendocuments_index" }
+          }
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "declared_source_type",
+            "type_locator_agreement",
+            "locator",
+            "identity"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "notion",
+                "upload",
+                "url",
+                "local",
+                "gdrive",
+                "confluence",
+                "github",
+                "s3",
+                "gcs",
+                "swagger",
+                "unknown"
+              ]
+            },
+            "declared_source_type": { "type": "string", "minLength": 1, "maxLength": 120 },
+            "type_locator_agreement": { "enum": ["agree", "mismatch", "unverified"] },
+            "locator": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "value", "reason"],
+              "properties": {
+                "type": { "enum": ["uri", "display_label", "opaque", "redacted"] },
+                "value": { "type": ["string", "null"], "minLength": 1, "maxLength": 512 },
+                "reason": {
+                  "type": ["string", "null"],
+                  "enum": [
+                    null,
+                    "no_source_path",
+                    "unsafe_source_path",
+                    "malformed_notion_page_id",
+                    "credentialed_url",
+                    "unparsable_url",
+                    "unsupported_url_host",
+                    "url_too_long",
+                    "url_query_and_fragment_dropped",
+                    "opaque_scheme_identifier_dropped",
+                    "source_type_locator_mismatch",
+                    "unreconcilable_declared_source_type"
+                  ]
+                }
+              },
+              "allOf": [
+                {
+                  "if": { "properties": { "type": { "const": "redacted" } }, "required": ["type"] },
+                  "then": {
+                    "properties": {
+                      "value": { "type": "null" },
+                      "reason": { "type": "string", "minLength": 1 }
+                    }
+                  },
+                  "else": { "properties": { "value": { "type": "string", "minLength": 1 } } }
+                }
+              ]
+            },
+            "identity": {
+              "description": "Source-qualified document identity. /api/v1/chat cannot prove it, so it stays unknown in A0.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "value", "basis"],
+              "properties": {
+                "status": { "const": "unknown" },
+                "value": { "type": "null" },
+                "basis": { "const": "chat_response_cannot_prove_source_identity" }
+              }
+            }
+          }
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "locator": {
+          "description": "Opaque indexed chunk address. Never a Markdown line span and never a Notion block id.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "position", "index_chunk_id", "source_locator"],
+          "properties": {
+            "type": { "const": "chunk_index" },
+            "position": { "type": "integer", "minimum": 0, "maximum": 999999999 },
+            "index_chunk_id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_chunk_[0-9]{1,9}$" },
+            "source_locator": { "const": false }
+          }
+        },
+        "index_heading_path": {
+          "description": "Descriptive index metadata only. Never an address.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["segments", "addressable"],
+          "properties": {
+            "segments": {
+              "type": "array",
+              "maxItems": 8,
+              "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+            },
+            "addressable": { "const": false }
+          }
+        },
+        "excerpt": { "type": "string", "minLength": 1, "maxLength": 1200 },
+        "excerpt_truncated": { "type": "boolean" },
+        "excerpt_sanitized": { "type": "boolean" },
+        "engine_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "source_version": { "$ref": "#/$defs/version" },
+        "content_hash": { "$ref": "#/$defs/content_hash" },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "checked_at", "origin_current"],
+          "properties": {
+            "status": { "const": "indexed_snapshot_unverified" },
+            "checked_at": { "type": "null" },
+            "origin_current": { "const": false }
+          }
+        },
+        "trust": { "const": "external_reference" },
+        "read_only": { "const": true }
+      }
+    },
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value", "basis"],
+      "properties": {
+        "status": { "enum": ["unavailable", "index_revision"] },
+        "value": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
+        "basis": { "enum": ["chat_response", "document_read"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "unavailable" } }, "required": ["status"] },
+          "then": { "properties": { "value": { "type": "null" } } },
+          "else": { "properties": { "value": { "type": "string", "minLength": 1 } } }
+        }
+      ]
+    },
+    "content_hash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value", "basis"],
+      "properties": {
+        "status": { "enum": ["unavailable", "index_hash"] },
+        "value": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "basis": { "enum": ["chat_response", "document_read"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "unavailable" } }, "required": ["status"] },
+          "then": { "properties": { "value": { "type": "null" } } },
+          "else": { "properties": { "value": { "type": "string", "pattern": "^[0-9a-f]{64}$" } } }
+        }
+      ]
+    }
+  }
+}

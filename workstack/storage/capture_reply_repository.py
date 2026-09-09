@@ -15,6 +15,23 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ..capture import canonical_digest, parse_rfc3339, validate_capture_packet
+from ..capture_unlink_policy import (
+    CaptureUnlinkPolicyError,
+    UNLINK_REVISION_CONFLICT,
+    admit_displayed_capture_revision,
+    advance_capture_revision,
+    plan_capture_unlink,
+    plan_capture_unlink_undo,
+)
+from ..capture_unlink_receipt import (
+    CaptureUnlinkReceiptError,
+    admit_receipt_id,
+    build_receipt,
+    capture_row_digest,
+    find_unlink_receipt,
+    receipt_id_for_idempotency_key,
+    record_committed_unlink_receipt,
+)
 from .canonical import canonical_json_bytes
 from .command_backend_support import (
     V4CommandBackendSupportError,
@@ -148,8 +165,25 @@ def _replay(
             if record.get("response_meta"):
                 body["meta"] = copy.deepcopy(record["response_meta"])
         body.setdefault("meta", {})["replayed"] = True
+        try:
+            receipt_id = receipt_id_for_idempotency_key(documents["activity.json"], key)
+        except CaptureUnlinkReceiptError as error:
+            raise CaptureReplyRepositoryError(error.code) from error
+        if receipt_id:
+            body["meta"]["undo_receipt_id"] = receipt_id
         return {"status": 200, "body": body}
     return None
+
+
+def _ledger_body(body: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop additive unlink receipt identity the v4 ledger schema forbids."""
+
+    stored = copy.deepcopy(dict(body))
+    meta = stored.get("meta")
+    if isinstance(meta, dict) and "undo_receipt_id" in meta:
+        meta = {key: value for key, value in meta.items() if key != "undo_receipt_id"}
+        stored["meta"] = meta
+    return stored
 
 
 def _record_idempotency(
@@ -170,6 +204,37 @@ def _record_idempotency(
         if response_meta:
             record["response_meta"] = copy.deepcopy(response_meta)
     documents["activity.json"].setdefault("idempotency", []).append(record)
+
+
+def _next_capture_revision(stored_revision: int) -> int:
+    try:
+        return advance_capture_revision(stored_revision)
+    except CaptureUnlinkPolicyError as error:
+        raise CaptureReplyRepositoryError(error.code) from error
+
+
+def _store_unlink_receipt(
+    documents: dict[str, dict[str, Any]],
+    capture: Mapping[str, Any],
+    task: Mapping[str, Any],
+    status_before: str,
+    before_revision: int,
+    idempotency_key: str,
+    now: str,
+) -> str:
+    try:
+        receipt = build_receipt(
+            workspace_uid=str(documents["workspace.json"]["id"]),
+            capture=capture,
+            task=task,
+            status_before=status_before,
+            before_revision=before_revision,
+            idempotency_key=idempotency_key,
+        )
+        record_committed_unlink_receipt(documents["activity.json"], receipt, now)
+    except CaptureUnlinkReceiptError as error:
+        raise CaptureReplyRepositoryError(error.code) from error
+    return str(receipt["receipt_id"])
 
 
 class V4CaptureReplyRepository:
@@ -334,6 +399,138 @@ class V4CaptureReplyRepository:
             body["meta"] = {"duplicate": True}
         _record_idempotency(documents, idempotency_key, path, request_digest, 200, now, body=body)
         self._commit(physical, ledger, documents, generation, now, f"capture-link-{idempotency_key}")
+        return {"status": 200, "body": body}
+
+    def unlink_capture(
+        self,
+        capture_id: str,
+        task_id: str,
+        revision: int,
+        idempotency_key: str,
+        request_digest: str | None = None,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            admitted = admit_displayed_capture_revision(revision)
+        except CaptureUnlinkPolicyError as error:
+            raise CaptureReplyRepositoryError("invalid_request") from error
+        physical, ledger, documents, generation = self._load()
+        path = path or f"/api/v1/captures/{capture_id}/unlink"
+        request_digest = _request_digest(request_digest, {"task_id": task_id, "revision": admitted})
+        replay = _replay(documents, idempotency_key, "POST", path, request_digest)
+        if replay:
+            return replay
+        task = _find(documents["backlog.json"]["tasks"], task_id, "task")
+        capture = _find(documents["captures.json"]["captures"], capture_id, "capture")
+        try:
+            plan = plan_capture_unlink(
+                linked_task_ids=capture["linked_task_ids"],
+                converted_task_ids=capture.get("converted_task_ids") or [],
+                status=str(capture.get("status") or ""),
+                task_id=task_id,
+                stored_revision=capture["revision"],
+                displayed_revision=admitted,
+            )
+        except CaptureUnlinkPolicyError as error:
+            if error.code == UNLINK_REVISION_CONFLICT:
+                raise CaptureReplyRepositoryError("revision_conflict") from error
+            raise CaptureReplyRepositoryError("invalid_request") from error
+        now = self.clock()
+        receipt_id = None
+        if plan.mutate:
+            status_before = str(capture.get("status") or "")
+            before_revision = capture["revision"]
+            next_revision = _next_capture_revision(before_revision)
+            capture["linked_task_ids"] = list(plan.linked_task_ids)
+            capture["status"] = plan.status
+            capture["revision"] = next_revision
+            capture["updated_at"] = now
+            _event(
+                documents, "capture.unlinked", now,
+                capture_id=capture_id, task_id=task_id,
+            )
+            receipt_id = _store_unlink_receipt(
+                documents, capture, task, status_before, before_revision, idempotency_key, now
+            )
+        body: dict[str, Any] = {
+            "data": _project(capture, _CAPTURE_FIELDS),
+            "meta": {"duplicate": plan.duplicate},
+        }
+        if receipt_id is not None:
+            body["meta"]["undo_receipt_id"] = receipt_id
+        _record_idempotency(
+            documents, idempotency_key, path, request_digest, 200, now,
+            body=_ledger_body(body),
+        )
+        self._commit(physical, ledger, documents, generation, now, f"capture-unlink-{idempotency_key}")
+        return {"status": 200, "body": body}
+
+    def undo_capture_unlink(
+        self,
+        capture_id: str,
+        receipt_id: str,
+        revision: int,
+        idempotency_key: str,
+        request_digest: str | None = None,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            admitted = admit_displayed_capture_revision(revision)
+            canonical = admit_receipt_id(receipt_id)
+        except (CaptureUnlinkPolicyError, CaptureUnlinkReceiptError) as error:
+            raise CaptureReplyRepositoryError("invalid_request") from error
+        physical, ledger, documents, generation = self._load()
+        path = path or f"/api/v1/captures/{capture_id}/undo-unlink"
+        request_digest = _request_digest(
+            request_digest, {"receipt_id": canonical, "revision": admitted}
+        )
+        replay = _replay(documents, idempotency_key, "POST", path, request_digest)
+        if replay:
+            return replay
+        capture = _find(documents["captures.json"]["captures"], capture_id, "capture")
+        try:
+            receipt = find_unlink_receipt(
+                documents["activity.json"],
+                canonical,
+                workspace_uid=str(documents["workspace.json"]["id"]),
+                capture_id=capture["id"],
+            )
+        except CaptureUnlinkReceiptError as error:
+            raise CaptureReplyRepositoryError(error.code) from error
+        task = _find(documents["backlog.json"]["tasks"], receipt["task_id"], "task")
+        if task.get("uid") != receipt["task_uid"] or task["id"] != receipt["task_id"]:
+            raise CaptureReplyRepositoryError("capture_unlink_undo_conflict")
+        try:
+            plan = plan_capture_unlink_undo(
+                linked_task_ids=capture.get("linked_task_ids") or [],
+                stored_revision=capture["revision"],
+                displayed_revision=admitted,
+                after_revision=receipt["after_revision"],
+                stored_digest=capture_row_digest(capture),
+                after_digest=receipt["after_digest"],
+                task_id=receipt["task_id"],
+                status_before=receipt["status_before"],
+            )
+        except CaptureUnlinkPolicyError as error:
+            raise CaptureReplyRepositoryError(error.code) from error
+        now = self.clock()
+        next_revision = _next_capture_revision(capture["revision"])
+        capture["linked_task_ids"] = list(plan.linked_task_ids)
+        capture["status"] = plan.status
+        capture["revision"] = next_revision
+        capture["updated_at"] = now
+        _event(
+            documents, "capture.unlink_undone", now,
+            capture_id=capture["id"], task_id=task["id"],
+        )
+        body: dict[str, Any] = {
+            "data": _project(capture, _CAPTURE_FIELDS),
+            "meta": {"duplicate": False},
+        }
+        _record_idempotency(documents, idempotency_key, path, request_digest, 200, now, body=body)
+        self._commit(physical, ledger, documents, generation, now, f"capture-undo-unlink-{idempotency_key}")
         return {"status": 200, "body": body}
 
     def approve_reply(

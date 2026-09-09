@@ -28,7 +28,13 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Final, Mapping, Sequence
 
-from . import report_documents, store_rosters
+from . import (
+    capture_observations,
+    knowledge_capture_packets,
+    knowledge_ledger_document,
+    report_documents,
+    store_rosters,
+)
 from .planning_status import PlanningStatusValidationError, validate_and_project
 from .store_errors import StoreCorruptError
 from .task_display_id import (
@@ -41,13 +47,18 @@ from .task_display_id import (
 
 
 MAX_REVISION = 9_007_199_254_740_991
+CAPTURES_DOCUMENT_NAME: Final[str] = "captures.json"
 IDENTITY_STORES: Final[tuple[str, ...]] = (
     "workspace.json", "backlog.json", "store-meta.json", "activity.json"
 )
-SUPPORTED_SCHEMA_VERSIONS: Final[tuple[int, ...]] = (1, 2, 3, 5)
+SUPPORTED_SCHEMA_VERSIONS: Final[tuple[int, ...]] = (1, 2, 3, 5, 6)
 
 _WORKSPACE_REQUIRED_KEYS = frozenset({"version", "id", "name"})
 _WORKSPACE_OPTIONAL_KEYS = frozenset({TASK_DISPLAY_ID_HIGH_WATER})
+# The exact field set the version 2 captures container carries. Written out
+# rather than derived from the version 1 default, because a container this
+# build may admit is a roster fact and not a delta of another shape.
+_CAPTURES_V2_FIELDS = frozenset({"version", "captures", "observations"})
 
 # The auxiliary payload shapes, owned once. Every schema version from 1 to 5
 # carries the same five, and ``workstack.store.DEFAULTS`` is built from this
@@ -66,6 +77,10 @@ ACTIVITY_DEFAULT: Final[dict[str, Any]] = {
 REPORTS_DEFAULT: Final[dict[str, Any]] = {
     "version": 1, "reports": [], "idempotency": [],
 }
+# Owned by ``workstack.knowledge_ledger_document`` so the ledger's shape rule
+# and its default payload cannot drift apart; named here because this is where
+# every other roster default is read from.
+KNOWLEDGE_DEFAULT: Final[dict[str, Any]] = knowledge_ledger_document.KNOWLEDGE_DEFAULT
 
 # What each schema version's documents look like: the roster, the workspace and
 # backlog versions, whether the metadata document exists, and which evidence
@@ -75,18 +90,30 @@ _VERSION_ROSTERS: Final[dict[int, frozenset[str]]] = {
     2: store_rosters.V2_DOCUMENT_NAMES,
     3: store_rosters.V3_DOCUMENT_NAMES,
     5: store_rosters.V5_DOCUMENT_NAMES,
+    6: store_rosters.V6_DOCUMENT_NAMES,
 }
-_WORKSPACE_VERSIONS: Final[dict[int, int]] = {1: 1, 2: 2, 3: 2, 5: 2}
-_BACKLOG_VERSIONS: Final[dict[int, int]] = {1: 1, 2: 2, 3: 3, 5: 3}
+_WORKSPACE_VERSIONS: Final[dict[int, int]] = {1: 1, 2: 2, 3: 2, 5: 2, 6: 2}
+_BACKLOG_VERSIONS: Final[dict[int, int]] = {1: 1, 2: 2, 3: 3, 5: 3, 6: 3}
 _EVIDENCE_NAMES: Final[dict[int, frozenset[str]]] = {
     3: frozenset({"identity", "planning_status"}),
     5: frozenset({"identity", "planning_status", "reports"}),
+    6: frozenset({"identity", "planning_status", "reports", "knowledge"}),
 }
+# The versions that carry reports.json. Named as a set rather than tested with
+# ``>= 5`` so a future version has to say for itself which documents it holds.
+_REPORTS_VERSIONS: Final[frozenset[int]] = frozenset({5, 6})
 _REPORTS_EVIDENCE_IDS: Final[dict[str, str]] = {
     "fresh": "workstack.reports.v5",
     "migrated_v1": "workstack.reports.v3-to-v5",
     "migrated_v2": "workstack.reports.v3-to-v5",
     "migrated_v3": "workstack.reports.v3-to-v5",
+}
+_KNOWLEDGE_EVIDENCE_IDS: Final[dict[str, str]] = {
+    "fresh": "workstack.knowledge.v6",
+    "migrated_v1": "workstack.knowledge.v5-to-v6",
+    "migrated_v2": "workstack.knowledge.v5-to-v6",
+    "migrated_v3": "workstack.knowledge.v5-to-v6",
+    "migrated_v5": "workstack.knowledge.v5-to-v6",
 }
 
 
@@ -366,6 +393,81 @@ def _validate_auxiliary_store(name: str, value: dict[str, Any]) -> None:
         raise StoreCorruptError(defect)
 
 
+def _validate_captures_container(value: dict[str, Any], workspace_uid: str) -> None:
+    """Admit a schema 6 captures document as exactly container 1 or container 2.
+
+    Container 1 keeps the released auxiliary-shape admission, in its own words,
+    so a store that never activated the feature is judged exactly as before.
+    Container 2 is that same captures list beside the closed owner-internal
+    observation list, judged by the pure model against the workspace uid these
+    very documents declare rather than one a caller supplied. Anything else --
+    an unknown container version, a non-integer version that merely compares
+    equal to one, a version 2 document with an extra or a missing field -- is
+    refused here instead of being admitted as some other shape.
+
+    A stored observation list that the model refuses is malformed stored data,
+    so it raises the store's own corruption error carrying only the model's
+    closed code. Admission is stricter than the model alone: the stored list
+    must already BE the canonical list the model returns, so a merely
+    reorderable container 2 is refused here rather than admitted as authority
+    that a later identical replay would silently rewrite. Container 2 has
+    never been released, so no existing store can hold a noncanonical one.
+    Only collection version 6 reaches this function: versions 1, 2, 3 and 5
+    keep the container 1 rule they released with.
+    """
+
+    version = value.get("version")
+    if type(version) is not int or version != 2:
+        _validate_auxiliary_store(CAPTURES_DOCUMENT_NAME, value)
+        return
+    if set(value) != _CAPTURES_V2_FIELDS:
+        raise StoreCorruptError("captures.json schema is invalid")
+    if not isinstance(value["captures"], list):
+        raise StoreCorruptError("captures.json.captures must be an array")
+    try:
+        canonical = capture_observations.validate_observations(
+            value["observations"], workspace_uid=workspace_uid
+        )
+    except capture_observations.CaptureObservationError as error:
+        raise StoreCorruptError(
+            "captures.json observations are invalid: {}".format(error.code)
+        ) from error
+    if canonical != value["observations"]:
+        raise StoreCorruptError("captures.json observations are not canonical")
+
+
+def _validate_auxiliary_document(
+    name: str, value: dict[str, Any], version: int, workspace_uid: str
+) -> None:
+    """Route one auxiliary document to the rule its collection version implies.
+
+    Only ``captures.json`` under collection version 6 has ever had more than
+    one admissible shape. Every other auxiliary document, and every one of
+    them under versions 1, 2, 3 and 5, keeps the single default-payload rule
+    the roster released with.
+    """
+
+    if version == 6 and name == CAPTURES_DOCUMENT_NAME:
+        _validate_captures_container(value, workspace_uid)
+        return
+    _validate_auxiliary_store(name, value)
+
+
+def _validate_imported_captures(value: dict[str, Any]) -> None:
+    """Admit the knowledge-import capture records a v6 store may hold.
+
+    Only records written at the import schema version are judged, and only for
+    the retrieval wire they carry: every historical 1.0 record keeps exactly
+    the released auxiliary-shape admission above and is not looked at here. A
+    malformed stored 1.1 retrieval refuses the load rather than surviving to be
+    read back as metadata.
+    """
+
+    defect = knowledge_capture_packets.imported_capture_defect(value)
+    if defect is not None:
+        raise StoreCorruptError(defect)
+
+
 def _validate_reports_migration(reports: dict[str, Any]) -> None:
     origin = reports.get("origin")
     digest = reports.get("source_sha256")
@@ -379,6 +481,40 @@ def _validate_reports_migration(reports: dict[str, Any]) -> None:
         return
     if not (isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest)):
         raise StoreCorruptError("reports migration evidence is invalid")
+
+
+def _validate_knowledge_migration(knowledge: dict[str, Any]) -> None:
+    origin = knowledge.get("origin")
+    digest = knowledge.get("source_sha256")
+    if origin not in _KNOWLEDGE_EVIDENCE_IDS:
+        raise StoreCorruptError("knowledge migration origin is invalid")
+    if knowledge.get("id") != _KNOWLEDGE_EVIDENCE_IDS[origin]:
+        raise StoreCorruptError("knowledge migration evidence is invalid")
+    if origin == "fresh":
+        if digest is not None:
+            raise StoreCorruptError("fresh knowledge evidence is invalid")
+        return
+    if not (isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest)):
+        raise StoreCorruptError("knowledge migration evidence is invalid")
+
+
+def _validate_knowledge(value: Any, workspace_uid: str) -> None:
+    """Delegate to the pure ledger model, on the decoded mapping itself.
+
+    The ledger is where a workspace's connection policy and its outstanding
+    requests live, so a store whose ledger cannot be admitted is not a store
+    this build may answer questions from. The refusal is deliberately closed:
+    the code names the rule and, at most, a field of the closed schema.
+    """
+
+    try:
+        knowledge_ledger_document.validate_knowledge_document(
+            value, workspace_uid=workspace_uid
+        )
+    except knowledge_ledger_document.KnowledgeLedgerError as error:
+        raise StoreCorruptError(
+            "knowledge.json schema is invalid: {}".format(error.code)
+        ) from error
 
 
 def _validate_metadata(metadata: Any, expected_schema: int) -> str:
@@ -407,6 +543,8 @@ def _validate_metadata(metadata: Any, expected_schema: int) -> str:
     _validate_planning_migration(records["planning_status"])
     if "reports" in records:
         _validate_reports_migration(records["reports"])
+    if "knowledge" in records:
+        _validate_knowledge_migration(records["knowledge"])
     return origin
 
 
@@ -504,7 +642,7 @@ def validate_document_values(
     )
     for name in roster:
         if name in AUXILIARY_DEFAULTS:
-            _validate_auxiliary_store(name, values[name])
+            _validate_auxiliary_document(name, values[name], version, workspace_uid)
     _validate_activity(values["activity.json"], version)
     origin = "pre_metadata"
     if version == 2:
@@ -518,8 +656,13 @@ def validate_document_values(
         except PlanningStatusValidationError as error:
             raise StoreCorruptError(str(error)) from error
         _require_task_display_id_authority(values["workspace.json"], tasks)
-    if version == 5:
+    if version in _REPORTS_VERSIONS:
         _validate_reports(values[store_rosters.REPORTS_DOCUMENT_NAME], workspace_uid)
+    if version == 6:
+        _validate_knowledge(
+            values[store_rosters.KNOWLEDGE_DOCUMENT_NAME], workspace_uid
+        )
+        _validate_imported_captures(values["captures.json"])
     return StoreReadiness(
         schema_version=version,
         workspace_uid=workspace_uid,

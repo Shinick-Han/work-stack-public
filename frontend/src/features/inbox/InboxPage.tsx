@@ -7,8 +7,10 @@ import {
   type MicrosoftProviderGates,
 } from '../../config/providerGates'
 import type { Capture, CaptureStatus, Task, WorkspaceProjection } from '../../domain/types'
+import type { KnowledgeImportEnvelope } from '../../domain/knowledgeImport'
 import { formatDateTime, getErrorMessage, safeExternalUrl } from '../../utils/format'
 import { captureTrust } from './captureTrust'
+import { InboxHeadingActions } from './InboxHeadingActions'
 import { SourceCaptureDialog } from './SourceCaptureDialog'
 import { sourceProviders, type SourceProviderKey } from './sourceProviders'
 import { embeddedSourceHostAvailable, hideEmbeddedSource, requestEmbeddedSourceDraft, requestEmbeddedSourceZoom, setEmbeddedSourceZoom, showEmbeddedSource, subscribeEmbeddedSourceZoom, type EmbeddedSourceZoom } from './sourceHostBridge'
@@ -31,6 +33,7 @@ interface InboxPageProps {
   onImport: () => void
   onCopyMicrosoftRequest: () => void
   onImportAgentResult: () => void
+  onReviewKnowledge?: (envelope: KnowledgeImportEnvelope) => void
   onLink: (captureId: string, taskId: string) => Promise<unknown>
   onConvert: (captureId: string, actionId: string) => Promise<unknown>
   onDismiss: (captureId: string) => Promise<unknown>
@@ -226,6 +229,7 @@ export function InboxPage({
   onImport,
   onCopyMicrosoftRequest,
   onImportAgentResult,
+  onReviewKnowledge,
   onLink,
   onSearchChange,
   onSelectCapture,
@@ -338,11 +342,7 @@ export function InboxPage({
           <h1 id="inbox-heading">Turn signal into useful work.</h1>
           <p>Review sanitized context before it becomes part of your execution system.</p>
         </div>
-        <div className="page-heading__actions inbox-heading-actions">
-          {microsoftReadAvailable ? <Button icon="command" onClick={onCopyMicrosoftRequest} variant="primary">Copy Microsoft 365 request</Button> : null}
-          {microsoftReadAvailable ? <Button icon="upload" onClick={onImportAgentResult}>Import agent result</Button> : null}
-          <Button icon="upload" onClick={onImport} variant="ghost">Import packet</Button>
-        </div>
+        <InboxHeadingActions microsoftReadAvailable={microsoftReadAvailable} onCopyMicrosoftRequest={onCopyMicrosoftRequest} onImport={onImport} onImportAgentResult={onImportAgentResult} onReviewKnowledge={onReviewKnowledge} workspaceUid={workspace.workspace.id} />
       </header>
 
       <section className={`source-provider-dock ${embeddedSourceHost ? 'source-provider-dock--embedded' : ''}`} aria-labelledby="source-provider-heading">

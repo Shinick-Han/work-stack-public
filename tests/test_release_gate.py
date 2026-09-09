@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import shutil
+import sys
 import tempfile
 import unittest
 
@@ -200,6 +201,160 @@ class ImmutableBundleTests(unittest.TestCase):
             )
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn("hash mismatch", (refused.stdout + refused.stderr).lower())
+
+
+class DistSourceCommandTests(unittest.TestCase):
+    """The dist/source gate is reachable, fail-closed and actionable from the CLI."""
+
+    def write_repo(self, root: Path) -> None:
+        (root / "frontend" / "src").mkdir(parents=True)
+        (root / "frontend" / "src" / "main.tsx").write_text("export const main = 1\n", encoding="utf-8")
+        (root / "frontend" / "index.html").write_text("<div id=root></div>\n", encoding="utf-8")
+        (root / "frontend" / "package.json").write_text('{"name":"ui"}\n', encoding="utf-8")
+        (root / "frontend" / "package-lock.json").write_text(
+            '{"lockfileVersion":3}\n', encoding="utf-8"
+        )
+        (root / "frontend" / "vite.config.ts").write_text("export default {}\n", encoding="utf-8")
+        for name in ("tsconfig.json", "tsconfig.app.json", "tsconfig.node.json"):
+            (root / "frontend" / name).write_text("{}\n", encoding="utf-8")
+        (root / "scripts").mkdir()
+        (root / "scripts" / "generate-theme-tokens.mjs").write_text("export const t = 1\n", encoding="utf-8")
+        (root / "theme").mkdir()
+        (root / "theme" / "theme-tokens.json").write_text('{"color":{}}\n', encoding="utf-8")
+        generated = root / "desktop" / "python-webview-shell" / "generated"
+        generated.mkdir(parents=True)
+        (generated / "theme_tokens.py").write_text("TOKENS = {}\n", encoding="utf-8")
+        fixtures = root / "tests" / "fixtures"
+        fixtures.mkdir(parents=True)
+        (fixtures / "checkpoint_change_v1.json").write_text('{"event_id":1}\n', encoding="utf-8")
+        dist = root / "frontend" / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<html>stale</html>\n", encoding="utf-8")
+
+    def run_gate(self, *arguments: str):
+        return subprocess.run(
+            [sys.executable, str(MODULE_PATH), *arguments],
+            text=True,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    def test_verify_dist_refuses_an_unreceipted_tree_with_the_repair_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            self.write_repo(repo)
+
+            refused = self.run_gate("verify-dist", "--repo", str(repo))
+
+            self.assertEqual(1, refused.returncode)
+            output = refused.stdout + refused.stderr
+            self.assertIn("DIST_RECEIPT_MISSING", output)
+            self.assertIn("refresh-dist", output)
+
+    def test_verify_dist_accepts_a_tree_its_recorded_source_built(self) -> None:
+        module = load_module()
+        gate = module.load_dist_source_gate()
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            self.write_repo(repo)
+            gate.write_receipt(
+                gate.receipt_path(repo),
+                gate.build_receipt(
+                    gate.source_entries(repo), gate.dist_entries(repo / "frontend" / "dist")
+                ),
+            )
+
+            accepted = self.run_gate("verify-dist", "--repo", str(repo))
+            self.assertEqual(0, accepted.returncode, accepted.stdout + accepted.stderr)
+            self.assertIn("source_digest", accepted.stdout)
+
+            (repo / "frontend" / "src" / "main.tsx").write_text(
+                "export const main = 2\n", encoding="utf-8"
+            )
+            refused = self.run_gate("verify-dist", "--repo", str(repo))
+
+            self.assertEqual(1, refused.returncode)
+            self.assertIn("DIST_SOURCE_DRIFT", refused.stdout + refused.stderr)
+
+    def test_refresh_dist_reports_a_missing_build_tool_instead_of_trusting(self) -> None:
+        module = load_module()
+        gate = module.load_dist_source_gate()
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            self.write_repo(repo)
+            with self.assertRaises(gate.DistSourceGateError) as raised:
+                gate.refresh(repo, build_command=("workstack-absent-build-tool", "run", "build"))
+            self.assertEqual("DIST_BUILD_TOOL_MISSING", raised.exception.code)
+            self.assertFalse(gate.receipt_path(repo).exists())
+
+    def test_verify_staged_dist_binds_a_package_copy_to_the_admitted_digest(self) -> None:
+        """A packager proves what it copied without reading the live tree again."""
+
+        module = load_module()
+        gate = module.load_dist_source_gate()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repo"
+            repo.mkdir()
+            self.write_repo(repo)
+            gate.write_receipt(
+                gate.receipt_path(repo),
+                gate.build_receipt(
+                    gate.source_entries(repo), gate.dist_entries(repo / "frontend" / "dist")
+                ),
+            )
+            admitted = json.loads(self.run_gate("verify-dist", "--repo", str(repo)).stdout)
+            self.assertTrue(admitted["dist_digest"].startswith("sha256:"))
+            staged = root / "payload" / "frontend" / "dist"
+            staged.parent.mkdir(parents=True)
+            shutil.copytree(repo / "frontend" / "dist", staged)
+            # The live tree is rewritten the moment the gate call returned. The
+            # staged copy is what the package ships, and it is still admitted.
+            (repo / "frontend" / "dist" / "index.html").write_text(
+                "<html>swapped</html>\n", encoding="utf-8"
+            )
+
+            accepted = self.run_gate(
+                "verify-staged-dist", "--staged", str(staged), "--expect", admitted["dist_digest"]
+            )
+            self.assertEqual(0, accepted.returncode, accepted.stdout + accepted.stderr)
+            self.assertIn(admitted["dist_digest"], accepted.stdout)
+
+            (staged / "index.html").write_text("<html>swapped</html>\n", encoding="utf-8")
+            refused = self.run_gate(
+                "verify-staged-dist", "--staged", str(staged), "--expect", admitted["dist_digest"]
+            )
+
+            self.assertEqual(1, refused.returncode)
+            output = refused.stdout + refused.stderr
+            self.assertIn("DIST_STAGED_DRIFT", output)
+            self.assertIn("was admitted", output)
+
+    def test_verify_staged_dist_refuses_an_unbound_expectation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_repo(root)
+
+            refused = self.run_gate(
+                "verify-staged-dist",
+                "--staged",
+                str(root / "frontend" / "dist"),
+                "--expect",
+                "looked-fine-to-me",
+            )
+
+            self.assertEqual(1, refused.returncode)
+            self.assertIn("DIST_STAGED_UNBOUND", refused.stdout + refused.stderr)
+
+    def test_every_dist_subcommand_is_exposed(self) -> None:
+        module = load_module()
+        parser = module.build_parser()
+        choices = parser._subparsers._group_actions[0].choices
+
+        self.assertIn("verify-dist", choices)
+        self.assertIn("refresh-dist", choices)
+        self.assertIn("verify-staged-dist", choices)
 
 
 class ReleasePolicyTests(unittest.TestCase):

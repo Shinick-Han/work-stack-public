@@ -12,9 +12,10 @@ from workstack.agent_cli_contract import (
     render_outcome,
 )
 from workstack.agent_context_pack import (
+    PLANNING_V2_VIEW,
     build_planning_blocks,
     is_known_view,
-    is_planning_view,
+    needs_planning_material,
     planning_omitted,
     shrink_planning_data,
     validate_planning_data,
@@ -163,7 +164,7 @@ def _context_size(
 
 
 def _planning_material(raw: dict[str, Any]) -> dict[str, Any]:
-    """The extra read material a planning-v1 backend must have supplied."""
+    """The extra read material a planning view backend must have supplied."""
 
     material = raw.get("planning")
     if type(material) is not dict or set(material) != set(PLANNING_MATERIAL_KEYS):
@@ -203,14 +204,16 @@ def _planning_outcome(
     transport: str,
     workspace_uid: str,
 ) -> AgentOutcome:
-    """The opt-in planning-v1 answer: core plus three capped, bounded blocks."""
+    """The opt-in planning answer: core plus three capped, bounded blocks."""
 
+    include_evidence = request.view == PLANNING_V2_VIEW
     material = _planning_material(raw)
     blocks, overflowed = build_planning_blocks(
         task_id=request.task_id,
         objectives=material["objectives"],
         tasks=material["tasks"],
         context=material["context"],
+        include_evidence=include_evidence,
     )
     omitted = planning_omitted(overflowed=overflowed)
     if overflow:
@@ -222,6 +225,8 @@ def _planning_outcome(
         "omitted": omitted,
     }
     data.update(blocks)
+    if include_evidence:
+        data["view"] = PLANNING_V2_VIEW
 
     def size(candidate: dict[str, Any]) -> int:
         return _context_size(
@@ -335,7 +340,7 @@ def handle_context(
         projected = [_project_entry(entry) for entry in filtered]
         entries = projected[:MAX_ENTRIES]
         overflow = len(projected) > MAX_ENTRIES
-        if is_planning_view(request.view):
+        if needs_planning_material(request.view):
             return _planning_outcome(
                 raw=raw,
                 request=request,

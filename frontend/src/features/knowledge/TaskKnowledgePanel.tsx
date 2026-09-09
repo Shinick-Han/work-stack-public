@@ -49,7 +49,9 @@ function KnowledgeUnavailable() {
         <strong>Desktop knowledge host unavailable</strong>
         <p>
           Open this Task in the Work Stack desktop app to connect a knowledge source. The browser
-          build cannot read or link documents on this device.
+          build cannot read or link documents on this device. You can still prepare a resume brief
+          from the saved Task, its recorded progress and its stored Capture catalog; that brief
+          carries no local document excerpt.
         </p>
       </div>
     </section>
@@ -287,6 +289,29 @@ function ReferenceRowActions({
   )
 }
 
+/** Linking, searching and reading local documents all need the host, so they stay gated. */
+function KnowledgeLinkTools({
+  canLink,
+  disabled,
+  session,
+}: {
+  canLink: boolean
+  disabled: boolean
+  session: KnowledgeSession
+}) {
+  return (
+    <details className="knowledge-panel__disclosure">
+      <summary>Find or link a document</summary>
+      <div className="knowledge-panel__disclosure-body">
+        <KnowledgeSourceCard disabled={session.state.pending === 'load'} session={session} />
+        <KnowledgeSearch disabled={disabled} session={session} />
+        <KnowledgeComposer canLink={canLink} disabled={disabled} session={session} />
+        <KnowledgeFeedback session={session} />
+      </div>
+    </details>
+  )
+}
+
 export function TaskKnowledgePanel({
   onBack,
   progress = UNBOUND_RESUME_PROGRESS,
@@ -296,6 +321,7 @@ export function TaskKnowledgePanel({
   const session = useTaskKnowledge(workspaceUid, task)
   const { state } = session
   const busy = state.pending !== null
+  const catalogLoading = state.hostAvailable && state.loading
   const composerDisabled = busy || !state.selectedVaultId
   const canLink = Boolean(state.reason.trim())
     && previewMatchesInput(state.preview, state.selectedVaultId, state.documentPath, state.startLine, state.endLine)
@@ -315,8 +341,8 @@ export function TaskKnowledgePanel({
         Bundle the saved Task, its recorded progress and the references you pick into one brief.
       </p>
       {!state.hostAvailable ? <KnowledgeUnavailable /> : null}
-      {state.hostAvailable && state.loading ? <LoadingBlock label="Loading linked references…" /> : null}
-      {state.hostAvailable && !state.loading ? (
+      {catalogLoading ? <LoadingBlock label="Loading linked references…" /> : null}
+      {catalogLoading ? null : (
         <>
           <ReferenceHandoffPanel
             progress={progress}
@@ -324,6 +350,14 @@ export function TaskKnowledgePanel({
               <ReferenceRowActions busy={busy} reference={reference} session={session} />
             )}
             seed={{
+              // Only a list this panel actually enumerated can be presented as an empty
+              // one. With no host nothing was ever listed, and a failed list has not been
+              // read; neither is evidence that the Task has no saved references.
+              enumerated: state.hostAvailable && state.errorAction !== 'reload',
+              // A failed host request leaves the recovery on `reload`, and until that
+              // reload succeeds this list is unsettled rather than empty. With no host at
+              // all nothing was requested, so there is no unsettled list to resolve.
+              listed: state.errorAction !== 'reload',
               references: state.references,
               reload: session.reload,
               signature: referenceListSignature(state.references),
@@ -332,17 +366,11 @@ export function TaskKnowledgePanel({
             vaults={state.vaults}
             workspaceUid={workspaceUid}
           />
-          <details className="knowledge-panel__disclosure">
-            <summary>Find or link a document</summary>
-            <div className="knowledge-panel__disclosure-body">
-              <KnowledgeSourceCard disabled={state.pending === 'load'} session={session} />
-              <KnowledgeSearch disabled={composerDisabled} session={session} />
-              <KnowledgeComposer canLink={canLink} disabled={composerDisabled} session={session} />
-              <KnowledgeFeedback session={session} />
-            </div>
-          </details>
+          {state.hostAvailable ? (
+            <KnowledgeLinkTools canLink={canLink} disabled={composerDisabled} session={session} />
+          ) : null}
         </>
-      ) : null}
+      )}
       <p className="knowledge-panel__scope">{LOCAL_MARKDOWN_SOURCE.scopeNote}</p>
     </section>
   )

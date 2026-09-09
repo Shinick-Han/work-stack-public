@@ -2,9 +2,10 @@
 
 `parser()` is the whole argparse surface: the same prog name, the same
 `--data-dir` option, the same required `domain` subcommand, and the same
-eleven domains in the same order, so `--help`, the exit-2 refusals and every
+domains in the same order, so `--help`, the exit-2 refusals and every
 parsed Namespace field are byte-for-byte what the single-function builder
 produced. Adding a domain means adding one call here and one builder beside it.
+New domains append at the end.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from .cli_parser_planning import (
     add_capture_parser,
     add_note_parser,
     add_okr_parser,
+    add_report_parser,
     add_weekly_parser,
     add_worklog_parser,
 )
@@ -43,6 +45,7 @@ def parser() -> argparse.ArgumentParser:
     add_storage_parser(sub)
     add_maintenance_parser(sub)
     add_graph_parser(sub)
+    add_report_parser(sub)
     return root
 
 

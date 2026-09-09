@@ -24,7 +24,15 @@ export const SOURCE_STALE_MESSAGE =
 
 export const INERT_HISTORY_HINT = 'Authored text is shown exactly as saved. It is never turned into HTML.'
 
-const REFUSALS: Record<string, string> = {
+/**
+ * Every refusal sentence this history can put on screen.
+ *
+ * The table has a null prototype on purpose: on an ordinary object literal a workspace
+ * code of `constructor`, `toString` or `__proto__` resolves through `Object.prototype`,
+ * so the lookup hands back an inherited function or the prototype itself instead of the
+ * one fallback sentence. `savedReportsRefusalMessage` additionally tests own properties only.
+ */
+const REFUSALS: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
   idempotency_conflict:
     'This change could not be matched to the request that was sent, so nothing new was written.',
   invalid_idempotency_key:
@@ -55,10 +63,15 @@ const REFUSALS: Record<string, string> = {
     'This workspace is not in sync, so nothing was written. Bring it back in sync, then try again.',
   workspace_mismatch:
     'This report belongs to a different workspace than the one open here, so nothing was written.',
-}
+})
 
 export function savedReportsRefusalMessage(code: string): string {
-  return REFUSALS[code] ?? 'This saved report could not be updated, so nothing was written.'
+  const authored = Object.hasOwn(REFUSALS, code) ? REFUSALS[code] : undefined
+  // Whatever a lookup produced, only one of this module's own literal sentences
+  // reaches the reader, and it is always a string.
+  return typeof authored === 'string'
+    ? authored
+    : 'This saved report could not be updated, so nothing was written.'
 }
 
 export function statusLabel(state: 'draft' | 'finalized' | 'archived'): string {

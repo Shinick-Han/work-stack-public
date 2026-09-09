@@ -34,12 +34,14 @@ from workstack.store import (
 )
 from workstack.service import WorkStack
 from workstack.store_document_validation import validate_document_values
+from workstack.knowledge_ledger_document import KNOWLEDGE_DOCUMENT_NAME
 from workstack.store_rosters import (
     REPORTS_DOCUMENT_NAME,
     V1_DOCUMENT_NAMES,
     V2_DOCUMENT_NAMES,
     V3_DOCUMENT_NAMES,
     V5_DOCUMENT_NAMES,
+    V6_DOCUMENT_NAMES,
 )
 
 
@@ -130,12 +132,13 @@ class MigrationCase(unittest.TestCase):
         metadata = values["store-meta.json"]
         metadata["store_schema_version"] = 3
         del metadata["migrations"]["reports"]
+        del metadata["migrations"]["knowledge"]
         return values
 
     def documents(self) -> dict[str, Any]:
         return {
             name: json.loads((self.root / name).read_text(encoding="utf-8"))
-            for name in V5_DOCUMENT_NAMES
+            for name in V6_DOCUMENT_NAMES
         }
 
     def backups(self) -> list[Path]:
@@ -183,6 +186,7 @@ class MigrationCase(unittest.TestCase):
         metadata = values["store-meta.json"]
         metadata["store_schema_version"] = 3
         del metadata["migrations"]["reports"]
+        del metadata["migrations"]["knowledge"]
         return values
 
     def released_task_baseline(self) -> dict[str, Any]:
@@ -244,15 +248,15 @@ class MigrationCase(unittest.TestCase):
 
 
 class FreshStoreTest(MigrationCase):
-    def test_a_fresh_store_is_schema_five_with_ten_documents(self) -> None:
+    def test_a_fresh_store_is_the_current_schema_with_its_full_roster(self) -> None:
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
-        self.assertEqual(STORE_SCHEMA_VERSION, 5)
+        self.assertEqual(readiness.schema_version, 6)
+        self.assertEqual(STORE_SCHEMA_VERSION, 6)
         self.assertEqual(readiness.migration_origin, "fresh")
         written = {item.name for item in self.root.iterdir() if item.suffix == ".json"}
-        self.assertEqual(written, set(V5_DOCUMENT_NAMES))
-        self.assertEqual(len(DEFAULTS), 10)
+        self.assertEqual(written, set(V6_DOCUMENT_NAMES))
+        self.assertEqual(len(DEFAULTS), 11)
 
     def test_a_fresh_store_writes_the_default_reports_document(self) -> None:
         Store(self.root).initialize()
@@ -263,7 +267,10 @@ class FreshStoreTest(MigrationCase):
         Store(self.root).initialize()
 
         migrations = self.documents()["store-meta.json"]["migrations"]
-        self.assertEqual(set(migrations), {"identity", "planning_status", "reports"})
+        self.assertEqual(
+            set(migrations),
+            {"identity", "planning_status", "reports", "knowledge"},
+        )
         self.assertEqual(
             migrations["reports"],
             {"id": "workstack.reports.v5", "origin": "fresh", "source_sha256": None},
@@ -282,7 +289,7 @@ class HistoricalUpgradeTest(MigrationCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(readiness.migration_origin, "migrated_v1")
         migrations = self.documents()["store-meta.json"]["migrations"]
         self.assertEqual(
@@ -313,7 +320,7 @@ class HistoricalUpgradeTest(MigrationCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         migrations = self.documents()["store-meta.json"]["migrations"]
         self.assertEqual(migrations["identity"]["id"], "workstack.store.v2")
         self.assertEqual(migrations["identity"]["origin"], "fresh")
@@ -331,7 +338,7 @@ class HistoricalUpgradeTest(MigrationCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         for name, body in before.items():
             with self.subTest(document=name):
                 self.assertEqual(
@@ -358,7 +365,7 @@ class HistoricalUpgradeTest(MigrationCase):
         store.save_many = counted  # type: ignore[method-assign]
         store.initialize()
 
-        self.assertEqual(commits, [10])
+        self.assertEqual(commits, [11])
 
 
 class PreMigrationBackupTest(MigrationCase):
@@ -446,7 +453,7 @@ class PreMigrationBackupVerificationTest(MigrationCase):
         ):
             readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(seen, [(self.prebackup_target(3, values), False)])
 
     def test_an_archive_that_does_not_read_back_aborts_before_the_journal(self) -> None:
@@ -506,7 +513,7 @@ class PreMigrationBackupVerificationTest(MigrationCase):
         ):
             readiness = store.initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(written, [])
         self.assertEqual(verified, [target])
         self.assertEqual(target.read_bytes(), packed["body"])
@@ -522,10 +529,10 @@ class ReleasedRuntimeManifestTest(MigrationCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         published = json.loads(manifest_path.read_text(encoding="utf-8"))
-        self.assertEqual(published["store_schema_version"], 5)
-        self.assertEqual(set(published["files"]), set(V5_DOCUMENT_NAMES))
+        self.assertEqual(published["store_schema_version"], 6)
+        self.assertEqual(set(published["files"]), set(V6_DOCUMENT_NAMES))
         self.assertGreater(published["generation"], 7)
         self.assertEqual(
             self.documents()["store-meta.json"]["migrations"]["reports"]["origin"],
@@ -557,13 +564,13 @@ class ReleasedRuntimeManifestTest(MigrationCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertFalse((self.root / ".workstack-journal.json").exists())
         written = {item.name for item in self.root.iterdir() if item.suffix == ".json"}
-        self.assertEqual(written, set(V5_DOCUMENT_NAMES))
+        self.assertEqual(written, set(V6_DOCUMENT_NAMES))
         published = json.loads(manifest_path.read_text(encoding="utf-8"))
-        self.assertEqual(published["store_schema_version"], 5)
-        self.assertEqual(set(published["files"]), set(V5_DOCUMENT_NAMES))
+        self.assertEqual(published["store_schema_version"], 6)
+        self.assertEqual(set(published["files"]), set(V6_DOCUMENT_NAMES))
         self.assertEqual(Store(self.root).sync_status()["state"], "in-sync")
 
     def test_an_unowned_change_under_an_old_manifest_is_never_laundered(self) -> None:
@@ -718,11 +725,11 @@ class ForeignManifestBaselineTest(MigrationCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(readiness.workspace_uid, values["workspace.json"]["id"])
         published = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(published["workspace_id"], values["workspace.json"]["id"])
-        self.assertEqual(published["store_schema_version"], 5)
+        self.assertEqual(published["store_schema_version"], 6)
         self.assertEqual(published["tasks"], recorded["tasks"])
         self.assertEqual(
             self.documents()["backlog.json"]["tasks"], values["backlog.json"]["tasks"]
@@ -745,12 +752,12 @@ class ForeignManifestBaselineTest(MigrationCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(readiness.workspace_uid, values["workspace.json"]["id"])
         self.assertFalse((self.root / ".workstack-journal.json").exists())
         published = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(published["workspace_id"], values["workspace.json"]["id"])
-        self.assertEqual(set(published["files"]), set(V5_DOCUMENT_NAMES))
+        self.assertEqual(set(published["files"]), set(V6_DOCUMENT_NAMES))
 
 
 class ArchiveImageBindingTest(MigrationCase):
@@ -832,19 +839,19 @@ class ArchiveImageBindingTest(MigrationCase):
         self.assertEqual(verified.store_schema_version, 3)
         self.assertEqual(verified.workspace_id, values["workspace.json"]["id"])
 
-    def test_a_v3_and_a_v5_archive_both_verify_from_their_own_path(self) -> None:
+    def test_a_v3_and_a_current_archive_both_verify_from_their_own_path(self) -> None:
         _, v3_packed = self.packed_v3()
         Store(self.root).initialize()
         workspace_uid = self.documents()["workspace.json"]["id"]
         v5_packed = store_report_migration.pack_backup_archive(
-            {name: (self.root / name).read_bytes() for name in V5_DOCUMENT_NAMES},
+            {name: (self.root / name).read_bytes() for name in V6_DOCUMENT_NAMES},
             workspace_id=workspace_uid,
             store_schema_version=STORE_SCHEMA_VERSION,
             created=dt.datetime(1980, 1, 1, tzinfo=dt.timezone.utc),
         )
         cases = (
             (3, v3_packed, len(V3_DOCUMENT_NAMES)),
-            (STORE_SCHEMA_VERSION, v5_packed, len(V5_DOCUMENT_NAMES)),
+            (STORE_SCHEMA_VERSION, v5_packed, len(V6_DOCUMENT_NAMES)),
         )
         for version, packed, count in cases:
             with self.subTest(version=version):
@@ -914,10 +921,10 @@ class InterruptionTest(MigrationCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertFalse((self.root / ".workstack-journal.json").exists())
         written = {item.name for item in self.root.iterdir() if item.suffix == ".json"}
-        self.assertEqual(written, set(V5_DOCUMENT_NAMES))
+        self.assertEqual(written, set(V6_DOCUMENT_NAMES))
 
     def test_a_crash_after_the_commit_but_before_the_manifest_reopens_as_five(
         self,
@@ -934,23 +941,23 @@ class InterruptionTest(MigrationCase):
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertFalse((self.root / ".workstack-journal.json").exists())
         written = {item.name for item in self.root.iterdir() if item.suffix == ".json"}
-        self.assertEqual(written, set(V5_DOCUMENT_NAMES))
+        self.assertEqual(written, set(V6_DOCUMENT_NAMES))
 
 
 class SettledStoreTest(MigrationCase):
-    def test_reopening_a_v5_store_migrates_nothing(self) -> None:
+    def test_reopening_a_current_store_migrates_nothing(self) -> None:
         Store(self.root).initialize()
-        before = {name: (self.root / name).read_bytes() for name in V5_DOCUMENT_NAMES}
+        before = {name: (self.root / name).read_bytes() for name in V6_DOCUMENT_NAMES}
 
         readiness = Store(self.root).initialize()
 
-        self.assertEqual(readiness.schema_version, 5)
+        self.assertEqual(readiness.schema_version, 6)
         self.assertEqual(readiness.migration_origin, "fresh")
         self.assertEqual(
-            {name: (self.root / name).read_bytes() for name in V5_DOCUMENT_NAMES},
+            {name: (self.root / name).read_bytes() for name in V6_DOCUMENT_NAMES},
             before,
         )
         self.assertEqual(self.backups(), [])
@@ -959,15 +966,15 @@ class SettledStoreTest(MigrationCase):
         Store(self.root).initialize()
         metadata_path = self.root / "store-meta.json"
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        metadata["store_schema_version"] = 6
+        metadata["store_schema_version"] = 7
         self._write(metadata_path, metadata)
-        before = {name: (self.root / name).read_bytes() for name in V5_DOCUMENT_NAMES}
+        before = {name: (self.root / name).read_bytes() for name in V6_DOCUMENT_NAMES}
 
         with self.assertRaisesRegex(StoreCorruptError, "newer than this Work Stack"):
             Store(self.root).initialize()
 
         self.assertEqual(
-            {name: (self.root / name).read_bytes() for name in V5_DOCUMENT_NAMES},
+            {name: (self.root / name).read_bytes() for name in V6_DOCUMENT_NAMES},
             before,
         )
         self.assertEqual(self.backups(), [])
@@ -1064,9 +1071,13 @@ class FrozenHistoricalSetsTest(unittest.TestCase):
         self.assertEqual(len(V2_DOCUMENT_NAMES), 9)
         self.assertEqual(len(V3_DOCUMENT_NAMES), 9)
         self.assertEqual(len(V5_DOCUMENT_NAMES), 10)
+        self.assertEqual(len(V6_DOCUMENT_NAMES), 11)
         self.assertNotIn(REPORTS_DOCUMENT_NAME, V3_DOCUMENT_NAMES)
         self.assertEqual(V5_DOCUMENT_NAMES - V3_DOCUMENT_NAMES, {REPORTS_DOCUMENT_NAME})
-        self.assertEqual(frozenset(DEFAULTS), V5_DOCUMENT_NAMES)
+        self.assertEqual(
+            V6_DOCUMENT_NAMES - V5_DOCUMENT_NAMES, {KNOWLEDGE_DOCUMENT_NAME}
+        )
+        self.assertEqual(frozenset(DEFAULTS), V6_DOCUMENT_NAMES)
 
 
 if __name__ == "__main__":

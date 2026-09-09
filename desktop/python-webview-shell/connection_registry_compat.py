@@ -141,6 +141,11 @@ def _legacy_draft(profile: ConnectionProfile) -> dict[str, object]:
             raw["remote_python"] = profile.remote_python
         else:
             raw["remote_python"] = LEGACY_MIRROR_REMOTE_PYTHON
+        if profile.knowledge_drivers_config is not None:
+            # Mirrored only when the profile carries one. There is no legacy
+            # default for this path: an absent registry stays absent in the
+            # mirror rather than being invented the way the interpreter is.
+            raw["knowledge_drivers_config"] = profile.knowledge_drivers_config
     return validate_connection_draft(raw)
 
 

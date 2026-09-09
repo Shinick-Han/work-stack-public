@@ -1,0 +1,6 @@
+{
+  "request_id": "cccccccc-cccc-4ccc-8ccc-ccccccccccc1",
+  "connection_id": "conn_opendocuments_pilot_1",
+  "query": "Override workspace",
+  "workspace_id": "other-open-documents-workspace"
+}

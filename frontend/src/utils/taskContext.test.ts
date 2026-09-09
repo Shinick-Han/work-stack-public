@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import type { ContextItem } from '../domain/types'
 import {
+  captureLinkRemovalTarget,
   contextPlainBody,
   contextTitle,
   contextUnknownFields,
@@ -104,5 +105,56 @@ describe('contextReadable parts', () => {
     expect(contextUnknownFields(item({
       source: { display_title: 'Mail subject', provider: 'microsoft-outlook' },
     })).some((field) => field.label.startsWith('source.'))).toBe(false)
+  })
+})
+
+describe('R22 explicit Capture link identity', () => {
+  const linked = (patch: Record<string, unknown> = {}) => item({
+    id: 'C-0001',
+    ref: { kind: 'capture', id: 'C-0001' },
+    revision: 3,
+    connections: [{ target: { kind: 'task', id: 'T-0001' }, reasons: ['capture-link'] }],
+    ...patch,
+  })
+
+  test('names the capture and the displayed revision for this Task own link', () => {
+    expect(captureLinkRemovalTarget(linked(), 'T-0001')).toEqual({ captureId: 'C-0001', revision: 3 })
+    expect(captureLinkRemovalTarget(linked({ revision: 0 }), 'T-0001')).toEqual({ captureId: 'C-0001', revision: 0 })
+  })
+
+  test('keeps the link removable when a conversion also connects the same Task', () => {
+    const both = linked({
+      connections: [{ target: { kind: 'task', id: 'T-0001' }, reasons: ['capture-link', 'capture-conversion'] }],
+    })
+    expect(captureLinkRemovalTarget(both, 'T-0001')).toEqual({ captureId: 'C-0001', revision: 3 })
+  })
+
+  test('refuses every card that is not this Task explicit Capture link', () => {
+    // Conversion only: an origin, not a reversible reference.
+    expect(captureLinkRemovalTarget(linked({
+      connections: [{ target: { kind: 'task', id: 'T-0001' }, reasons: ['capture-conversion'] }],
+    }), 'T-0001')).toBeNull()
+    // Another Task link, and an Objective connection.
+    expect(captureLinkRemovalTarget(linked(), 'T-0002')).toBeNull()
+    expect(captureLinkRemovalTarget(linked({
+      connections: [{ target: { kind: 'objective', id: 'O-1' }, reasons: ['capture-link'] }],
+    }), 'T-0001')).toBeNull()
+    // A note card, whatever its reasons.
+    expect(captureLinkRemovalTarget(item({
+      id: 'N-1',
+      ref: { kind: 'note', id: 'N-1' },
+      revision: 3,
+      connections: [{ target: { kind: 'task', id: 'T-0001' }, reasons: ['note-link'] }],
+    }), 'T-0001')).toBeNull()
+    // Legacy unknown identity: no ref, no connections, so no action.
+    expect(captureLinkRemovalTarget(item({ id: 'C-0009', revision: 3 }), 'T-0001')).toBeNull()
+    expect(captureLinkRemovalTarget(linked({ connections: undefined }), 'T-0001')).toBeNull()
+  })
+
+  test('refuses a card with no usable displayed revision', () => {
+    for (const revision of [undefined, null, '3', 1.5, -1, true, Number.NaN, Number.MAX_SAFE_INTEGER + 2]) {
+      expect(captureLinkRemovalTarget(linked({ revision }), 'T-0001')).toBeNull()
+    }
+    expect(captureLinkRemovalTarget(linked(), '')).toBeNull()
   })
 })

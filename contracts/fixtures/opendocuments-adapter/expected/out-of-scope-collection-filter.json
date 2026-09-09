@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "code": "collection_filter_unsupported",
+    "message": "POST /api/v1/chat has no collection filter; one OpenDocuments workspace is one corpus"
+  }
+}

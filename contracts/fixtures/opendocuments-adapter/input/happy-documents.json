@@ -1,0 +1,22 @@
+{
+  "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1": {
+    "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+    "title": "Pilot handbook",
+    "source_type": "@opendocuments/connector-notion",
+    "source_path": "notion://11111111-2222-4333-8444-555555555555",
+    "status": "indexed",
+    "chunk_count": 4,
+    "content_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "source_version": "2026-09-01T00:00:00.000Z"
+  },
+  "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff": {
+    "id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+    "title": "sample-handbook.md",
+    "source_type": "local",
+    "source_path": "Z:\\PilotShare\\sample-handbook.md",
+    "status": "indexed",
+    "chunk_count": 8,
+    "content_hash": null,
+    "source_version": null
+  }
+}

@@ -15,6 +15,7 @@ from .capture import CaptureValidationError
 from .mutation_service import MutationReceiptError
 from .service import (
     CheckpointTransitionConflictError,
+    CaptureUnlinkUndoConflictError,
     DomainError,
     IdempotencyConflictError,
     NotFoundError,
@@ -41,6 +42,7 @@ _CONFLICT_ERRORS = (
     RevisionConflictError,
     IdempotencyConflictError,
     ReplyReceiptConflictError,
+    CaptureUnlinkUndoConflictError,
     SnapshotExportConflictError,
     StaleCaptureError,
     SourceRevisionConflictError,

@@ -14,13 +14,22 @@ from __future__ import annotations
 import secrets
 import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Mapping
 from urllib.parse import urlparse
 
 from .service import WorkStack
 from .mutation_service import MutationNoticeHttpMixin
 from .report_documents_http import ReportDocumentsHttpMixin
 from .reporting_http import DailyReportPreviewHttpMixin; from .weekly_reporting_http import WeeklyReportPreviewHttpMixin
+from .capture_observation_http import CaptureObservationHttpMixin
 from .cli_read_http import CLI_GET_ROUTES, CliReadHttpMixin
+from .knowledge_attempt_guard import KnowledgeAttemptGuard
+from .knowledge_captures_http import KnowledgeCapturesHttpMixin
+from .knowledge_execution_http import KnowledgeExecutionHttpMixin
+from .knowledge_execution_runtime import KnowledgeDriverBinding, admit_drivers
+from .knowledge_requests_http import KnowledgeRequestsHttpMixin
+from .knowledge_verification_guard import KnowledgeVerificationGuard
+from .knowledge_verification_http import KnowledgeVerificationHttpMixin
 # Route declarations live in .http_route_types; they stay importable from this
 # module for the consumers and tests that already read them from here.
 from .http_route_types import GetRoute, IDEMPOTENT_POST_ROUTES, PostRoute, V1_GET_ROUTES, V1_POST_ROUTES, _get_route, _post_route
@@ -54,6 +63,7 @@ class WorkStackHTTPServer(ThreadingHTTPServer):
         stack: WorkStack,
         *,
         public_port: int | None = None,
+        knowledge_drivers: Mapping[str, KnowledgeDriverBinding] | None = None,
     ) -> None:
         host, port = address
         if host not in LOOPBACK_HOSTS:
@@ -66,6 +76,21 @@ class WorkStackHTTPServer(ThreadingHTTPServer):
             or not 1 <= public_port <= 65_535
         ):
             raise ValueError("public_port must be an integer from 1 to 65535")
+        # The operator's trusted execution configuration, copied and admitted
+        # here -- before the store lease is taken and before the socket exists
+        # -- so an invalid binding refuses to start a server rather than
+        # becoming a refusal some later request discovers. The default is the
+        # empty registry, which is the explicit "no driver configured" state.
+        self.knowledge_drivers = admit_drivers(knowledge_drivers)
+        # One attempt guard per owner incarnation. Instances share nothing, so
+        # a request this server did not itself issue -- including every request
+        # issued before a restart -- is ineligible for automatic execution.
+        self.knowledge_attempt_guard = KnowledgeAttemptGuard()
+        # One verification gate per owner incarnation, separate from the
+        # attempt guard above: a search attempt is spent once and never given
+        # back, while a source check is a read-only observation the user may
+        # repeat, so the two share no registry, bound or vocabulary.
+        self.knowledge_verification_guard = KnowledgeVerificationGuard()
         self.stack = stack
         self.csrf_token = secrets.token_urlsafe(32)
         self.capture_token = secrets.token_urlsafe(48)
@@ -115,6 +140,14 @@ class WorkStackHTTPServer(ThreadingHTTPServer):
 
 class Handler(
     CliReadHttpMixin,
+    KnowledgeCapturesHttpMixin,
+    KnowledgeExecutionHttpMixin,
+    # Listed before the released verification mixin it extends: the saved
+    # source-observation routes take the same single verification gate through
+    # the same accessor, and override nothing on the released verify route.
+    CaptureObservationHttpMixin,
+    KnowledgeVerificationHttpMixin,
+    KnowledgeRequestsHttpMixin,
     DailyReportPreviewHttpMixin,
     WeeklyReportPreviewHttpMixin,
     ReportDocumentsHttpMixin,
@@ -200,8 +233,14 @@ def create_server(
     port: int = 8765,
     *,
     public_port: int | None = None,
+    knowledge_drivers: Mapping[str, KnowledgeDriverBinding] | None = None,
 ) -> WorkStackHTTPServer:
-    return WorkStackHTTPServer((host, port), stack, public_port=public_port)
+    return WorkStackHTTPServer(
+        (host, port),
+        stack,
+        public_port=public_port,
+        knowledge_drivers=knowledge_drivers,
+    )
 
 
 def serve(
@@ -210,8 +249,11 @@ def serve(
     port: int = 8765,
     *,
     public_port: int | None = None,
+    knowledge_drivers: Mapping[str, KnowledgeDriverBinding] | None = None,
 ) -> None:
-    server = create_server(stack, host, port, public_port=public_port)
+    server = create_server(
+        stack, host, port, public_port=public_port, knowledge_drivers=knowledge_drivers
+    )
     print("work-stack web: http://{}:{}/".format(host, server.actual_port))
     try:
         server.serve_forever()
@@ -231,6 +273,7 @@ __all__ = (
     "GetRoute",
     "Handler",
     "IDEMPOTENT_POST_ROUTES",
+    "KnowledgeDriverBinding",
     "LEGACY_WEB_ROOT",
     "LOOPBACK_HOSTS",
     "PROJECT_ROOT",

@@ -1,0 +1,42 @@
+{
+  "request": {
+    "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+    "connection_id": "conn_opendocuments_pilot_1",
+    "query": "What changed in the handbook?"
+  },
+  "chat": {
+    "queryId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+    "answer": "The index does not expose a source version on chat hits.",
+    "sources": [
+      {
+        "chunkId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1_chunk_1",
+        "content": "Section 2 still describes the release checklist.",
+        "score": 0.7,
+        "documentId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+        "chunkType": "semantic",
+        "headingHierarchy": ["Handbook", "Release"],
+        "sourcePath": "notion://11111111-2222-4333-8444-555555555555",
+        "sourceType": "@opendocuments/connector-notion"
+      }
+    ],
+    "confidence": {
+      "score": 0.55,
+      "level": "medium",
+      "reason": "Partial match found"
+    },
+    "route": "rag",
+    "profile": "balanced"
+  },
+  "documents": {
+    "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1": {
+      "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+      "title": "Pilot handbook",
+      "source_type": "@opendocuments/connector-notion",
+      "source_path": "notion://11111111-2222-4333-8444-555555555555",
+      "status": "indexed",
+      "chunk_count": 4,
+      "content_hash": null,
+      "source_version": null
+    }
+  }
+}

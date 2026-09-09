@@ -116,6 +116,7 @@ from .store_recovery import (
     _recovery_writes,
     _validate_recovery_write,
 )
+from .store_capture_observations import StoreCaptureObservationMixin
 from .store_schema_upgrade import StoreSchemaUpgradeMixin
 from .store_sync import StoreSyncMixin
 
@@ -125,6 +126,7 @@ class Store(
     StoreRebindMixin,
     StoreRecoveryMixin,
     StoreSchemaUpgradeMixin,
+    StoreCaptureObservationMixin,
 ):
     """The single writer: its lease, its transaction and its atomic writes.
 
@@ -621,7 +623,7 @@ class Store(
             )
             for name in DEFAULTS
         }
-        self.save_many(fresh, operation_id="store-initialize-v5")
+        self.save_many(fresh, operation_id="store-initialize-v6")
         return self._validate_ready_state_locked()
 
     def initialize(self) -> StoreReadiness:
@@ -629,7 +631,7 @@ class Store(
             self._recover_locked()
             existing = {
                 name
-                for name in store_rosters.V5_DOCUMENT_NAMES
+                for name in store_rosters.V6_DOCUMENT_NAMES
                 if self.path(name).exists()
             }
             if not existing:

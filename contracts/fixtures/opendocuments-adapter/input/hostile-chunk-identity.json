@@ -1,0 +1,82 @@
+{
+  "request": {
+    "request_id": "f1f1f1f1-f1f1-4f1f-8f1f-f1f1f1f1f1f1",
+    "connection_id": "conn_opendocuments_pilot_1",
+    "query": "Which chunks are addressable?"
+  },
+  "chat": {
+    "queryId": "f2f2f2f2-f2f2-4f2f-8f2f-f2f2f2f2f2f2",
+    "answer": "Some hits have no chunk id.",
+    "sources": [
+      {
+        "content": "No chunkId at all, but a rich heading hierarchy.",
+        "score": 0.95,
+        "documentId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+        "chunkType": "semantic",
+        "headingHierarchy": [
+          "Handbook",
+          "Release",
+          "Checklist"
+        ],
+        "sourcePath": "notion://11111111-2222-4333-8444-555555555555",
+        "sourceType": "@opendocuments/connector-notion"
+      },
+      {
+        "chunkId": "chunk_5",
+        "content": "Malformed chunk id.",
+        "score": 0.7,
+        "documentId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+        "chunkType": "semantic",
+        "headingHierarchy": [
+          "Handbook"
+        ],
+        "sourcePath": "notion://11111111-2222-4333-8444-555555555555",
+        "sourceType": "@opendocuments/connector-notion"
+      },
+      {
+        "chunkId": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff_chunk_2",
+        "content": "Chunk id belongs to a different indexed document.",
+        "score": 0.6,
+        "documentId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+        "chunkType": "semantic",
+        "headingHierarchy": [
+          "Handbook"
+        ],
+        "sourcePath": "notion://11111111-2222-4333-8444-555555555555",
+        "sourceType": "@opendocuments/connector-notion"
+      },
+      {
+        "chunkId": 12345,
+        "content": "Chunk id is not a string.",
+        "score": 0.5,
+        "documentId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+        "chunkType": "semantic",
+        "headingHierarchy": [
+          "Handbook"
+        ],
+        "sourcePath": "notion://11111111-2222-4333-8444-555555555555",
+        "sourceType": "@opendocuments/connector-notion"
+      },
+      {
+        "chunkId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1_chunk_7",
+        "content": "A well-formed hit that keeps its heading path as non-addressable metadata.",
+        "score": 0.4,
+        "documentId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+        "chunkType": "semantic",
+        "headingHierarchy": [
+          "Handbook",
+          "Release"
+        ],
+        "sourcePath": "notion://11111111-2222-4333-8444-555555555555",
+        "sourceType": "@opendocuments/connector-notion"
+      }
+    ],
+    "confidence": {
+      "score": 0.4,
+      "level": "low",
+      "reason": "Weak match"
+    },
+    "route": "rag",
+    "profile": "balanced"
+  }
+}

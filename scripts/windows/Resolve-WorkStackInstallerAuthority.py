@@ -1,4 +1,4 @@
-"""Bounded, read-only local v3/v5 collection authority selection for the bundled installer."""
+"""Bounded, read-only local v3/v5/v6 collection authority selection for the bundled installer."""
 from __future__ import annotations
 
 import argparse
@@ -27,7 +27,7 @@ from workstack.store import (  # noqa: E402
 )
 
 MANIFEST_READ_LIMIT = 4 * 1024 * 1024
-COLLECTION_FORMATS = frozenset({"v3", "v5"})
+COLLECTION_FORMATS = frozenset({"v3", "v5", "v6"})
 
 
 class AuthorityError(RuntimeError):

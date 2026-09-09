@@ -1,0 +1,212 @@
+/* Scoped to the knowledge request editor. Colours, control sizes and the reading scale
+   come from the shared tokens; the literal fallbacks keep this file correct on its own
+   if a token is not yet defined. Nothing here restyles the dialog chrome or the shared
+   form primitives it sits inside. */
+
+.knowledge-request { display: grid; gap: 12px; min-width: 0; }
+
+.knowledge-request__scope {
+  background: var(--ws-surface-sunken);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+.knowledge-request__scope dl {
+  display: grid;
+  gap: 8px 14px;
+  /* One column on a narrow drawer, two once there is room for both facts. */
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  margin: 0;
+  min-width: 0;
+}
+.knowledge-request__scope dl > div { display: grid; gap: 2px; min-width: 0; }
+
+.knowledge-request__scope dt,
+.knowledge-request__review dt,
+.knowledge-request__receipt dt {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.knowledge-request__scope dd,
+.knowledge-request__review dd,
+.knowledge-request__receipt dd {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.5;
+  margin: 0;
+  min-width: 0;
+  /* Identifiers, long questions and long corpus labels all wrap rather than widen the
+     dialog. Nothing in this component may cause a horizontal scroll. */
+  overflow-wrap: anywhere;
+}
+.knowledge-request__scope dd,
+.knowledge-request__receipt dd { font-variant-numeric: tabular-nums; }
+.knowledge-request__scope dd small,
+.knowledge-request__review dd small {
+  color: var(--ws-text-muted);
+  display: block;
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.5;
+  margin-top: 2px;
+}
+.knowledge-request__scope dd em,
+.knowledge-request__review dd em { color: var(--ws-text-muted); font-style: normal; }
+
+.knowledge-request__scope > p,
+.knowledge-request__review > p,
+.knowledge-request__footnote {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-label, 11px);
+  line-height: 1.55;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-request__corpora {
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  padding: 10px 12px 12px;
+}
+.knowledge-request__corpora legend {
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-control-label, 11px);
+  font-weight: 600;
+  padding: 0 4px;
+}
+.knowledge-request__corpora legend small {
+  color: var(--ws-text-disabled);
+  font-weight: 400;
+  margin-left: 4px;
+}
+.knowledge-request__corpora ul {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+.knowledge-request__corpora label {
+  align-items: start;
+  border-radius: 8px;
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto 1fr;
+  min-height: var(--ws-control-min-height, 34px);
+  min-width: 0;
+  padding: 6px 8px;
+}
+.knowledge-request__corpora label:hover { background: var(--ws-surface-hover); }
+.knowledge-request__corpora input { margin-top: 3px; }
+.knowledge-request__corpora input:focus-visible {
+  box-shadow: 0 0 0 3px var(--ws-focus-ring);
+  outline: 0;
+}
+.knowledge-request__corpora strong {
+  color: var(--ws-text-primary);
+  display: block;
+  font-size: var(--ws-type-reading-body, 13px);
+  font-weight: 600;
+  line-height: 1.4;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.knowledge-request__corpora small {
+  color: var(--ws-text-muted);
+  display: block;
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.5;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* A selection the workspace no longer holds stays visible and clearable rather than
+   disappearing, so the refusal it causes has something the reader can act on. */
+.knowledge-request__corpus--withdrawn label {
+  background: var(--ws-status-warning-surface);
+  border: 1px solid var(--ws-status-warning-border);
+}
+.knowledge-request__corpus--withdrawn small { color: var(--ws-status-warning-text); }
+
+.knowledge-request__empty {
+  border: 1px dashed var(--ws-border-default);
+  border-radius: 10px;
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.55;
+  margin: 0;
+  padding: 12px;
+}
+
+.knowledge-request__limit input { max-width: 8rem; }
+
+.knowledge-request__review,
+.knowledge-request__receipt {
+  border: 1px solid var(--ws-border-default);
+  border-radius: 10px;
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px 12px;
+}
+.knowledge-request__review { background: var(--ws-surface-soft); }
+.knowledge-request__receipt { background: var(--ws-surface-raised); margin-top: 12px; }
+.knowledge-request__review h3,
+.knowledge-request__receipt h3 {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-panel-heading, 13px);
+  margin: 0;
+  min-width: 0;
+}
+.knowledge-request__review dl,
+.knowledge-request__receipt dl {
+  display: grid;
+  gap: 8px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  margin: 0;
+  min-width: 0;
+}
+.knowledge-request__review dl > div,
+.knowledge-request__receipt dl > div { display: grid; gap: 2px; min-width: 0; }
+
+.knowledge-request__receipt-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.knowledge-request__receipt-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.knowledge-request__receipt-actions .button { min-height: var(--ws-control-min-height, 34px); }
+.knowledge-request__copied {
+  color: var(--ws-status-success-text);
+  font-size: var(--ws-type-reading-meta, 12px);
+}
+
+.knowledge-request__pending {
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-reading-meta, 12px);
+  margin: 0;
+}
+
+/* The shared error block is laid out for a dialog footer; inside these sections it sits
+   in the content flow instead. */
+.knowledge-request .inline-error,
+.knowledge-request__receipt .inline-error { margin: 0; }

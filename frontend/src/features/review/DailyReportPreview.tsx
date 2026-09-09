@@ -2,10 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { Button, ErrorState, LoadingBlock } from '../../components/Primitives'
-import type { DailyReportPreviewDocument, DailyReportPreviewResponse } from '../../domain/reporting'
+import type {
+  DailyReportContextCatalog,
+  DailyReportPreviewDocument,
+  DailyReportPreviewResponse,
+} from '../../domain/reporting'
 import type { ReviewProjection, WorkspaceProjection } from '../../domain/types'
 import { formatDate, formatDateTime, getErrorMessage } from '../../utils/format'
 import { copyTextToClipboard } from '../../utils/clipboard'
+import { DailyReportContextPanel } from './DailyReportContextPanel'
 import { DailyReportDocument } from './DailyReportDocument'
 import { DailyReportDraftEditor } from './DailyReportDraftEditor'
 import type {
@@ -26,6 +31,8 @@ interface OwnedPreview {
   owner: string
   preview: DailyReportPreviewDocument
   sourceDigest: string
+  /** Absent from a pre-R44 server; never carried across an owner change. */
+  contextCatalog: DailyReportContextCatalog | undefined
 }
 
 function ownerBoundFlags(
@@ -146,6 +153,7 @@ function generateButtonLabel(pending: boolean, failed: boolean) {
 
 function DailyReportResult({
   actionError,
+  contextCatalog,
   copyState,
   onCopy,
   onDownload,
@@ -153,6 +161,7 @@ function DailyReportResult({
   preview,
 }: {
   actionError: string | null
+  contextCatalog: DailyReportContextCatalog | undefined
   copyState: 'idle' | 'copied'
   onCopy: () => void
   onDownload: () => void
@@ -180,6 +189,7 @@ function DailyReportResult({
       {actionError ? (
         <p className="daily-report-preview__status" data-tone="error" role="alert">{actionError}</p>
       ) : null}
+      {contextCatalog ? <DailyReportContextPanel catalog={contextCatalog} /> : null}
     </>
   )
 }
@@ -287,6 +297,7 @@ function useDraftEditorSession(
 
 function DailyReportPreviewPanel({
   actionError,
+  contextCatalog,
   copyState,
   currentFailed,
   currentPending,
@@ -300,6 +311,7 @@ function DailyReportPreviewPanel({
   setCopyState,
 }: {
   actionError: string | null
+  contextCatalog: DailyReportContextCatalog | undefined
   copyState: 'idle' | 'copied'
   currentFailed: boolean
   currentPending: boolean
@@ -330,6 +342,7 @@ function DailyReportPreviewPanel({
       {owned ? (
         <DailyReportResult
           actionError={actionError}
+          contextCatalog={contextCatalog}
           copyState={copyState}
           onCopy={() => void copyOwnedMarkdown(owned, resultOwner, currentOwner, setActionError, setCopyState)}
           onDownload={() => saveOwnedMarkdown(owned, resultOwner, currentOwner(), setActionError)}
@@ -371,6 +384,7 @@ export function DailyReportPreview({
         owner: frozenOwner,
         preview: payload.preview,
         sourceDigest: payload.source_digest,
+        contextCatalog: payload.context_catalog,
       })
       setActionError(null)
       setCopyState('idle')
@@ -414,6 +428,7 @@ export function DailyReportPreview({
       {sourceAvailable ? (
         <DailyReportPreviewPanel
           actionError={actionError}
+          contextCatalog={owned ? result?.contextCatalog : undefined}
           copyState={copyState}
           currentFailed={currentFailed}
           currentPending={currentPending}

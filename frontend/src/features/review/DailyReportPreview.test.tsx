@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, test, vi } from 'vitest'
 import { DailyReportPreview } from './DailyReportPreview'
@@ -545,4 +545,190 @@ test('source invalidation leaves an open editor pinned and close still works', a
 
   await userEvent.click(screen.getByRole('button', { name: 'Close draft' }))
   expect(screen.queryByRole('dialog', { name: 'Local draft editor' })).toBeNull()
+})
+
+const CATALOG_TASKS = ['T-0001', 'T-0002']
+
+function withCatalog(
+  catalog: Record<string, unknown> | undefined,
+  date: string = DATE,
+) {
+  const base = previewResponse()
+  const response: Record<string, unknown> = {
+    ...base,
+    preview: {
+      ...base.preview,
+      period: { kind: 'day', date },
+      absence: null,
+      provenance: { ...base.preview.provenance, date, task_ids: CATALOG_TASKS },
+    },
+  }
+  if (catalog) response.context_catalog = catalog
+  return response
+}
+
+function readyCatalog(overrides: Record<string, unknown> = {}) {
+  return {
+    captured_at: '2026-09-06T01:02:03Z',
+    items: [{
+      capture_id: 'C-0001',
+      capture_revision: 1,
+      title: 'Synthetic context',
+      linked_task_ids: ['T-0001'],
+      status: 'linked',
+    }],
+    omitted_count: 0,
+    ...overrides,
+  }
+}
+
+function previewFetch(body: unknown) {
+  return vi.fn((input: RequestInfo | URL) => {
+    if (String(input).startsWith('/api/v1/reports/daily-preview?')) return jsonResponse({ data: body })
+    throw new Error(`Unexpected request: ${String(input)}`)
+  })
+}
+
+/** jsdom's Blob has no .text(); FileReader is the supported reader here. */
+function blobText(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsText(blob)
+  })
+}
+
+function contextPanel() {
+  return screen.queryByRole('region', { name: 'Related task context' })
+}
+
+test('shows the related context panel beside an admitted preview and asks for nothing more', async () => {
+  const fetchMock = previewFetch(withCatalog(readyCatalog()))
+  renderPreview(fetchMock)
+  await userEvent.click(screen.getByRole('button', { name: 'Generate report' }))
+  const panel = await screen.findByRole('region', { name: 'Related task context' })
+  expect(within(panel).getByText('C-0001')).toBeVisible()
+  expect(within(panel).getByText('Synthetic context')).toBeVisible()
+  expect(within(panel).getByText('linked')).toBeVisible()
+  expect(within(panel).getByText('Linked tasks: T-0001')).toBeVisible()
+  expect(within(panel).queryAllByRole('button')).toHaveLength(0)
+  expect(within(panel).queryAllByRole('link')).toHaveLength(0)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+test('hides the panel entirely when a pre-R44 server omits the catalogue', async () => {
+  const fetchMock = previewFetch(withCatalog(undefined))
+  renderPreview(fetchMock)
+  await userEvent.click(screen.getByRole('button', { name: 'Generate report' }))
+  expect(await screen.findByRole('heading', { level: 1, name: 'Daily review 2026-08-30' })).toBeVisible()
+  expect(contextPanel()).toBeNull()
+})
+
+test('states an empty catalogue plainly', async () => {
+  const fetchMock = previewFetch(withCatalog(readyCatalog({ items: [] })))
+  renderPreview(fetchMock)
+  await userEvent.click(screen.getByRole('button', { name: 'Generate report' }))
+  expect(await screen.findByText('No context is linked to these tasks.')).toBeVisible()
+  expect(screen.getByRole('heading', { level: 1, name: 'Daily review 2026-08-30' })).toBeVisible()
+})
+
+test('keeps a truncated catalogue visible without making the report unavailable', async () => {
+  const full = Array.from({ length: 32 }, (unused, index) => ({
+    capture_id: `C-${String(index + 1).padStart(4, '0')}`,
+    capture_revision: 0,
+    title: `Context ${index + 1}`,
+    linked_task_ids: ['T-0002'],
+    status: 'linked',
+  }))
+  const fetchMock = previewFetch(withCatalog(readyCatalog({ items: full, omitted_count: 4 })))
+  renderPreview(fetchMock)
+  await userEvent.click(screen.getByRole('button', { name: 'Generate report' }))
+  expect(await screen.findByText(
+    '4 more linked captures are not shown here. Review Task context for the full list.',
+  )).toBeVisible()
+  expect(screen.getByRole('heading', { level: 1, name: 'Daily review 2026-08-30' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Copy Markdown' })).toBeVisible()
+})
+
+test('refuses a malformed catalogue instead of showing a laundered panel', async () => {
+  const fetchMock = previewFetch(withCatalog(readyCatalog({
+    items: [{
+      capture_id: 'C-0001',
+      capture_revision: 1,
+      title: 'Synthetic context',
+      linked_task_ids: ['T-0001'],
+      status: 'linked',
+      source_url: 'https://example.invalid/doc',
+    }],
+  })))
+  renderPreview(fetchMock)
+  await userEvent.click(screen.getByRole('button', { name: 'Generate report' }))
+  expect(await screen.findByRole('alert')).toBeVisible()
+  expect(contextPanel()).toBeNull()
+  expect(screen.queryByRole('heading', { level: 1, name: 'Daily review 2026-08-30' })).toBeNull()
+  expect(screen.queryByText('https://example.invalid/doc')).toBeNull()
+})
+
+test('never keeps the previous day catalogue after the preview is invalidated', async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (!url.startsWith('/api/v1/reports/daily-preview?')) {
+      throw new Error(`Unexpected request: ${url}`)
+    }
+    const yesterday = url.includes('date=2026-08-29')
+    return jsonResponse({
+      data: yesterday
+        ? withCatalog(readyCatalog({ items: [{
+          capture_id: 'C-0002',
+          capture_revision: 2,
+          title: 'Yesterday context',
+          linked_task_ids: ['T-0002'],
+          status: 'dismissed',
+        }] }), '2026-08-29')
+        : withCatalog(readyCatalog()),
+    })
+  })
+  const { queryClient, view } = renderPreview(fetchMock, { sourceUpdatedAt: 10 })
+  await userEvent.click(screen.getByRole('button', { name: 'Generate report' }))
+  expect(await screen.findByText('Synthetic context')).toBeVisible()
+
+  view.rerender(
+    <QueryClientProvider client={queryClient}>
+      <DailyReportPreview date="2026-08-29" sourceUpdatedAt={10} workspaceId={UID} />
+    </QueryClientProvider>,
+  )
+  expect(contextPanel()).toBeNull()
+  expect(screen.queryByText('Synthetic context')).toBeNull()
+
+  await userEvent.click(screen.getByRole('button', { name: 'Generate report' }))
+  expect(await screen.findByText('Yesterday context')).toBeVisible()
+  expect(screen.getByText('dismissed')).toBeVisible()
+  expect(screen.queryByText('Synthetic context')).toBeNull()
+})
+
+test('copy and download still carry exactly the preview markdown when a catalogue is present', async () => {
+  const fetchMock = previewFetch(withCatalog(readyCatalog()))
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  let filename = ''
+  const blobs: Blob[] = []
+  const createObjectURL = vi.fn((blob: Blob) => {
+    blobs.push(blob)
+    return 'blob:daily'
+  })
+  vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() })
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+    filename = this.download
+  })
+  renderPreview(fetchMock)
+  await userEvent.click(screen.getByRole('button', { name: 'Generate report' }))
+  await screen.findByText('Synthetic context')
+
+  await userEvent.click(screen.getByRole('button', { name: 'Copy Markdown' }))
+  expect(writeText).toHaveBeenCalledWith(MARKDOWN)
+
+  await userEvent.click(screen.getByRole('button', { name: 'Download .md' }))
+  expect(await blobText(blobs[0])).toBe(MARKDOWN)
+  expect(filename).toBe('workstack-daily-2026-08-30.md')
 })

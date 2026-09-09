@@ -1,8 +1,10 @@
-"""Owner-route transport for the six parity CLI reads.
+"""Owner-route transport for admitted CLI reads.
 
 One bounded owner advertisement, the existing session/storage/sync preflight,
 then one GET. A failure never falls back to a local Store or JSON read. The
-success payload is the exact domain object the exclusive-local CLI would emit.
+success payload is the WorkStack domain object the exclusive-local command
+reads; worklog.latest-checkpoint then renders that audit through the same
+emitter as the local path.
 """
 
 from __future__ import annotations
@@ -30,11 +32,16 @@ CoordinatesReader = Callable[..., "tuple[str, int] | None"]
 
 _UNAVAILABLE = "the running Work Stack server could not be read"
 _REFUSED = "the running Work Stack server refused the read (HTTP {})"
+_CHECKPOINT_AUDIT_REFUSED = (
+    "the running Work Stack server refused the checkpoint audit"
+)
 _CHANGED = "Work Stack server runtime metadata changed before the read was sent"
 _MISMATCH = "the running Work Stack server owns a different workspace identity"
 _NOT_IN_SYNC = (
     "the running Work Stack store is not in-sync; resolve synchronization first"
 )
+_LATEST_CHECKPOINT_KEY = "worklog.latest-checkpoint"
+_CHECKPOINT_AUDIT_PATH = "/api/v1/review/checkpoints"
 
 
 def _project_read(payload: Mapping[str, object]) -> object:
@@ -83,6 +90,8 @@ def read_path(command_key: str, arguments: object, workspace_uid: str) -> str:
         return "/api/v1/cli/worklog?" + _query(
             workspace_uid, date=getattr(arguments, "date")
         )
+    if command_key == _LATEST_CHECKPOINT_KEY:
+        return _CHECKPOINT_AUDIT_PATH
     if command_key == "weekly":
         return "/api/v1/cli/weekly?" + _query(
             workspace_uid,
@@ -92,7 +101,11 @@ def read_path(command_key: str, arguments: object, workspace_uid: str) -> str:
     raise cli_reads.owner_read_refusal()
 
 
-def _raise_http_error(status: int, payload: Mapping[str, object]) -> None:
+def _raise_http_error(
+    status: int, payload: Mapping[str, object], *, command_key: str = ""
+) -> None:
+    if command_key == _LATEST_CHECKPOINT_KEY:
+        raise WriterTransportError(_CHECKPOINT_AUDIT_REFUSED)
     error = payload.get("error") if isinstance(payload, Mapping) else None
     if not isinstance(error, dict):
         raise WriterTransportError(_REFUSED.format(status))
@@ -146,5 +159,5 @@ def forward_read(
         raise WriterTransportError(_UNAVAILABLE) from error
     if status == 200:
         return _project_read(payload)
-    _raise_http_error(status, payload)
+    _raise_http_error(status, payload, command_key=command_key)
     raise WriterTransportError(_UNAVAILABLE)

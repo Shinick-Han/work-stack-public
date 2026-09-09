@@ -10,6 +10,7 @@ from workstack.agent_cli_contract import (
     StatusRequest,
     StoreFactory,
 )
+from workstack.agent_context_pack import needs_planning_material
 from workstack.service import WorkStack
 from workstack.store import Store
 
@@ -19,8 +20,7 @@ __all__ = ["create_local_backend"]
 
 _SYNC_STATES = frozenset({"external-change-detected", "in-sync", "invalid"})
 _SYNC_REQUIRED_REASON = "store_sync_required"
-_PLANNING_VIEW = "planning-v1"
-_COLLECTION_FORMATS = {3: "v3", 5: "v5"}
+_COLLECTION_FORMATS = {3: "v3", 5: "v5", 6: "v6"}
 
 
 class _LocalBackend:
@@ -161,7 +161,7 @@ class _LocalBackend:
                 "transport": "exclusive-local",
                 "workspace_uid": actual_uid,
             }
-            if request.view == _PLANNING_VIEW:
+            if needs_planning_material(request.view):
                 result["planning"] = self._planning_material(request.task_id)
             return result
 

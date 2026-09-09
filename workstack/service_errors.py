@@ -78,6 +78,20 @@ class ReplyReceiptConflictError(DomainError):
     code = "reply_receipt_conflict"
 
 
+class CaptureUnlinkUndoConflictError(DomainError):
+    code = "capture_unlink_undo_conflict"
+
+    def __init__(
+        self,
+        message: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message or "capture unlink undo conflicts with the recorded post-image",
+            details,
+        )
+
+
 class SnapshotDisclosureRequiredError(DomainError):
     code = "snapshot_disclosure_required"
 
@@ -105,10 +119,12 @@ _CAPTURE_REPLY_ERROR_TYPES: dict[str, type[DomainError]] = {
     "reply_not_found": NotFoundError,
     "not_found": NotFoundError,
     "revision_conflict": RevisionConflictError,
+    "revision_exhausted": RevisionExhaustedError,
     "idempotency_conflict": IdempotencyConflictError,
     "stale_capture": StaleCaptureError,
     "source_revision_conflict": SourceRevisionConflictError,
     "reply_receipt_conflict": ReplyReceiptConflictError,
+    "capture_unlink_undo_conflict": CaptureUnlinkUndoConflictError,
 }
 
 _OPTIONAL_COMMAND_ERROR_TYPES: dict[str, type[DomainError]] = {

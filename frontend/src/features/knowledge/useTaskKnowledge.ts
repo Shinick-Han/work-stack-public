@@ -30,17 +30,30 @@ export function useTaskKnowledge(workspaceUid: string, task: KnowledgeTaskRef) {
   const [state, setState] = useState(initialKnowledgeState)
   const flight = useKnowledgeFlight(setState)
   const taskKey = `${workspaceUid}:${task.uid}:${task.id}`
+  const bindingKey = `${taskKey}:${task.revision}`
   const previousTaskKey = useRef('')
+  const previousBindingKey = useRef('')
 
   useEffect(() => {
     const switchedTask = previousTaskKey.current !== taskKey
+    const switchedBinding = previousBindingKey.current !== bindingKey
     previousTaskKey.current = taskKey
+    previousBindingKey.current = bindingKey
+    const binding = currentKnowledgeBinding(workspaceUid, task)
     const { signal, token } = flight.begin('load')
     const available = knowledgeHostAvailable()
     setState((current) => ({
       ...(switchedTask
         ? { ...current, ...emptyKnowledgeForm(), references: [], searchQuery: task.title }
-        : { ...current, search: null }),
+        : {
+          ...current,
+          // A revision-only change is still a new Task snapshot: evidence read under the
+          // previous revision must not survive to authorize a pin on the new one.
+          opened: switchedBinding ? null : current.opened,
+          preview: switchedBinding ? null : current.preview,
+          search: null,
+        }),
+      binding,
       error: null,
       errorAction: null,
       errorCode: null,
@@ -54,7 +67,7 @@ export function useTaskKnowledge(workspaceUid: string, task: KnowledgeTaskRef) {
       setState((current) => applyCatalog(current, vaults, references))
     })
     return () => { flight.abortRef.current?.abort() }
-  }, [task.id, task.revision, task.uid, taskKey, workspaceUid])
+  }, [bindingKey, task.id, task.revision, task.uid, taskKey, workspaceUid])
 
   const vault = useKnowledgeVaultActions(
     flight,

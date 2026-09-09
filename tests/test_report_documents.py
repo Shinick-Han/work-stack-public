@@ -1666,11 +1666,16 @@ class ProductBoundaryTest(ReportCase):
 
     def test_current_store_has_reports_and_preserves_the_historical_roster(self) -> None:
         from workstack.store import DEFAULTS, STORE_SCHEMA_VERSION
-        from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES
+        from workstack.store_rosters import (
+            V3_DOCUMENT_NAMES,
+            V5_DOCUMENT_NAMES,
+            V6_DOCUMENT_NAMES,
+        )
 
-        self.assertEqual(STORE_SCHEMA_VERSION, 5)
-        self.assertEqual(frozenset(DEFAULTS), V5_DOCUMENT_NAMES)
+        self.assertEqual(STORE_SCHEMA_VERSION, 6)
+        self.assertEqual(frozenset(DEFAULTS), V6_DOCUMENT_NAMES)
         self.assertEqual(V5_DOCUMENT_NAMES - V3_DOCUMENT_NAMES, {"reports.json"})
+        self.assertEqual(V6_DOCUMENT_NAMES - V5_DOCUMENT_NAMES, {"knowledge.json"})
         self.assertEqual(DEFAULTS["reports.json"], {"version": 1, "reports": [], "idempotency": []})
 
     def test_reports_has_an_explicit_semantic_document_name(self) -> None:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -20,10 +21,49 @@ VERSION_LINE_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 RECEIPT_NAME = "build-receipt.json"
 DIST_MANIFEST_NAME = "frozen-dist-manifest.json"
 BUNDLE_VERIFIER_NAME = "Test-WorkStackReleaseBundle.ps1"
+DIST_SOURCE_GATE_NAME = "dist_source_gate.py"
 
 
 class ReleaseGateError(RuntimeError):
     pass
+
+
+def load_dist_source_gate() -> Any:
+    """Load the sibling dist/source binding gate without importing a package."""
+
+    path = Path(__file__).resolve().parent / DIST_SOURCE_GATE_NAME
+    spec = importlib.util.spec_from_file_location("workstack_dist_source_gate", path)
+    if spec is None or spec.loader is None:
+        raise ReleaseGateError(f"{DIST_SOURCE_GATE_NAME} could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def dist_gate_call(operation: str, repo: Path, receipt: Path | None) -> dict[str, Any]:
+    """Run one dist gate operation and translate its refusal into a gate error."""
+
+    gate = load_dist_source_gate()
+    action = gate.verify if operation == "verify" else gate.refresh
+    try:
+        return action(repo, receipt=receipt)
+    except gate.DistSourceGateError as failure:
+        raise ReleaseGateError(f"{failure.code}: {failure.detail}") from failure
+
+
+def dist_gate_staged_call(staged: Path, expected: str) -> dict[str, Any]:
+    """Bind a package's own copy of frontend/dist to a digest the gate admitted.
+
+    The expected value comes from the refresh-dist/verify-dist output the caller
+    already accepted, so a packager that copied the live tree can prove the bytes
+    it copied are the admitted ones without reading the live tree again.
+    """
+
+    gate = load_dist_source_gate()
+    try:
+        return gate.verify_staged_dist(staged, expected)
+    except gate.DistSourceGateError as failure:
+        raise ReleaseGateError(f"{failure.code}: {failure.detail}") from failure
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -337,6 +377,15 @@ def build_parser() -> argparse.ArgumentParser:
     receipt.add_argument("--candidate", type=Path, required=True)
     bundle = commands.add_parser("verify-bundle")
     bundle.add_argument("--bundle", type=Path, required=True)
+    verify_dist = commands.add_parser("verify-dist")
+    verify_dist.add_argument("--repo", type=Path, default=Path("."))
+    verify_dist.add_argument("--receipt", type=Path)
+    refresh_dist = commands.add_parser("refresh-dist")
+    refresh_dist.add_argument("--repo", type=Path, default=Path("."))
+    refresh_dist.add_argument("--receipt", type=Path)
+    staged_dist = commands.add_parser("verify-staged-dist")
+    staged_dist.add_argument("--staged", type=Path, required=True)
+    staged_dist.add_argument("--expect", required=True)
     policy = commands.add_parser("evaluate-policy")
     policy.add_argument("--selection", type=Path, required=True)
     policy.add_argument("--result", action="append", default=[])
@@ -365,6 +414,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         value = write_build_receipt(args.bundle, read_json(args.candidate))
     elif args.command == "verify-bundle":
         value = verify_bundle(args.bundle)
+    elif args.command in ("verify-dist", "refresh-dist"):
+        operation = "verify" if args.command == "verify-dist" else "refresh"
+        value = dist_gate_call(operation, args.repo.resolve(), args.receipt)
+    elif args.command == "verify-staged-dist":
+        value = dist_gate_staged_call(args.staged.resolve(), args.expect)
     else:
         value = evaluate_policy(read_json(args.selection), _parse_results(args.result))
         write_json(args.output, value)

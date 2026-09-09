@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
@@ -38,6 +38,8 @@ const SOURCE_MARKDOWN = '# Daily review\n\nGenerated body.\n'
 const DATE = '2026-09-06'
 const OTHER_DATE = '2026-09-07'
 const CREATE_URL = `/api/v1/reports?workspace_uid=${WORKSPACE}`
+/** Whatever the workspace says about a refusal is never the reader's copy. */
+const REMOTE_PROSE = 'remote prose that must never be shown'
 
 const COORDINATE: ReportDraftCoordinate = {
   workspaceUid: WORKSPACE,
@@ -419,6 +421,59 @@ describe('refusals the workspace is certain about', () => {
     expect(editor()).toHaveValue(SOURCE_MARKDOWN)
     expect(posts(fetchMock)).toHaveLength(1)
     expect(posts(fetchMock)[0].body.source_digest).toBe(DIGEST)
+  })
+
+  /**
+   * `assertOk` copies `error.code` straight out of the response envelope, so a workspace
+   * is free to answer with a code that names an `Object.prototype` member. On an ordinary
+   * lookup table `constructor` resolved to a function and `__proto__` to the prototype
+   * itself, and the alert read `function Object() { [native code] } Your text is still
+   * here…` instead of the sentence this repository authored for a refusal it cannot name.
+   */
+  test.each([
+    'constructor',
+    'toString',
+    '__proto__',
+    'hasOwnProperty',
+    'valueOf',
+    'report_code_no_table_holds',
+  ])('a refusal code of %s is explained in words this repository authored', async (code) => {
+    const user = userEvent.setup()
+    const fetchMock = sessionAnd((url) => {
+      if (url !== CREATE_URL) throw new Error(`Unexpected request: ${url}`)
+      return jsonResponse({ error: { code, message: REMOTE_PROSE } }, 409)
+    })
+    await getCsrfToken(true)
+
+    renderEditor()
+    await settled()
+    const edited = SOURCE_MARKDOWN + '\nThe reader wrote this line.\n'
+    fireEvent.change(editor(), { target: { value: edited } })
+    await user.click(promote())
+
+    // The one authored fallback, and the advice that keeps the reader's text reachable.
+    await screen.findByText(/could not be saved to the workspace, so nothing was saved/)
+    expect(screen.getByText(/Your text is still here/)).toBeVisible()
+    // Nothing a prototype lookup could have produced reached the screen.
+    expect(document.body.textContent).not.toContain('native code')
+    expect(document.body.textContent).not.toContain('[object Object]')
+    expect(document.body.textContent).not.toContain(REMOTE_PROSE)
+
+    // The refusal is determinate: the text stands, both ways out of it still work,
+    // and exactly one report was offered to the workspace.
+    expect(editor()).toHaveValue(edited)
+    expect(screen.getByRole('button', { name: 'Copy Markdown' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Download .md' })).toBeEnabled()
+    expect(posts(fetchMock)).toHaveLength(1)
+    expect(posts(fetchMock)[0].body.markdown).toBe(edited)
+
+    // Asking the identical question again is still the same request under the same key.
+    await waitFor(() => expect(promote()).toBeEnabled())
+    await user.click(promote())
+    await waitFor(() => expect(posts(fetchMock)).toHaveLength(2))
+    const sent = posts(fetchMock)
+    expect(sent[1].key).toBe(sent[0].key)
+    expect(sent[1].body).toEqual(sent[0].body)
   })
 })
 

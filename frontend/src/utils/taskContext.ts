@@ -118,3 +118,43 @@ export function contextUnknownFields(item: ContextItem): ContextUnknownField[] {
   ))
   return extras
 }
+
+/**
+ * R22: whether this card is the explicit Capture link of THIS Task, and the exact
+ * Capture revision the reader is looking at.
+ *
+ * Every clause is a refusal the contract asks for by name:
+ *
+ * - only a `capture` card with shared identity — a note card, and a legacy card with no
+ *   `ref`/`connections` at all, has no action;
+ * - only a `capture-link` reason toward this exact Task id — a conversion-only card is
+ *   an origin, not a reversible reference, and another Task's link is not this Task's;
+ * - only a nonnegative safe-integer `revision` — with no displayed revision there is no
+ *   CAS to send, so the action is not offered rather than sent blind.
+ *
+ * A card that carries BOTH reasons is removable: the explicit link goes and the
+ * conversion keeps the card, which is exactly what the contract publishes.
+ */
+export interface CaptureLinkRemovalTarget {
+  captureId: string
+  revision: number
+}
+
+export function captureLinkRemovalTarget(
+  item: ContextItem,
+  taskId: string,
+): CaptureLinkRemovalTarget | null {
+  const ref = item.ref
+  if (!taskId || !ref || ref.kind !== 'capture' || !ref.id) return null
+  const connections = item.connections
+  if (!Array.isArray(connections)) return null
+  const linked = connections.some((connection) => (
+    connection.target.kind === 'task'
+    && connection.target.id === taskId
+    && connection.reasons.includes('capture-link')
+  ))
+  if (!linked) return null
+  const revision: unknown = item.revision
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) return null
+  return { captureId: ref.id, revision }
+}

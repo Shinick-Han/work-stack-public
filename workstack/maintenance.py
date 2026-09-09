@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import store_knowledge_migration
 from . import store_report_migration
 from .store import DEFAULTS, LOCK_NAME, Store, StoreLockedError
 from .storage.migration_source import freeze_v3_source, verify_v3_source_unchanged
@@ -393,15 +394,19 @@ def _restored_documents(
     """The documents to write, upgraded when the archive predates this build.
 
     An older archive is converted the same way an older directory is, so the
-    destination ends up a coherent v5 authority with evidence naming the
-    version the archive actually held. Dropping the archive's own metadata onto
-    a fresh v5 store would leave a generation that fails its own readiness.
+    destination ends up a coherent authority of the version this build writes,
+    with evidence naming the version the archive actually held. Dropping the
+    archive's own metadata onto a fresh store would leave a generation that
+    fails its own readiness.
+
+    The planner is the one that targets the *current* roster, so restoring a
+    schema 5 archive onto a schema 6 build converts it rather than refusing it.
     """
 
-    if schema_version == store_report_migration.CURRENT_SCHEMA_VERSION:
+    if schema_version == store_knowledge_migration.CURRENT_SCHEMA_VERSION:
         return values
     try:
-        writes, _operation = store_report_migration.plan_upgrade(
+        writes, _operation = store_knowledge_migration.plan_upgrade(
             schema_version,
             values,
             store_report_migration.source_digest(values),

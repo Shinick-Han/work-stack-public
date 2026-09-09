@@ -1,4 +1,4 @@
-import type { Capture, Task, WorkspaceProjection } from '../domain/types'
+import type { CaptureV10, Task, WorkspaceProjection } from '../domain/types'
 
 export const task: Task = {
   id: 'T-0001',
@@ -30,7 +30,7 @@ export const workspace: WorkspaceProjection = {
   inbox_count: 1,
 }
 
-export const capture: Capture = {
+export const capture: CaptureV10 = {
   id: 'C-0001',
   schema_version: '1.0',
   source_key: `sha256:${'a'.repeat(64)}`,

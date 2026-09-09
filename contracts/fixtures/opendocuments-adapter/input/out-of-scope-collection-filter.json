@@ -1,0 +1,6 @@
+{
+  "request_id": "77777777-7777-4777-8777-777777777777",
+  "connection_id": "conn_opendocuments_pilot_1",
+  "query": "Restrict this search to collection legal-only",
+  "collection_id": "col_legal_only"
+}

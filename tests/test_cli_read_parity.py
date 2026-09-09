@@ -189,6 +189,8 @@ class ReadParity(unittest.TestCase):
     def test_owner_http_read_parity_covers_the_six_commands(self) -> None:
         self.assertEqual(cli_reads.OWNER_HTTP_READ_PARITY, cli_reads.PARITY_READ_KEYS)
         self.assertTrue(cli_reads.is_parity_read("backlog.list"))
+        self.assertIn("worklog.latest-checkpoint", cli_reads.PARITY_READ_KEYS)
+        self.assertTrue(cli_reads.is_parity_read("worklog.latest-checkpoint"))
         self.assertEqual(
             [route.handler for route in CLI_GET_ROUTES],
             [

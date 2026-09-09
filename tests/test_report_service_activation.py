@@ -438,6 +438,7 @@ class MigratedStoreTest(_ActivatedCase):
             }
         values["store-meta.json"]["store_schema_version"] = 3
         del values["store-meta.json"]["migrations"]["reports"]
+        del values["store-meta.json"]["migrations"]["knowledge"]
         root.mkdir(parents=True, exist_ok=True)
         for name, value in values.items():
             (root / name).write_text(
@@ -453,10 +454,10 @@ class MigratedStoreTest(_ActivatedCase):
 
         migrated = WorkStack(Store(root))
 
-        self.assertEqual(migrated.store.readiness.schema_version, 5)
+        self.assertEqual(migrated.store.readiness.schema_version, 6)
         self.assertTrue((root / REPORTS_DOCUMENT_NAME).exists())
         metadata = json.loads((root / "store-meta.json").read_text(encoding="utf-8"))
-        self.assertEqual(metadata["store_schema_version"], 5)
+        self.assertEqual(metadata["store_schema_version"], 6)
         self.assertEqual(metadata["migrations"]["reports"]["origin"], "migrated_v3")
         self.exercise_lifecycle(migrated, root)
 

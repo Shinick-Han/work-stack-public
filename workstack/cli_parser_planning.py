@@ -90,6 +90,12 @@ def add_worklog_parser(sub: argparse._SubParsersAction) -> None:
     checkpoint_state.add_argument("--idempotency-key", required=True)
     worklog_list = worklog_sub.add_parser("list")
     worklog_list.add_argument("--date")
+    latest_checkpoint = worklog_sub.add_parser("latest-checkpoint")
+    latest_checkpoint.add_argument("--workspace-uid", required=True)
+    latest_checkpoint.add_argument("--task", required=True)
+    latest_checkpoint.add_argument(
+        "--format", choices=("json", "markdown"), default="json"
+    )
 
 
 def add_weekly_parser(sub: argparse._SubParsersAction) -> None:
@@ -112,11 +118,29 @@ def add_capture_parser(sub: argparse._SubParsersAction) -> None:
     ingest.add_argument("--idempotency-key")
 
 
+def add_report_parser(sub: argparse._SubParsersAction) -> None:
+    reports = sub.add_parser(
+        "report", help="create a daily report draft through the running owner"
+    )
+    report_sub = reports.add_subparsers(dest="action", required=True)
+    create = report_sub.add_parser(
+        "create",
+        description="Create one daily-v1 draft; running-owner requests only.",
+    )
+    create.add_argument(
+        "--date",
+        required=True,
+        metavar="YYYY-MM-DD",
+        help="canonical civil day; there is no implicit today",
+    )
+
+
 __all__ = (
     "add_backlog_parser",
     "add_capture_parser",
     "add_note_parser",
     "add_okr_parser",
+    "add_report_parser",
     "add_weekly_parser",
     "add_worklog_parser",
 )

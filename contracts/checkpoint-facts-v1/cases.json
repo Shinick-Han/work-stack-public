@@ -1,0 +1,1204 @@
+{
+  "contract": "workstack.checkpoint-facts.v1",
+  "note": "Shared conformance cases for the Python core in workstack/checkpoint_facts.py and the GUI oracle in frontend/src/features/tasks/taskResumeFacts.ts. Both read this file; neither generates it.",
+  "cases": [
+    {
+      "id": "empty-no-record-for-task",
+      "purpose": "A valid Task with no matching active record is empty, not not-found.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0041",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "checkpoint_id": "CP-1111111111111111111111111111111111111111111111111111111111111111",
+            "entry": {
+              "task_id": "T-0041",
+              "next": [
+                "theirs"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0041",
+              "checkpoint_id": "CP-1111111111111111111111111111111111111111111111111111111111111111",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 0,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [],
+        "provenance": null,
+        "reasons": [],
+        "status": "empty",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:empty:123e4567-e89b-42d3-a456-426614174000:T-0033",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "latest-day-wins",
+      "purpose": "A later recorded day wins whatever order the snapshot arrived in, and a smaller checkpoint id on the newer row proves ids are never order.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-01",
+              "ordinal": 0,
+              "entry_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            },
+            "checkpoint_id": "CP-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "older"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "date": "2026-09-01",
+              "ordinal": 0,
+              "entry_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          },
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-07",
+              "ordinal": 0,
+              "entry_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            },
+            "checkpoint_id": "CP-0000000000000000000000000000000000000000000000000000000000000000",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "newest"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-0000000000000000000000000000000000000000000000000000000000000000",
+              "date": "2026-09-07",
+              "ordinal": 0,
+              "entry_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          },
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-03",
+              "ordinal": 9,
+              "entry_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            },
+            "checkpoint_id": "CP-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "middle"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "date": "2026-09-03",
+              "ordinal": 9,
+              "entry_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 3,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [
+          "newest"
+        ],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-0000000000000000000000000000000000000000000000000000000000000000",
+          "date": "2026-09-07",
+          "entry_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "ordinal": 0,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": "T-0033",
+          "recorded_task_title": null,
+          "revision": 0
+        },
+        "reasons": [],
+        "status": "ready",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:ready:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-0000000000000000000000000000000000000000000000000000000000000000:sha256:0000000000000000000000000000000000000000000000000000000000000000:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "same-day-ordinal-order",
+      "purpose": "Within one day the higher ordinal is later, with no time of day invented.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-05",
+              "ordinal": 2,
+              "entry_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "checkpoint_id": "CP-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "second slot"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "date": "2026-09-05",
+              "ordinal": 2,
+              "entry_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          },
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-05",
+              "ordinal": 7,
+              "entry_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "checkpoint_id": "CP-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "seventh slot"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "date": "2026-09-05",
+              "ordinal": 7,
+              "entry_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          },
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-05",
+              "ordinal": 1,
+              "entry_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            },
+            "checkpoint_id": "CP-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "first slot"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "date": "2026-09-05",
+              "ordinal": 1,
+              "entry_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 3,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [
+          "seventh slot"
+        ],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "date": "2026-09-05",
+          "entry_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "ordinal": 7,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": "T-0033",
+          "recorded_task_title": null,
+          "revision": 0
+        },
+        "reasons": [],
+        "status": "ready",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:ready:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "superseded-latest-excluded-but-counted",
+      "purpose": "A superseded newest record is never read as current, and history still reports it.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-02",
+              "ordinal": 0,
+              "entry_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "checkpoint_id": "CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "entry": {
+              "task_id": "T-0033",
+              "done": [
+                "found cause"
+              ],
+              "next": [
+                "still true"
+              ],
+              "blockers": [
+                "waiting on review"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "date": "2026-09-02",
+              "ordinal": 0,
+              "entry_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          },
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-06",
+              "ordinal": 0,
+              "entry_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "checkpoint_id": "CP-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "withdrawn"
+              ],
+              "blockers": []
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "date": "2026-09-06",
+              "ordinal": 0,
+              "entry_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "origin": "agent-cli-v1"
+            },
+            "state": "superseded",
+            "revision": 1,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 1,
+        "blockers": [
+          "waiting on review"
+        ],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [
+          "found cause"
+        ],
+        "next": [
+          "still true"
+        ],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "date": "2026-09-02",
+          "entry_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ordinal": 0,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": "T-0033",
+          "recorded_task_title": null,
+          "revision": 0
+        },
+        "reasons": [],
+        "status": "ready",
+        "superseded_record_count": 1,
+        "task_id": "T-0033",
+        "version": "v1:ready:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "every-record-superseded-is-empty",
+      "purpose": "A Task whose every record was withdrawn reports no progress, not a stale plan.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "checkpoint_id": "CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "withdrawn"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "origin": "agent-cli-v1"
+            },
+            "state": "superseded",
+            "revision": 1,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 0,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [],
+        "provenance": null,
+        "reasons": [],
+        "status": "empty",
+        "superseded_record_count": 1,
+        "task_id": "T-0033",
+        "version": "v1:empty:123e4567-e89b-42d3-a456-426614174000:T-0033",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "unreadable-latest-never-falls-back",
+      "purpose": "An unreadable newest record is stated as such; the older readable record is never promoted into its place.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-02",
+              "ordinal": 0,
+              "entry_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "checkpoint_id": "CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "older but readable"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "date": "2026-09-02",
+              "ordinal": 0,
+              "entry_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          },
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-06",
+              "ordinal": 0,
+              "entry_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "checkpoint_id": "CP-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "entry": null,
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "date": "2026-09-06",
+              "ordinal": 0,
+              "entry_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 2,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "date": "2026-09-06",
+          "entry_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "ordinal": 0,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": null,
+          "recorded_task_title": null,
+          "revision": 0
+        },
+        "reasons": [
+          "no_readable_summary"
+        ],
+        "status": "unreadable",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:unreadable:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "legacy-free-text-entry-is-unreadable",
+      "purpose": "A free-text row from before the entry shape is reported as unreadable rather than having its text presented as recorded progress.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            "checkpoint_id": "CP-9999999999999999999999999999999999999999999999999999999999999999",
+            "entry": "free text from before the schema",
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-9999999999999999999999999999999999999999999999999999999999999999",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 1,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-9999999999999999999999999999999999999999999999999999999999999999",
+          "date": "2026-09-05",
+          "entry_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "ordinal": 0,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": null,
+          "recorded_task_title": null,
+          "revision": 0
+        },
+        "reasons": [
+          "no_readable_summary"
+        ],
+        "status": "unreadable",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:unreadable:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-9999999999999999999999999999999999999999999999999999999999999999:sha256:9999999999999999999999999999999999999999999999999999999999999999:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "opaque-payload-counts-without-presenting",
+      "purpose": "A payload holding only unknown fields is unreadable, its unknown value is counted and its content is never emitted. Reason order is fixed.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+            },
+            "checkpoint_id": "CP-8888888888888888888888888888888888888888888888888888888888888888",
+            "entry": {
+              "unknown_shape": "kept"
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-8888888888888888888888888888888888888888888888888888888888888888",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 1,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-8888888888888888888888888888888888888888888888888888888888888888",
+          "date": "2026-09-05",
+          "entry_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "ordinal": 0,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": null,
+          "recorded_task_title": null,
+          "revision": 0
+        },
+        "reasons": [
+          "unpresented_values",
+          "no_readable_summary"
+        ],
+        "status": "unreadable",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:unreadable:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-8888888888888888888888888888888888888888888888888888888888888888:sha256:8888888888888888888888888888888888888888888888888888888888888888:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "partial-mixed-slots-and-unknown-field",
+      "purpose": "A blank list slot and an unrecognized field leave the record partial. U+0085 is whitespace to Python but not to the oracle, so the bullet it produces is a cross-language canary.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+            },
+            "checkpoint_id": "CP-7777777777777777777777777777777777777777777777777777777777777777",
+            "entry": {
+              "task_id": "T-0033",
+              "task": "Ship the resume view",
+              "done": [
+                "drafted",
+                "\u0085"
+              ],
+              "next": [
+                "review",
+                "   "
+              ],
+              "blockers": null,
+              "reviewer": {
+                "name": "unnamed"
+              }
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-7777777777777777777777777777777777777777777777777777777777777777",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 1,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [
+          "drafted",
+          "\u0085"
+        ],
+        "next": [
+          "review"
+        ],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-7777777777777777777777777777777777777777777777777777777777777777",
+          "date": "2026-09-05",
+          "entry_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "ordinal": 0,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": "T-0033",
+          "recorded_task_title": "Ship the resume view",
+          "revision": 0
+        },
+        "reasons": [
+          "unpresented_values"
+        ],
+        "status": "partial",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:partial:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-7777777777777777777777777777777777777777777777777777777777777777:sha256:7777777777777777777777777777777777777777777777777777777777777777:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "recorded-task-mismatch-is-partial",
+      "purpose": "A payload naming a different Task than its locator is partial and the disagreement stays visible, never silently trusted.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+            },
+            "checkpoint_id": "CP-6666666666666666666666666666666666666666666666666666666666666666",
+            "entry": {
+              "task_id": "T-0041",
+              "next": [
+                "filed under the wrong Task"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-6666666666666666666666666666666666666666666666666666666666666666",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 1,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [
+          "filed under the wrong Task"
+        ],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-6666666666666666666666666666666666666666666666666666666666666666",
+          "date": "2026-09-05",
+          "entry_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "ordinal": 0,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": "T-0041",
+          "recorded_task_title": null,
+          "revision": 0
+        },
+        "reasons": [
+          "recorded_task_mismatch"
+        ],
+        "status": "partial",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:partial:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-6666666666666666666666666666666666666666666666666666666666666666:sha256:6666666666666666666666666666666666666666666666666666666666666666:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "legacy-entry-payload-binding-declared",
+      "purpose": "A row with no Task locator binds through its own payload and declares the weaker binding, with the legacy version identity.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": null,
+              "date": "2026-08-20",
+              "ordinal": 3,
+              "entry_digest": null
+            },
+            "checkpoint_id": null,
+            "entry": {
+              "task_id": "T-0033",
+              "task": "Older work",
+              "next": [
+                "carry on"
+              ]
+            },
+            "recorded": null,
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 1,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [
+          "carry on"
+        ],
+        "provenance": {
+          "binding": "entry-payload",
+          "checkpoint_id": null,
+          "date": "2026-08-20",
+          "entry_digest": null,
+          "ordinal": 3,
+          "origin": null,
+          "recorded_task_id": "T-0033",
+          "recorded_task_title": "Older work",
+          "revision": 0
+        },
+        "reasons": [],
+        "status": "ready",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:ready:123e4567-e89b-42d3-a456-426614174000:T-0033:legacy@2026-08-20#3:no-digest:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "legacy-row-naming-another-task-is-not-borrowed",
+      "purpose": "A legacy row whose payload claims another Task contributes nothing.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": null,
+              "date": "2026-08-20",
+              "ordinal": 3,
+              "entry_digest": null
+            },
+            "checkpoint_id": null,
+            "entry": {
+              "task_id": "T-0041",
+              "next": [
+                "theirs"
+              ]
+            },
+            "recorded": null,
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 0,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [],
+        "provenance": null,
+        "reasons": [],
+        "status": "empty",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:empty:123e4567-e89b-42d3-a456-426614174000:T-0033",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "foreign-workspace-and-task-ignored",
+      "purpose": "A newer row for another workspace or another Task never leaks into this snapshot, and neither is counted.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-02",
+              "ordinal": 0,
+              "entry_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "checkpoint_id": "CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "mine"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "date": "2026-09-02",
+              "ordinal": 0,
+              "entry_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          },
+          {
+            "locator": {
+              "workspace_uid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "task_id": "T-0033",
+              "date": "2026-09-08",
+              "ordinal": 0,
+              "entry_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "checkpoint_id": "CP-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "foreign"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "date": "2026-09-08",
+              "ordinal": 0,
+              "entry_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          },
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0041",
+              "date": "2026-09-09",
+              "ordinal": 0,
+              "entry_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "checkpoint_id": "CP-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "entry": {
+              "task_id": "T-0041",
+              "next": [
+                "theirs"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0041",
+              "checkpoint_id": "CP-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "date": "2026-09-09",
+              "ordinal": 0,
+              "entry_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 1,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [
+          "mine"
+        ],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "date": "2026-09-02",
+          "entry_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ordinal": 0,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": "T-0033",
+          "recorded_task_title": null,
+          "revision": 0
+        },
+        "reasons": [],
+        "status": "ready",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:ready:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "checkpoint-only-revision-changes-identity",
+      "purpose": "A reactivated record carries its transition revision into the version, with no Task revision involved.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+            },
+            "checkpoint_id": "CP-5555555555555555555555555555555555555555555555555555555555555555",
+            "entry": {
+              "task_id": "T-0033",
+              "next": [
+                "after reactivation"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-5555555555555555555555555555555555555555555555555555555555555555",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 2,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 1,
+        "blockers": [],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [],
+        "next": [
+          "after reactivation"
+        ],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-5555555555555555555555555555555555555555555555555555555555555555",
+          "date": "2026-09-05",
+          "entry_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "ordinal": 0,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": "T-0033",
+          "recorded_task_title": null,
+          "revision": 2
+        },
+        "reasons": [],
+        "status": "ready",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:ready:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-5555555555555555555555555555555555555555555555555555555555555555:sha256:5555555555555555555555555555555555555555555555555555555555555555:r2",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "fence-and-utf8-canaries-preserved",
+      "purpose": "Backticks, a heading, a list marker, a typed URL and multibyte text are all preserved verbatim. Preserving a URL is not permission to open it, and the Markdown renderer fences every one of these.",
+      "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+      "task_id": "T-0033",
+      "audit": {
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+        "entries": [
+          {
+            "locator": {
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+            },
+            "checkpoint_id": "CP-4444444444444444444444444444444444444444444444444444444444444444",
+            "entry": {
+              "task_id": "T-0033",
+              "task": "``` \uc694\uc57d \u2705",
+              "done": [
+                "```\n# Not a heading",
+                "- [ ] not a list"
+              ],
+              "next": [
+                "https://leak.example/path typed by the user"
+              ],
+              "blockers": [
+                "`````"
+              ]
+            },
+            "recorded": {
+              "type": "worklog.recorded",
+              "workspace_uid": "123e4567-e89b-42d3-a456-426614174000",
+              "task_id": "T-0033",
+              "checkpoint_id": "CP-4444444444444444444444444444444444444444444444444444444444444444",
+              "date": "2026-09-05",
+              "ordinal": 0,
+              "entry_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+              "origin": "agent-cli-v1"
+            },
+            "state": "active",
+            "revision": 0,
+            "transitions": []
+          }
+        ]
+      },
+      "expected": {
+        "active_record_count": 1,
+        "blockers": [
+          "`````"
+        ],
+        "contract": "workstack.checkpoint-facts.v1",
+        "done": [
+          "```\n# Not a heading",
+          "- [ ] not a list"
+        ],
+        "next": [
+          "https://leak.example/path typed by the user"
+        ],
+        "provenance": {
+          "binding": "locator",
+          "checkpoint_id": "CP-4444444444444444444444444444444444444444444444444444444444444444",
+          "date": "2026-09-05",
+          "entry_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "ordinal": 0,
+          "origin": "agent-cli-v1",
+          "recorded_task_id": "T-0033",
+          "recorded_task_title": "``` \uc694\uc57d \u2705",
+          "revision": 0
+        },
+        "reasons": [],
+        "status": "ready",
+        "superseded_record_count": 0,
+        "task_id": "T-0033",
+        "version": "v1:ready:123e4567-e89b-42d3-a456-426614174000:T-0033:CP-4444444444444444444444444444444444444444444444444444444444444444:sha256:4444444444444444444444444444444444444444444444444444444444444444:r0",
+        "workspace_uid": "123e4567-e89b-42d3-a456-426614174000"
+      }
+    }
+  ]
+}

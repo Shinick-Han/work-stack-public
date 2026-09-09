@@ -138,3 +138,26 @@ test('the first paint inside the desktop app never claims the host is missing', 
   expect(container.textContent).not.toMatch(/Work Stack desktop app/)
   expect(screen.getByText('Loading linked references…')).toBeInTheDocument()
 })
+
+test('an inherited-name host code shows the host refusal without a retry or write', async () => {
+  vi.mocked(knowledgeHostAvailable).mockReturnValue(true)
+  // `constructor` passes the closed lowercase code shape the host error envelope admits.
+  vi.mocked(requestKnowledge).mockRejectedValue(
+    new KnowledgeHostError('constructor', 'The vault index is rebuilding on this device.'),
+  )
+  render(
+    <LinkedReferenceSummary
+      onOpenReferences={vi.fn()}
+      task={task}
+      workspaceUid={workspace.workspace.id}
+    />,
+  )
+  const alert = await screen.findByRole('alert')
+  expect(alert).toHaveTextContent('The vault index is rebuilding on this device.')
+  expect(alert.textContent).not.toContain('[object Object]')
+  expect(alert.textContent).not.toContain('function')
+  expect(screen.getByRole('button', { name: 'Prepare resume brief' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+  const operations = vi.mocked(requestKnowledge).mock.calls.map((call) => call[0])
+  expect(operations).toEqual(['status', 'list-references'])
+})

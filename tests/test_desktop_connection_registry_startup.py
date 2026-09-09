@@ -35,6 +35,13 @@ import connection_registry_startup as STARTUP  # noqa: E402
 
 PROFILE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
+DRIVER_CONFIG = "/srv/workstack/knowledge-drivers.json"
+R19B_KNOWLEDGE_DRIVERS_CONFIG = (
+    "knowledge_drivers_config"
+    in getattr(MODULE.RemoteConnectionProfile, "__dataclass_fields__", {})
+    and "knowledge_drivers_config"
+    in getattr(MODULE.SshConnectionProfile, "__dataclass_fields__", {})
+)
 
 
 def bare_host(root: Path):
@@ -247,6 +254,180 @@ class DesktopConnectionRegistryStartupTest(unittest.TestCase):
             self.assertIs(host.remote_profile, runtime)
             self.assertEqual(host.workstack_url, "http://127.0.0.1:29123/")
             self.assertEqual(host.active_connection_draft["workspace_id"], WORKSPACE_ID)
+            self.assertNotIn("knowledge_drivers_config", host.active_connection_draft)
+
+    def test_remote_startup_omits_absent_config_and_ignores_local_config_and_env(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = bare_host(root)
+            host._local_runtime_config = mock.Mock(return_value=(
+                {
+                    "data_dir": str(root / "legacy"),
+                    "port": 8765,
+                    "knowledge_drivers_config": r"C:\WorkStack\drivers.json",
+                },
+                root / "config.json",
+            ))
+            selection = MODULE.SshStartupSelection(
+                profile_id=PROFILE_ID,
+                label="Remote",
+                expected_workspace_id=WORKSPACE_ID,
+                ssh_host_alias="work-linux",
+                remote_app_dir="/srv/workstack/app",
+                remote_data_dir="/srv/workstack/ssot",
+                preferred_forward_port=18765,
+                remote_port=8765,
+                live_updates=True,
+            )
+            runtime = MODULE.RemoteConnectionProfile(
+                "work-linux", "/srv/workstack/app", "/srv/workstack/ssot",
+                29123, WORKSPACE_ID, 8765,
+            )
+            registry = MODULE.ConnectionRegistry(
+                schema_version=1,
+                active_profile_id=PROFILE_ID,
+                profiles=(
+                    MODULE.SshConnectionProfile(
+                        profile_id=PROFILE_ID,
+                        label="Remote",
+                        ssh_host_alias="work-linux",
+                        remote_app_dir="/srv/workstack/app",
+                        remote_data_dir="/srv/workstack/ssot",
+                        expected_workspace_id=WORKSPACE_ID,
+                        preferred_forward_port=18765,
+                        remote_port=8765,
+                        remote_python="/srv/workstack/venv/bin/python",
+                    ),
+                ),
+            )
+            seen: list[object] = []
+
+            def capture(profile: object) -> object:
+                seen.append(profile)
+                return runtime
+
+            with mock.patch.dict(
+                os.environ,
+                {"WORKSTACK_KNOWLEDGE_DRIVERS_CONFIG": "/etc/workstack/env.json"},
+            ), mock.patch.object(
+                MODULE, "ensure_connection_registry", return_value=registry
+            ), mock.patch.object(
+                MODULE, "select_active_profile_for_startup", return_value=selection
+            ), mock.patch.object(
+                MODULE, "profile_with_runtime_forward_port", side_effect=capture
+            ), mock.patch.object(
+                MODULE, "registry_digest", return_value="sha256:" + "1" * 64
+            ), mock.patch.object(
+                MODULE,
+                "current_registry_snapshot",
+                return_value=(registry, "sha256:" + "1" * 64),
+            ), mock.patch.object(MODULE, "export_active_legacy_mirror"):
+                host._prepare_connection_registry_runtime()
+
+            self.assertEqual(len(seen), 1)
+            self.assertIsNone(getattr(seen[0], "knowledge_drivers_config", None))
+            self.assertNotIn("knowledge_drivers_config", host.active_connection_draft)
+            self.assertEqual(
+                host.active_connection_draft["remote_python"],
+                "/srv/workstack/venv/bin/python",
+            )
+            self.assertEqual(host.workstack_url, "http://127.0.0.1:29123/")
+
+    @unittest.skipUnless(
+        R19B_KNOWLEDGE_DRIVERS_CONFIG,
+        "waiting for R19-B knowledge_drivers_config on SSH and remote profiles",
+    )
+    def test_remote_startup_carries_matched_knowledge_drivers_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = bare_host(root)
+            host._local_runtime_config = mock.Mock(return_value=(
+                {
+                    "data_dir": str(root / "legacy"),
+                    "port": 8765,
+                    "knowledge_drivers_config": r"C:\WorkStack\drivers.json",
+                },
+                root / "config.json",
+            ))
+            selection = MODULE.SshStartupSelection(
+                profile_id=PROFILE_ID,
+                label="Remote",
+                expected_workspace_id=WORKSPACE_ID,
+                ssh_host_alias="work-linux",
+                remote_app_dir="/srv/workstack/app",
+                remote_data_dir="/srv/workstack/ssot",
+                preferred_forward_port=18765,
+                remote_port=8765,
+                live_updates=True,
+            )
+            runtime = MODULE.RemoteConnectionProfile(
+                ssh_host_alias="work-linux",
+                remote_app_dir="/srv/workstack/app",
+                remote_data_dir="/srv/workstack/ssot",
+                local_forward_port=29123,
+                workspace_id=WORKSPACE_ID,
+                remote_port=8765,
+                remote_python="/srv/workstack/venv/bin/python",
+                knowledge_drivers_config=DRIVER_CONFIG,
+            )
+            registry = MODULE.ConnectionRegistry(
+                schema_version=1,
+                active_profile_id=PROFILE_ID,
+                profiles=(
+                    MODULE.SshConnectionProfile(
+                        profile_id=PROFILE_ID,
+                        label="Remote",
+                        ssh_host_alias="work-linux",
+                        remote_app_dir="/srv/workstack/app",
+                        remote_data_dir="/srv/workstack/ssot",
+                        expected_workspace_id=WORKSPACE_ID,
+                        preferred_forward_port=18765,
+                        remote_port=8765,
+                        remote_python="/srv/workstack/venv/bin/python",
+                        knowledge_drivers_config=DRIVER_CONFIG,
+                    ),
+                ),
+            )
+            seen: list[object] = []
+
+            def capture(profile: object) -> object:
+                seen.append(profile)
+                return runtime
+
+            with mock.patch.dict(
+                os.environ,
+                {"WORKSTACK_KNOWLEDGE_DRIVERS_CONFIG": "/etc/workstack/env.json"},
+            ), mock.patch.object(
+                MODULE, "ensure_connection_registry", return_value=registry
+            ), mock.patch.object(
+                MODULE, "select_active_profile_for_startup", return_value=selection
+            ), mock.patch.object(
+                MODULE, "profile_with_runtime_forward_port", side_effect=capture
+            ), mock.patch.object(
+                MODULE, "registry_digest", return_value="sha256:" + "1" * 64
+            ), mock.patch.object(
+                MODULE,
+                "current_registry_snapshot",
+                return_value=(registry, "sha256:" + "1" * 64),
+            ), mock.patch.object(MODULE, "export_active_legacy_mirror"):
+                host._prepare_connection_registry_runtime()
+
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(getattr(seen[0], "knowledge_drivers_config"), DRIVER_CONFIG)
+            self.assertEqual(
+                host.active_connection_draft["knowledge_drivers_config"], DRIVER_CONFIG
+            )
+            self.assertNotEqual(
+                host.active_connection_draft["knowledge_drivers_config"],
+                r"C:\WorkStack\drivers.json",
+            )
+            same = dict(host.active_connection_draft)
+            changed = dict(host.active_connection_draft)
+            changed["knowledge_drivers_config"] = "/srv/workstack/other-drivers.json"
+            same_payload = host._ssot_status_payload(same, "ready")
+            changed_payload = host._ssot_status_payload(changed, "ready")
+            self.assertFalse(same_payload["restart_required"])
+            self.assertTrue(changed_payload["restart_required"])
 
     def test_local_runtime_config_uses_profile_scoped_paths_without_rewriting_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

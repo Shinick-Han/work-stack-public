@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from workstack.capture import canonical_digest
+from workstack.capture import canonical_digest, fingerprint_for, source_key_for
 from workstack.server import create_server
 from workstack.service import WorkStack
 from workstack.store import DEFAULTS, Store
@@ -32,6 +32,8 @@ OTHER_UID = "22222222-2222-4222-8222-222222222222"
 NIL_UID = "00000000-0000-0000-0000-000000000000"
 CANONICAL_UID = "11111111-1111-4111-8111-111111111111"
 LETTERED_UID = "aa11bb22-cc33-4dd4-8ee5-ff6677889900"
+PACKET = Path(__file__).resolve().parents[1] / "contracts" / "capture-packet-v1.fixture.json"
+CATALOG_CANARY = "R45-WEEKLY-CATALOG-CANARY-TITLE"
 
 
 class WeeklyPreviewQueryTest(unittest.TestCase):
@@ -168,11 +170,18 @@ class WeeklyReportPreviewHttpTest(unittest.TestCase):
         projection = self.stack.review_projection(end_date, 7)
         return canonical_digest({"end_date": end_date, "weekly": projection["weekly"]})
 
-    def assert_success_envelope(self, payload: dict, end_date: str = END) -> dict:
+    def assert_success_envelope(
+        self,
+        payload: dict,
+        end_date: str = END,
+        *,
+        catalog_items: list[dict] | None = None,
+        omitted_count: int = 0,
+    ) -> dict:
         self.assertEqual(set(payload), {"data"})
         self.assertEqual(
             list(payload["data"]),
-            ["workspace_uid", "source_digest", "preview"],
+            ["workspace_uid", "source_digest", "preview", "context_catalog"],
         )
         self.assertEqual(payload["data"]["workspace_uid"], self.workspace_uid)
         digest = payload["data"]["source_digest"]
@@ -182,7 +191,40 @@ class WeeklyReportPreviewHttpTest(unittest.TestCase):
         self.assertEqual(preview, self.expected_preview(preview["generated_at"], end_date))
         self.assertEqual(preview["period"]["days"], 7)
         self.assertEqual(preview["period"]["end"], end_date)
+        catalog = payload["data"]["context_catalog"]
+        self.assertEqual(list(catalog), ["captured_at", "items", "omitted_count"])
+        self.assertEqual(catalog["captured_at"], preview["generated_at"])
+        self.assertEqual(catalog["omitted_count"], omitted_count)
+        if catalog_items is None:
+            self.assertEqual(catalog["items"], [])
+        else:
+            self.assertEqual(catalog["items"], catalog_items)
         return preview
+
+    def ingest_capture(self, *, title: str, suffix: str) -> dict:
+        packet = json.loads(PACKET.read_text(encoding="utf-8"))
+        packet["source"]["display_title"] = title
+        packet["source"]["object_ref"] = "message:r45-" + suffix
+        packet["source"]["version_ref"] = "change-key:r45-" + suffix
+        packet["source_key"] = source_key_for(packet["source"])
+        packet["source"]["fingerprint"] = fingerprint_for(packet["source"])
+        return self.stack.ingest_capture(
+            packet, "r45.ingest." + suffix
+        )["body"]["data"]
+
+    def link_capture(self, capture_id: str, task_id: str, suffix: str) -> dict:
+        return self.stack.link_capture(
+            capture_id, task_id, "r45.link." + suffix
+        )["body"]["data"]
+
+    def catalog_item(self, capture: dict, linked_task_ids: list[str]) -> dict:
+        return {
+            "capture_id": capture["id"],
+            "capture_revision": capture["revision"],
+            "title": capture["source"]["display_title"],
+            "linked_task_ids": linked_task_ids,
+            "status": capture["status"],
+        }
 
     def assert_stable_error(self, raw: bytes, payload: dict, forbidden: tuple[str, ...] = ()) -> None:
         text = raw.decode("utf-8")
@@ -453,3 +495,158 @@ class WeeklyReportPreviewHttpTest(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "store_sync_required")
         self.assertEqual(payload["error"]["details"]["state"], "external-change-detected")
         self.assert_stable_error(raw, payload, (token, "source_digest"))
+
+    def test_multi_day_related_captures_appear_beside_unchanged_preview(self) -> None:
+        self.add_entry("review.entry.weekly.http.catalog.end")
+        earlier = self.stack.add_task("Earlier week task")
+        self.add_entry(
+            "review.entry.weekly.http.catalog.start",
+            date=START,
+            task_id=earlier["id"],
+            done=["Closed an earlier gate"],
+            next=[],
+            blockers=[],
+        )
+        digest_before = self.expected_source_digest()
+        end_capture = self.ingest_capture(title=CATALOG_CANARY, suffix="end-day")
+        end_linked = self.link_capture(end_capture["id"], self.task["id"], "end-day")
+        start_capture = self.ingest_capture(title="Earlier-week context", suffix="start-day")
+        start_linked = self.link_capture(start_capture["id"], earlier["id"], "start-day")
+        before = self.store_bytes()
+        status, payload, _, raw = self.json_request(self.preview_path())
+        self.assertEqual(status, 200)
+        preview = self.assert_success_envelope(
+            payload,
+            catalog_items=[
+                self.catalog_item(end_linked, [self.task["id"]]),
+                self.catalog_item(start_linked, [earlier["id"]]),
+            ],
+        )
+        self.assertEqual(
+            set(preview["provenance"]["task_ids"]),
+            {self.task["id"], earlier["id"]},
+        )
+        self.assertEqual(preview["provenance"]["range"], {"start": START, "end": END, "days": 7})
+        self.assertEqual(payload["data"]["source_digest"], digest_before)
+        self.assertNotIn(CATALOG_CANARY, preview["markdown"])
+        self.assertNotIn("Earlier-week context", preview["markdown"])
+        self.assertNotIn("context_catalog", preview)
+        self.assertNotIn(b"web_url", raw)
+        self.assertEqual(self.store_bytes(), before)
+
+    def test_empty_week_omits_linked_captures(self) -> None:
+        capture = self.ingest_capture(title=CATALOG_CANARY, suffix="empty-week")
+        self.link_capture(capture["id"], self.task["id"], "empty-week")
+        before = self.store_bytes()
+        status, payload, _, _ = self.json_request(self.preview_path())
+        self.assertEqual(status, 200)
+        preview = self.assert_success_envelope(payload)
+        self.assertEqual(preview["absence"], "no records")
+        self.assertEqual(preview["provenance"]["task_ids"], [])
+        self.assertEqual(self.store_bytes(), before)
+
+    def test_converted_provenance_alone_is_not_a_catalog_link(self) -> None:
+        self.add_entry("review.entry.weekly.http.catalog.converted.end")
+        capture = self.ingest_capture(title=CATALOG_CANARY, suffix="converted")
+        converted = self.stack.create_task_from_capture(
+            capture["id"],
+            {"title": "Converted from the capture"},
+            "r45.convert.0001",
+        )["body"]["data"]
+        self.add_entry(
+            "review.entry.weekly.http.catalog.converted.start",
+            date=START,
+            task_id=converted["id"],
+            done=["Converted task earlier in the week"],
+            next=[],
+            blockers=[],
+        )
+        before = self.store_bytes()
+        status, payload, _, _ = self.json_request(self.preview_path())
+        self.assertEqual(status, 200)
+        preview = self.assert_success_envelope(payload)
+        self.assertIn(converted["id"], preview["provenance"]["task_ids"])
+        self.assertIn(self.task["id"], preview["provenance"]["task_ids"])
+        self.assertEqual(self.store_bytes(), before)
+
+    def test_unrelated_capture_is_omitted(self) -> None:
+        self.add_entry("review.entry.weekly.http.catalog.unrelated")
+        other = self.stack.add_task("Unrelated task")
+        capture = self.ingest_capture(title=CATALOG_CANARY, suffix="unrelated")
+        self.link_capture(capture["id"], other["id"], "unrelated")
+        before = self.store_bytes()
+        status, payload, _, _ = self.json_request(self.preview_path())
+        self.assertEqual(status, 200)
+        self.assert_success_envelope(payload)
+        self.assertEqual(self.store_bytes(), before)
+
+    def test_catalog_truncates_after_thirty_two_qualifying_captures(self) -> None:
+        earlier = self.stack.add_task("Overflow week task")
+        self.add_entry(
+            "review.entry.weekly.http.catalog.truncate",
+            date=START,
+            task_id=earlier["id"],
+            done=["Earlier overflow fact"],
+            next=[],
+            blockers=[],
+        )
+        rows = []
+        for index in range(1, 34):
+            suffix = "trunc-{0:04d}".format(index)
+            capture = self.ingest_capture(
+                title="Context {0:04d}".format(index), suffix=suffix
+            )
+            rows.append(self.link_capture(capture["id"], earlier["id"], suffix))
+        before = self.store_bytes()
+        status, payload, _, _ = self.json_request(self.preview_path())
+        self.assertEqual(status, 200)
+        expected = [self.catalog_item(row, [earlier["id"]]) for row in rows[:32]]
+        preview = self.assert_success_envelope(
+            payload, catalog_items=expected, omitted_count=1
+        )
+        self.assertEqual(
+            payload["data"]["context_catalog"]["items"][-1]["capture_id"],
+            rows[31]["id"],
+        )
+        self.assertIn(earlier["id"], preview["provenance"]["task_ids"])
+        self.assertEqual(self.store_bytes(), before)
+
+    def test_catalogue_loads_captures_before_the_projection_race_hook(self) -> None:
+        order: list[str] = []
+        original = WorkStack.list_captures
+
+        def tracking_list(stack: WorkStack, status: str = "inbox") -> list:
+            order.append("captures:" + status)
+            return original(stack, status)
+
+        def hook() -> None:
+            order.append("hook")
+
+        with patch.object(WorkStack, "list_captures", tracking_list):
+            with patch(
+                "workstack.weekly_reporting_http._after_projection_race_hook",
+                side_effect=hook,
+            ):
+                status, payload, _, _ = self.json_request(self.preview_path())
+        self.assertEqual(status, 200)
+        self.assert_success_envelope(payload)
+        self.assertEqual(order, ["captures:all", "hook"])
+
+    def test_race_capture_change_after_snapshot_is_store_sync_required(self) -> None:
+        self.add_entry("review.entry.weekly.http.race.capture")
+        token = "EXTERNAL-CAPTURE-FACT"
+
+        def mutate() -> None:
+            path = self.root / "captures.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data.setdefault("captures", []).append({"id": "C-external", "title": token})
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+        with patch("workstack.weekly_reporting_http._after_projection_race_hook", side_effect=mutate):
+            status, payload, _, raw = self.json_request(self.preview_path())
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "store_sync_required")
+        self.assertEqual(payload["error"]["details"]["state"], "external-change-detected")
+        self.assertIn("captures.json", payload["error"]["details"]["changed_files"])
+        self.assert_stable_error(raw, payload, (token, "source_digest"))
+        self.assertIn(token, (self.root / "captures.json").read_text(encoding="utf-8"))

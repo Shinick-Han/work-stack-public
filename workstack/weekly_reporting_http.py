@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from .capture import canonical_digest
+from .report_context_catalog import build_context_catalog
 from .store import StoreCorruptError
 from .weekly_reporting import (
     TEMPLATE_WEEKLY_V1,
@@ -59,7 +60,7 @@ def weekly_preview_payload(stack: Any, query: str) -> dict[str, Any]:
     _require_in_sync(stack.store)
     _after_precheck_race_hook()
     try:
-        projection = _held_preview_projection(
+        projection, captures = _held_preview_snapshot(
             stack, parsed["end_date"], parsed["workspace_uid"]
         )
     except StoreCorruptError:
@@ -85,6 +86,11 @@ def weekly_preview_payload(stack: Any, query: str) -> dict[str, Any]:
             weekly=projection["weekly"],
         ),
         "preview": preview,
+        "context_catalog": build_context_catalog(
+            captures=captures,
+            provenance_task_ids=preview["provenance"]["task_ids"],
+            captured_at=preview["generated_at"],
+        ),
     }
 
 
@@ -99,10 +105,12 @@ def _after_precheck_race_hook() -> None:
 
 
 def _after_projection_race_hook() -> None:
-    """Patch point after review_projection and before post-read sync."""
+    """Patch point after the held week/capture read and before post-read sync."""
 
 
-def _held_preview_projection(stack: Any, end_date: str, workspace_uid: str) -> Any:
+def _held_preview_snapshot(
+    stack: Any, end_date: str, workspace_uid: str
+) -> tuple[Any, list[Any]]:
     with stack.store.consistent_read() as snapshot:
         _require_in_sync(stack.store)
         if snapshot.workspace_uid != workspace_uid:
@@ -115,9 +123,10 @@ def _held_preview_projection(stack: Any, end_date: str, workspace_uid: str) -> A
                 _UNAVAILABLE_MESSAGE,
                 422,
             ) from None
+        captures = stack.list_captures(status="all")
         _after_projection_race_hook()
         _require_in_sync(stack.store)
-        return projection
+        return projection, captures
 
 
 def parse_weekly_preview_query(query: str) -> dict[str, str]:

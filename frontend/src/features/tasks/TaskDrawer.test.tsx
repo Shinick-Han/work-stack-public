@@ -160,6 +160,67 @@ test('shares resume, sanitized context, and activity in one drawer', async () =>
   expect(screen.queryByText('Hidden target detail')).not.toBeInTheDocument()
 })
 
+/**
+ * R22: the drawer really mounts the Task-context removal. The capture card below is the
+ * projected shape the read route publishes — a `capture` ref, a `capture-link` connection
+ * to this Task, and the Capture revision the reader is looking at.
+ */
+test('removes one explicit Capture link from the Task context subview', async () => {
+  const linkedCapture = { ...capture, status: 'linked' as const, linked_task_ids: [task.id], revision: 4 }
+  const contextCard = {
+    ...linkedCapture,
+    ref: { kind: 'capture', id: linkedCapture.id },
+    date_precision: 'instant',
+    connections: [{ target: { kind: 'task', id: task.id }, reasons: ['capture-link'] }],
+  }
+  const conversionCard = {
+    ...capture,
+    id: 'C-0002',
+    source: { ...capture.source, display_title: 'Converted source' },
+    status: 'converted' as const,
+    converted_task_ids: [task.id],
+    revision: 1,
+    ref: { kind: 'capture', id: 'C-0002' },
+    date_precision: 'instant',
+    connections: [{ target: { kind: 'task', id: task.id }, reasons: ['capture-conversion'] }],
+  }
+  let linked = true
+  const unlinkRequests: Array<{ url: string; body: unknown; key: string }> = []
+
+  vi.stubGlobal('fetch', drawerFetch((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/v1/session')) return jsonResponse({ data: { csrf_token: 'test-csrf-token' } })
+    if (url.includes('/unlink')) {
+      const headers = init?.headers as Record<string, string>
+      unlinkRequests.push({ url, body: JSON.parse(String(init?.body)), key: headers['Idempotency-Key'] })
+      linked = false
+      return jsonResponse({ data: { ...linkedCapture, status: 'inbox', linked_task_ids: [], revision: 5 }, meta: { duplicate: false } })
+    }
+    if (url.includes(`/api/v1/tasks/${task.id}`)) {
+      return jsonResponse({ data: { task, context: linked ? [contextCard, conversionCard] : [conversionCard], activity: [], replies: [] } })
+    }
+    if (url.includes('/api/v1/workspace')) return jsonResponse({ data: workspace })
+    throw new Error(`Unexpected request: ${url}`)
+  }))
+  const client = createClient()
+  render(<QueryClientProvider client={client}><TaskDrawer onClose={vi.fn()} onNotice={vi.fn()} taskId="T-0001" workspace={workspace} /></QueryClientProvider>)
+
+  await openContextSubview()
+  expect(await screen.findByText('Release review feedback')).toBeInTheDocument()
+  // The conversion-only card is an origin, so it offers nothing.
+  expect(screen.getAllByRole('button', { name: 'Remove task link' })).toHaveLength(1)
+
+  await userEvent.click(screen.getByRole('button', { name: 'Remove task link' }))
+
+  // The card leaves because the refreshed Task no longer lists it, not optimistically.
+  await waitFor(() => expect(screen.queryByText('Release review feedback')).not.toBeInTheDocument())
+  expect(screen.getByText('Converted source')).toBeInTheDocument()
+  expect(unlinkRequests).toHaveLength(1)
+  expect(unlinkRequests[0].url).toContain('/api/v1/captures/C-0001/unlink')
+  expect(unlinkRequests[0].body).toEqual({ task_id: task.id, revision: 4 })
+  expect(unlinkRequests[0].key).toMatch(/^workstack:/)
+})
+
 test('opens parent, dependency, child, and dependent Tasks from the relationship summary', async () => {
   const parent: Task = { ...task, id: 'T-0002', uid: '22222222-2222-4222-8222-222222222222', title: 'Parent outcome', objective_ids: [] }
   const dependency: Task = { ...task, id: 'T-0003', uid: '33333333-3333-4333-8333-333333333333', title: 'Required outcome', objective_ids: [] }

@@ -138,7 +138,7 @@ class AgentLocalBackendContractTest(unittest.TestCase):
             )
         self.assertEqual(calls, [])
 
-    def test_status_is_the_exact_exclusive_local_v5_raw_mapping(self) -> None:
+    def test_status_is_the_exact_exclusive_local_current_raw_mapping(self) -> None:
         result = self.backend().status(
             request=StatusRequest(
                 data_dir=self.root,
@@ -157,7 +157,7 @@ class AgentLocalBackendContractTest(unittest.TestCase):
                 "expected_workspace_uid": WORKSPACE_UID,
                 "ready": True,
                 "running_server_available": False,
-                "storage_format": "v5",
+                "storage_format": "v6",
             },
         )
 
@@ -440,7 +440,12 @@ class AgentLocalBackendContractTest(unittest.TestCase):
         workstack_imports = {name for name in imported_modules if name.startswith("workstack")}
         self.assertEqual(
             workstack_imports,
-            {"workstack.agent_cli_contract", "workstack.service", "workstack.store"},
+            {
+                "workstack.agent_cli_contract",
+                "workstack.agent_context_pack",
+                "workstack.service",
+                "workstack.store",
+            },
         )
         source = inspect.getsource(module)
         self.assertNotIn("workstack.storage", source)

@@ -1,11 +1,103 @@
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WINDOWS = ROOT / "scripts" / "windows"
+SCRIPTS = ROOT / "scripts"
+
+# Stands in for scripts/release_gate.py inside a synthetic source root. Its
+# refresh-dist branch mocks only the npm build -- it reports the tree that is
+# already there, using the real gate's own manifest and digest helpers -- and
+# then applies the concurrent rewrite a packager cannot prevent. Its
+# verify-staged-dist branch is not mocked at all: it delegates to the real
+# release gate, so the packaging decision under test is the product's own.
+STUB_RELEASE_GATE = '''
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+SCRIPTS = Path(r"@SCRIPTS@")
+ROOT = Path(__file__).resolve().parents[1]
+RACE = ROOT / "race.json"
+KEEP = ROOT / "race-original.bin"
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location("stub_" + name, SCRIPTS / (name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def plan():
+    return json.loads(RACE.read_text(encoding="utf-8")) if RACE.is_file() else None
+
+
+def apply_race():
+    step = plan()
+    if step is None:
+        return
+    target = ROOT / "frontend" / "dist" / step["path"]
+    if target.is_file():
+        KEEP.write_bytes(target.read_bytes())
+    if step.get("content") is None:
+        target.unlink()
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(step["content"].encode("utf-8"))
+
+
+def undo_race():
+    step = plan()
+    if step is None or not step.get("restore"):
+        return
+    target = ROOT / "frontend" / "dist" / step["path"]
+    if KEEP.is_file():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(KEEP.read_bytes())
+    elif target.is_file():
+        target.unlink()
+
+
+GATE = load("dist_source_gate")
+if sys.argv[1] == "refresh-dist":
+    files = GATE.dist_entries(ROOT / "frontend" / "dist")
+    summary = {
+        "schema_version": GATE.SCHEMA_VERSION,
+        "dist_digest": GATE.dist_digest(files),
+        "dist_file_count": len(files),
+        "dist_files": files,
+    }
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    sys.stdout.flush()
+    apply_race()
+    raise SystemExit(0)
+
+undo_race()
+RELEASE = load("release_gate")
+try:
+    raise SystemExit(RELEASE.main(sys.argv[1:]))
+except RELEASE.ReleaseGateError as error:
+    print("release gate failed: " + str(error), file=sys.stderr)
+    raise SystemExit(1)
+'''
+
+
+def powershell() -> str | None:
+    for candidate in ("powershell.exe", "pwsh.exe", "pwsh"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return None
 
 
 class WindowsInstallerBundleContractTest(unittest.TestCase):
@@ -28,6 +120,43 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertRegex(script, r"(?i)runtime\\python\.exe")
         self.assertIn("RuntimeArchivePath", script)
         self.assertIn("sys.path.insert(0, sys.argv[1])", script)
+
+    def test_builder_binds_dist_to_its_source_before_copying_it(self) -> None:
+        script = self.read("Build-WindowsInstaller.ps1")
+
+        self.assertIn("release_gate.py", script)
+        self.assertIn("refresh-dist", script)
+        self.assertIn("--repo $sourcePath", script)
+        self.assertIn("$LASTEXITCODE -ne 0", script)
+        self.assertIn("dist/source gate refused", script)
+        self.assertLess(
+            script.index("refresh-dist"),
+            script.index("'frontend\\dist'"),
+            "the gate must run before a single dist byte is copied",
+        )
+
+    def test_builder_binds_the_copied_dist_bytes_to_the_admitted_digest(self) -> None:
+        script = self.read("Build-WindowsInstaller.ps1")
+
+        self.assertIn("verify-staged-dist", script)
+        self.assertIn("--expect $admittedDist.dist_digest", script)
+        self.assertIn("--staged $stagedDist", script)
+        self.assertIn("is not the tree the gate admitted", script)
+        copy = script.index("Copy-Item -LiteralPath (Join-Path $sourcePath 'frontend")
+        staged = script.index("verify-staged-dist")
+        self.assertLess(script.index("refresh-dist"), copy)
+        self.assertLess(copy, staged, "the copied bytes are what must be checked")
+        self.assertLess(
+            script.rindex("(Join-Path $sourcePath 'frontend"),
+            staged,
+            "the live dist must never be read again after the staged check",
+        )
+
+    def test_builder_never_judges_dist_freshness_by_timestamp(self) -> None:
+        script = self.read("Build-WindowsInstaller.ps1")
+
+        for forbidden in ("LastWriteTime", "CreationTime", "-NewerThan", "LastAccessTime"):
+            self.assertNotIn(forbidden, script)
 
     def test_builder_emits_a_portable_sha256_sidecar(self) -> None:
         script = self.read("Build-WindowsInstaller.ps1")
@@ -391,6 +520,134 @@ class WindowsInstallerBundleContractTest(unittest.TestCase):
         self.assertIn("remote-connection.json", script)
         self.assertIn("--check-remote-connection", script)
         self.assertIn("[Text.UTF8Encoding]::new($false)", script)
+
+
+class WindowsDistStageConsumptionTest(unittest.TestCase):
+    """The installer must ship the dist bytes the gate admitted, not a later tree.
+
+    The marked dist stage of the real builder script is executed against a
+    synthetic source root and a mocked release-gate command. Nothing is
+    downloaded, no wheel or dependency is installed, no compiler runs and no
+    installer is produced: only the gate call, the payload copy and the staged
+    check that now stands between them and publication.
+    """
+
+    def setUp(self) -> None:
+        self.shell = powershell()
+        if self.shell is None:
+            self.skipTest("no PowerShell host is available")
+        self.temporary = tempfile.mkdtemp(prefix="workstack-dist-stage-")
+        self.addCleanup(shutil.rmtree, self.temporary, True)
+        self.base = Path(self.temporary)
+        self.source = self.base / "source"
+        self.payload = self.base / "payload"
+        (self.source / "scripts").mkdir(parents=True)
+        (self.source / "scripts" / "release_gate.py").write_text(
+            STUB_RELEASE_GATE.replace("@SCRIPTS@", str(SCRIPTS)), encoding="utf-8"
+        )
+        self.dist = self.source / "frontend" / "dist"
+        (self.dist / "assets").mkdir(parents=True)
+        (self.dist / "index.html").write_bytes(b"<html>admitted</html>\n")
+        (self.dist / "assets" / "app.js").write_bytes(b"export const build = 1\n")
+        self.payload.mkdir()
+
+    def dist_stage(self) -> str:
+        """The builder's own marked dist stage, verbatim."""
+
+        script = (WINDOWS / "Build-WindowsInstaller.ps1").read_text(encoding="utf-8-sig")
+        start = script.index("# ---- admitted frontend dist")
+        end = script.index("# ---- end admitted frontend dist")
+        return script[start:script.index("\n", end) + 1]
+
+    def race(self, **step: object) -> None:
+        (self.source / "race.json").write_text(json.dumps(step), encoding="utf-8")
+
+    def run_stage(self) -> subprocess.CompletedProcess:
+        quoted = lambda value: str(value).replace("'", "''")
+        body = [
+            "$ErrorActionPreference = 'Stop'",
+            "$WorkStackTestPython = '" + quoted(sys.executable) + "'",
+            "function python { & $WorkStackTestPython @args }",
+            "$sourcePath = '" + quoted(self.source) + "'",
+            "$payload = '" + quoted(self.payload) + "'",
+            "New-Item -ItemType Directory -Force -Path (Join-Path $payload 'frontend') | Out-Null",
+            self.dist_stage(),
+        ]
+        script = self.base / "stage.ps1"
+        script.write_text("\n".join(body) + "\n", encoding="utf-8-sig")
+        return subprocess.run(
+            [self.shell, "-NoProfile", "-NonInteractive", "-File", str(script)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+        )
+
+    def bytes_under(self, root: Path) -> dict:
+        if not root.is_dir():
+            return {}
+        return {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+
+    def staged(self) -> dict:
+        return self.bytes_under(self.payload / "frontend" / "dist")
+
+    def live(self) -> dict:
+        return self.bytes_under(self.dist)
+
+    def refuse_stage(self) -> str:
+        completed = self.run_stage()
+        output = completed.stdout + completed.stderr
+        self.assertNotEqual(0, completed.returncode, output)
+        self.assertIn("DIST_STAGED_DRIFT", output)
+        self.assertIn("was admitted", output)
+        return output
+
+    def test_an_undisturbed_dist_is_copied_and_accepted(self) -> None:
+        admitted = self.live()
+
+        completed = self.run_stage()
+
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        self.assertEqual(admitted, self.staged())
+        self.assertIn("dist_digest", completed.stdout)
+
+    def test_an_asset_rewritten_between_the_gate_and_the_copy_fails_packaging(self) -> None:
+        """The live tree is honest again by the staged check, and it still refuses."""
+
+        self.race(path="assets/app.js", content="export const build = 666\n", restore=True)
+        admitted = self.live()
+
+        self.refuse_stage()
+
+        # The copy really did consume the rewritten bytes, so this is a verdict on
+        # the payload rather than on the order the gate was called in -- and the
+        # live tree matches the receipt again, so a second live check would have
+        # let those bytes through.
+        self.assertEqual(b"export const build = 666\n", self.staged()["assets/app.js"])
+        self.assertEqual(admitted, self.live())
+
+    def test_an_added_emitted_file_fails_packaging(self) -> None:
+        self.race(path="assets/injected.js", content="export const injected = 1\n", restore=True)
+        admitted = self.live()
+
+        self.refuse_stage()
+
+        self.assertIn("assets/injected.js", self.staged())
+        self.assertEqual(admitted, self.live())
+
+    def test_a_deleted_emitted_file_fails_packaging(self) -> None:
+        self.race(path="assets/app.js", content=None, restore=True)
+        admitted = self.live()
+
+        self.refuse_stage()
+
+        self.assertNotIn("assets/app.js", self.staged())
+        self.assertEqual(admitted, self.live())
 
 
 if __name__ == "__main__":

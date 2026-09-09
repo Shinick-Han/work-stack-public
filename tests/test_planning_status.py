@@ -84,7 +84,7 @@ class PlanningStatusFactsTest(unittest.TestCase):
         facts = self.facts(stack)
         raw_task = stack.store.load("backlog.json")["tasks"][0]
 
-        self.assertEqual(stack.store.readiness.schema_version, 5)
+        self.assertEqual(stack.store.readiness.schema_version, 6)
         self.assertEqual(stack.store.load("backlog.json")["version"], 3)
         self.assertEqual(stack.store.load("activity.json")["version"], 2)
         self.assertEqual(len(facts), 1)
@@ -121,7 +121,7 @@ class PlanningStatusFactsTest(unittest.TestCase):
         )
         metadata = stack.store.load("store-meta.json")
         self.assertEqual(metadata["version"], 2)
-        self.assertEqual(metadata["store_schema_version"], 5)
+        self.assertEqual(metadata["store_schema_version"], 6)
         self.assertEqual(metadata["migrations"]["reports"]["origin"], "migrated_v2")
         self.assertEqual(metadata["migrations"]["identity"]["origin"], "fresh")
         self.assertEqual(metadata["migrations"]["planning_status"]["origin"], "migrated_v2")

@@ -1,0 +1,276 @@
+{
+  "note": "Bounded owned copy of listed GET records, one stored WIRE retrieval, and the import envelope from the R6 oracle. Tests load this sibling file only.",
+  "oracle_name": "R6-CAPTURE-1.1-PROJECTION.fixture.json",
+  "oracle_sha256_lf": "d017701b3bd88e9015f38c2e2d857f4bab936d05f620af83f611a96a20b590e3",
+  "generator_sha": "3ae9586aaf1054776e3faba184e3f710c32aaa9f",
+  "contract": "contracts/knowledge-capture-import-v1.md, section 'Reading a stored 1.1 record'",
+  "route": "POST /api/v1/knowledge/captures/import",
+  "request_envelope": {
+    "schema": "workstack.knowledge-import.v1",
+    "request_id": "6041ac27-1e05-535d-a3e6-d1e44384981e",
+    "items": [
+      {
+        "item_id": "11111111-1111-4111-8111-111111111111",
+        "title": "Rollback verification owner",
+        "normalized": {
+          "summary": "The release owner verifies the rollback before sign off.",
+          "context": "Carried out of band by the owner from the NAS share.",
+          "action_items": [
+            {
+              "title": "Confirm the rollback owner",
+              "priority": "P1"
+            }
+          ],
+          "tags": [
+            "rollback"
+          ]
+        },
+        "retrieval": {
+          "schema": "workstack.capture-retrieval.v1.1",
+          "capture_schema_version": "1.1",
+          "request_id": "6041ac27-1e05-535d-a3e6-d1e44384981e",
+          "query_id": "engine-q-00194f5a",
+          "answer_scope": "single_source",
+          "confidence": {
+            "level": "medium",
+            "score": 0.62
+          },
+          "evidence": [
+            {
+              "source_type": "nas.file",
+              "title": "Release quality gate",
+              "document_ref": "nas-doc-0001abcd",
+              "chunk_ref": "chunk-0004abcd",
+              "source_version": "nas-version-14",
+              "indexed_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "web_url": null
+            }
+          ],
+          "truncated": false
+        }
+      },
+      {
+        "item_id": "22222222-2222-4222-8222-222222222222",
+        "title": "Synthesized rollback context",
+        "normalized": {
+          "summary": "Two sources agree on the gate owner.",
+          "context": "Synthesized across the NAS share and the product wiki.",
+          "action_items": [],
+          "tags": []
+        },
+        "retrieval": {
+          "schema": "workstack.capture-retrieval.v1.1",
+          "capture_schema_version": "1.1",
+          "request_id": "6041ac27-1e05-535d-a3e6-d1e44384981e",
+          "query_id": "engine-q-00194f5b",
+          "answer_scope": "synthesized",
+          "confidence": {
+            "level": "medium",
+            "score": 0.62
+          },
+          "evidence": [
+            {
+              "source_type": "nas.file",
+              "title": "Release quality gate",
+              "document_ref": "nas-doc-0002abcd",
+              "chunk_ref": "chunk-0004abcd",
+              "source_version": "nas-version-14",
+              "indexed_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "web_url": null
+            },
+            {
+              "source_type": "notion.page",
+              "title": "Rollback runbook",
+              "document_ref": "od-page-7f3ba1d34f50",
+              "chunk_ref": null,
+              "source_version": null,
+              "indexed_digest": null,
+              "web_url": null
+            }
+          ],
+          "truncated": false
+        }
+      }
+    ]
+  },
+  "listed": [
+    {
+      "id": "C-0001",
+      "schema_version": "1.1",
+      "source_key": "sha256:173e35aa1826b983d70fc7574b84f64363355f8fe98cccafccf8270fb6d1ab48",
+      "source": {
+        "connection_ref": "team-nas",
+        "container_ref": "6041ac27-1e05-535d-a3e6-d1e44384981e",
+        "display_title": "Rollback verification owner",
+        "fingerprint": "sha256:0e32ffda080767f69df4cf8f0a1525d7f20011f6aa929115e4b6d731395dddb4",
+        "object_ref": "11111111-1111-4111-8111-111111111111",
+        "provider": "manual",
+        "resource_type": "knowledge.answer",
+        "retrieved_at": "2026-09-08T09:02:00Z",
+        "version_ref": "sha256:484d6a139fd968114cf4cbec56b655776b8b3757010d14eb3c942575c26e7794",
+        "web_url": null
+      },
+      "normalized": {
+        "action_items": [
+          {
+            "detail": "",
+            "due": null,
+            "id": "A-347cc07a7811519b",
+            "priority": "P1",
+            "title": "Confirm the rollback owner"
+          }
+        ],
+        "context": "Carried out of band by the owner from the NAS share.",
+        "summary": "The release owner verifies the rollback before sign off.",
+        "tags": [
+          "rollback"
+        ]
+      },
+      "task_hints": [],
+      "provenance": {
+        "adapter": "workstack.knowledge-import",
+        "adapter_version": "1",
+        "capture_mode": "manual",
+        "created_at": "2026-09-08T09:02:00Z",
+        "raw_retained": false,
+        "redaction_policy_version": "1"
+      },
+      "status": "inbox",
+      "linked_task_ids": [],
+      "converted_task_ids": [],
+      "revision": 0,
+      "created_at": "2026-09-08T09:02:00Z",
+      "updated_at": "2026-09-08T09:02:00Z",
+      "retrieval": {
+        "schema": "workstack.capture-retrieval.v1.1",
+        "capture_schema_version": "1.1",
+        "request_id": "6041ac27-1e05-535d-a3e6-d1e44384981e",
+        "query_id": "engine-q-00194f5a",
+        "answer_scope": "single_source",
+        "confidence": {
+          "level": "medium",
+          "score": 0.62
+        },
+        "evidence": [
+          {
+            "reported_source_type": "nas.file",
+            "title": "Release quality gate",
+            "document_ref": "nas-doc-0001abcd",
+            "chunk_ref": "chunk-0004abcd",
+            "reported_source_version": "nas-version-14",
+            "version_state": "reported_unverified",
+            "indexed_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "web_url": null
+          }
+        ],
+        "truncated": false,
+        "reported_origin": {
+          "document_ref": "nas-doc-0001abcd",
+          "source_type": "nas.file"
+        },
+        "origin": null,
+        "origin_state": "reported_unverified",
+        "capture_source_type": "knowledge.answer"
+      }
+    },
+    {
+      "id": "C-0002",
+      "schema_version": "1.1",
+      "source_key": "sha256:3f04be6b95bdbb261278b6bca0c070cd78a354eb3468b10629742f09e70d2c5c",
+      "source": {
+        "connection_ref": "team-nas",
+        "container_ref": "6041ac27-1e05-535d-a3e6-d1e44384981e",
+        "display_title": "Synthesized rollback context",
+        "fingerprint": "sha256:ad359d56ad1be549266cfc90fc822f1d08fffa36b589cb8b866725300d67e2cf",
+        "object_ref": "22222222-2222-4222-8222-222222222222",
+        "provider": "manual",
+        "resource_type": "knowledge.answer",
+        "retrieved_at": "2026-09-08T09:02:00Z",
+        "version_ref": "sha256:2edc8225d73b3f6885f8182ef6f7853b1b4c885442e2272fc95d16b9f6da2177",
+        "web_url": null
+      },
+      "normalized": {
+        "action_items": [],
+        "context": "Synthesized across the NAS share and the product wiki.",
+        "summary": "Two sources agree on the gate owner.",
+        "tags": []
+      },
+      "task_hints": [],
+      "provenance": {
+        "adapter": "workstack.knowledge-import",
+        "adapter_version": "1",
+        "capture_mode": "manual",
+        "created_at": "2026-09-08T09:02:00Z",
+        "raw_retained": false,
+        "redaction_policy_version": "1"
+      },
+      "status": "inbox",
+      "linked_task_ids": [],
+      "converted_task_ids": [],
+      "revision": 0,
+      "created_at": "2026-09-08T09:02:00Z",
+      "updated_at": "2026-09-08T09:02:00Z",
+      "retrieval": {
+        "schema": "workstack.capture-retrieval.v1.1",
+        "capture_schema_version": "1.1",
+        "request_id": "6041ac27-1e05-535d-a3e6-d1e44384981e",
+        "query_id": "engine-q-00194f5b",
+        "answer_scope": "synthesized",
+        "confidence": {
+          "level": "medium",
+          "score": 0.62
+        },
+        "evidence": [
+          {
+            "reported_source_type": "nas.file",
+            "title": "Release quality gate",
+            "document_ref": "nas-doc-0002abcd",
+            "chunk_ref": "chunk-0004abcd",
+            "reported_source_version": "nas-version-14",
+            "version_state": "reported_unverified",
+            "indexed_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "web_url": null
+          },
+          {
+            "reported_source_type": "notion.page",
+            "title": "Rollback runbook",
+            "document_ref": "od-page-7f3ba1d34f50",
+            "chunk_ref": null,
+            "reported_source_version": null,
+            "version_state": "unreported",
+            "indexed_digest": null,
+            "web_url": null
+          }
+        ],
+        "truncated": false,
+        "reported_origin": null,
+        "origin": null,
+        "origin_state": "synthesized",
+        "capture_source_type": "knowledge.answer"
+      }
+    }
+  ],
+  "stored_retrieval": {
+    "answer_scope": "single_source",
+    "capture_schema_version": "1.1",
+    "confidence": {
+      "level": "medium",
+      "score": 0.62
+    },
+    "evidence": [
+      {
+        "chunk_ref": "chunk-0004abcd",
+        "document_ref": "nas-doc-0001abcd",
+        "indexed_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_type": "nas.file",
+        "source_version": "nas-version-14",
+        "title": "Release quality gate",
+        "web_url": null
+      }
+    ],
+    "query_id": "engine-q-00194f5a",
+    "request_id": "6041ac27-1e05-535d-a3e6-d1e44384981e",
+    "schema": "workstack.capture-retrieval.v1.1",
+    "truncated": false
+  }
+}

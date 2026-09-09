@@ -84,13 +84,38 @@ export async function getCsrfToken(force = false): Promise<string> {
   return csrfTokenPromise
 }
 
-export async function getData<T>(path: string, schema: z.ZodType<T>): Promise<T> {
+/** Narrow response evidence a caller needs before the envelope is discarded. */
+export interface ResponseReceipt {
+  status?: number
+  meta?: unknown
+}
+
+/** The mutation spelling of the same receipt, under the name D5 callers already use. */
+export type MutateReceipt = ResponseReceipt
+
+/**
+ * Reads one published projection.
+ *
+ * `receipt` is opt-in and changes nothing else: the request, the retry, the error
+ * envelope and the closed `data` parse are the ones every existing caller already gets,
+ * and a caller that omits it is byte-for-byte where it was. It exists so a route whose
+ * contract publishes an optional envelope `meta` beside `data` can read that meta
+ * without forking the transport or issuing a second request. What the caller does with
+ * it is the caller's business; nothing here widens the `data` schema.
+ */
+export async function getData<T>(
+  path: string,
+  schema: z.ZodType<T>,
+  receipt?: ResponseReceipt,
+): Promise<T> {
   const response = await fetchWithNetworkRetry(path, {
     credentials: 'same-origin',
     cache: 'no-store',
     headers: { Accept: 'application/json' },
   })
+  if (receipt) receipt.status = response.status
   const envelope = envelopeSchema.parse(await assertOk(response))
+  if (receipt) receipt.meta = envelope.meta
   return schema.parse(envelope.data)
 }
 
@@ -99,12 +124,6 @@ export async function getData<T>(path: string, schema: z.ZodType<T>): Promise<T>
  * Omitting it preserves the existing network retry and 403 recovery for every
  * current caller.
  */
-/** Narrow response evidence the D5 route needs before the envelope is discarded. */
-export interface MutateReceipt {
-  status?: number
-  meta?: unknown
-}
-
 export interface MutateOptions {
   /** D5 transitions: one POST per explicit submit, no automatic resend. */
   singleAttempt?: boolean
@@ -112,6 +131,21 @@ export interface MutateOptions {
   receipt?: MutateReceipt
   /** The only caller-supplied extra header. CSRF, Origin, Content-Type, and Idempotency-Key stay transport-owned. */
   ifMatch?: string
+  /**
+   * Opt-in strict success admission, for a route whose contract publishes an exact
+   * envelope and nothing else.
+   *
+   * The shared `envelopeSchema` above is a deliberately non-strict `z.object`: it reads
+   * `data` and `meta` and silently drops every other top-level key, which is what lets
+   * different routes publish their own envelope extras without a transport change. That
+   * strip is lossy, so a caller that must refuse an unpublished top-level key cannot
+   * recover it afterwards. Supplying a schema here validates the ORIGINAL parsed 2xx
+   * payload before the shared envelope touches it.
+   *
+   * Omitting the option — every existing caller — leaves the default admission and the
+   * default envelope strictness exactly as they were.
+   */
+  strictEnvelope?: z.ZodType<unknown>
 }
 
 /** An unreadable 2xx body: the write may well have happened. */
@@ -120,6 +154,16 @@ export class UnreadableSuccessError extends Error {
     super('The server returned an unreadable successful response.')
     this.name = 'UnreadableSuccessError'
   }
+}
+
+/**
+ * The opt-in strict schema sees the untouched payload; the shared, non-strict parse then
+ * runs unchanged for everyone, including that caller. A caller without the option is
+ * byte-for-byte where it was.
+ */
+function admitEnvelope(payload: unknown, strictEnvelope?: z.ZodType<unknown>) {
+  strictEnvelope?.parse(payload)
+  return envelopeSchema.parse(payload)
 }
 
 export async function mutateData<T>(
@@ -179,7 +223,7 @@ export async function mutateData<T>(
     }
     throw error
   }
-  const envelope = envelopeSchema.parse(payload)
+  const envelope = admitEnvelope(payload, options.strictEnvelope)
   if (options.receipt) options.receipt.meta = envelope.meta
   const parsed = schema.parse(envelope.data)
   if (publishChange) publishPlanningChange()

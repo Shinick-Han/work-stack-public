@@ -1,7 +1,8 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, test, vi } from 'vitest'
 
-import { TaskContextTimeline } from './TaskContextTimeline'
+import { TaskContextTimeline, type TaskContextLinkRemovalState } from './TaskContextTimeline'
 import { TaskContextTimeline as featureTimeline } from '../features/tasks/TaskDrawerTimelines'
 import { contextTitle, externalContext } from '../utils/taskContext'
 import { contextTitle as featureContextTitle, externalContext as featureExternalContext } from '../features/tasks/taskDrawerModel'
@@ -191,5 +192,73 @@ describe('the shared renderer keeps its established markup', () => {
     const extras = screen.getByText('Additional recorded data (7)').closest('details')
     expect(extras?.textContent).not.toContain('Mail subject')
     expect(screen.getByRole('link', { name: /Open source/ })).toBeInTheDocument()
+  })
+})
+
+describe('R22 removal presentation is bound to the card the reader is looking at', () => {
+  const linked = item({
+    id: 'C-0001',
+    ref: { kind: 'capture', id: 'C-0001' },
+    revision: 5,
+    date_precision: 'instant',
+    created_at: '2026-09-02T01:00:00Z',
+    source: { display_title: 'Captured source', provider: 'microsoft-outlook' },
+    connections: [{ target: { kind: 'task', id: 'T-0001' }, reasons: ['capture-link'] }],
+  })
+
+  const removal = (patch: Partial<TaskContextLinkRemovalState> = {}): TaskContextLinkRemovalState => ({
+    taskId: 'T-0001',
+    pending: null,
+    failure: null,
+    undo: null,
+    locked: false,
+    onRemove: () => undefined,
+    onUndo: () => undefined,
+    onDismissUndo: () => undefined,
+    ...patch,
+  })
+
+  test('renders the action for the Task own link and calls back with the displayed revision', async () => {
+    const onRemove = vi.fn()
+    render(
+      <TaskContextTimeline
+        context={[linked]}
+        providerGates={microsoftProviderGates}
+        removal={removal({ onRemove })}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'Remove task link' }))
+
+    expect(onRemove).toHaveBeenCalledExactlyOnceWith({ captureId: 'C-0001', revision: 5 })
+  })
+
+  test('ignores a pending row or a message recorded against another revision', () => {
+    render(
+      <TaskContextTimeline
+        context={[linked]}
+        providerGates={microsoftProviderGates}
+        removal={removal({
+          failure: { captureId: 'C-0001', revision: 4, message: 'Stale message', retry: true },
+        })}
+      />,
+    )
+
+    // The card has moved on to revision 5, so the revision-4 attempt decorates nothing.
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Remove task link' })).toBeEnabled()
+  })
+
+  test('locks every card while one request is in flight', () => {
+    render(
+      <TaskContextTimeline
+        context={[linked]}
+        providerGates={microsoftProviderGates}
+        removal={removal({ locked: true, pending: { captureId: 'C-9999', revision: 1, retry: false } })}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Remove task link' })).toBeDisabled()
+    expect(screen.queryByRole('status')).toBeNull()
   })
 })

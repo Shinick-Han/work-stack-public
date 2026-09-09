@@ -1,0 +1,5 @@
+{
+  "request_id": "c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1",
+  "connection_id": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "query": "Emit a connection id the schema cannot hold"
+}

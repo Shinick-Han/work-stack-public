@@ -1,4 +1,4 @@
-"""The v5 document roster, the on-disk names and the shared serializers.
+"""The v6 document roster, the on-disk names and the shared serializers.
 
 Every other store module answers questions about *these* names: which documents
 a released store carries, what an untouched one holds, and the exact bytes a
@@ -20,6 +20,7 @@ import uuid
 from typing import Any
 
 from . import store_rosters
+from .knowledge_ledger_document import KNOWLEDGE_DEFAULT, KNOWLEDGE_DOCUMENT_NAME
 from .store_document_validation import (
     ACTIVITY_DEFAULT,
     AUXILIARY_DEFAULTS,
@@ -54,9 +55,13 @@ CHANGE_NOTICE_TYPE = "workstack.change.v1"
 MAX_COMMIT_EVENTS = 3
 
 
-# Schema 4 belongs to workstack.ssot, so the next collection-layout version is
-# 5: the nine released documents plus reports.json.
-STORE_SCHEMA_VERSION = 5
+# Schema 4 belongs to workstack.ssot, so the collection-layout version after 3
+# is 5: the nine released documents plus reports.json. Schema 6 adds the
+# eleventh and last one this build knows, knowledge.json, the owner-held policy
+# and request ledger. This single statement is what "which roster does this
+# build write" means; the frozen sets in store_rosters answer the other
+# question.
+STORE_SCHEMA_VERSION = 6
 
 
 _WORKSPACE_REQUIRED_KEYS = frozenset({"version", "id", "name"})
@@ -87,6 +92,11 @@ def _store_meta_default() -> dict[str, Any]:
                 "origin": "fresh",
                 "source_sha256": None,
             },
+            "knowledge": {
+                "id": "workstack.knowledge.v6",
+                "origin": "fresh",
+                "source_sha256": None,
+            },
         },
     }
 
@@ -101,13 +111,14 @@ DEFAULTS: dict[str, dict[str, Any] | None] = {
     **{name: copy.deepcopy(value) for name, value in AUXILIARY_DEFAULTS.items()},
     "activity.json": copy.deepcopy(ACTIVITY_DEFAULT),
     "reports.json": copy.deepcopy(REPORTS_DEFAULT),
+    KNOWLEDGE_DOCUMENT_NAME: copy.deepcopy(KNOWLEDGE_DEFAULT),
 }
 
-# This build writes exactly the v5 roster. The check is here so a roster edit
+# This build writes exactly the v6 roster. The check is here so a roster edit
 # cannot silently teach the historical readers a document their version never
 # had.
-if frozenset(DEFAULTS) != store_rosters.V5_DOCUMENT_NAMES:
-    raise RuntimeError("store defaults no longer match the frozen v5 roster")
+if frozenset(DEFAULTS) != store_rosters.V6_DOCUMENT_NAMES:
+    raise RuntimeError("store defaults no longer match the frozen v6 roster")
 
 JOURNAL_NAME = ".workstack-journal.json"
 LOCK_NAME = ".workstack.lock"

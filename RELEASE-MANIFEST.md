@@ -1,5 +1,15 @@
 # Public snapshot manifest
 
+- Source: **1.0.13**, 2026-09-09; integration commit `6a2aa786edfc2617c9080873d18abd881290c5c3`.
+- Previous public commit: `5f4a617511ce4b5fa17bbef83376e4ac63c0a0c3`.
+- Only committed product files are exported; private history, local runtime state, vaults and credentials are excluded.
+- No release tag, installer asset or stable update manifest is changed by this snapshot. Latest published binary: v1.0.12.
+- [Validation](docs/SOURCE-SNAPSHOT-2026-09-09.md) and [scope](docs/WORKSTACK-CLOSEOUT-2026-09-09.ko.md).
+
+## Previous publication record (historical)
+
+# Public snapshot manifest
+
 - Source version: **1.0.11**, source preview updated 2026-09-08.
 - Integrated source commit: `46ab115b22d993d1f12fb7730c8d336773473a22`.
 - Previous public commit: `de7d764af2e48454a32e770efe66feaaaaccbba2`.

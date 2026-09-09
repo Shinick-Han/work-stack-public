@@ -62,7 +62,7 @@ interface EditorActions {
   testProfile: () => void
 }
 
-function authorityFingerprint(profile: ConnectionProfile | ConnectionProfileDraft): string {
+export function authorityFingerprint(profile: ConnectionProfile | ConnectionProfileDraft): string {
   const authority = profile.kind === 'local'
     ? { kind: profile.kind, data_dir: profile.data_dir }
     : {
@@ -72,7 +72,8 @@ function authorityFingerprint(profile: ConnectionProfile | ConnectionProfileDraf
       remote_data_dir: profile.remote_data_dir,
       preferred_forward_port: profile.preferred_forward_port,
       remote_port: profile.remote_port,
-      remote_python: profile.kind === 'ssh' ? profile.remote_python ?? '' : '',
+      remote_python: profile.remote_python ?? '',
+      knowledge_drivers_config: profile.knowledge_drivers_config ?? '',
     }
   return JSON.stringify({ ...authority, enabled: profile.enabled, expected_workspace_id: profile.expected_workspace_id })
 }

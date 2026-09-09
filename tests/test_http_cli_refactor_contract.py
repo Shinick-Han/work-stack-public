@@ -179,7 +179,7 @@ class CliParserSurfaceTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised:
             with redirect_stdout(stream), redirect_stderr(stream):
                 cli.parser().parse_args(
-                    ["agent", "context", "--task", "t", "--view", "planning-v2"]
+                    ["agent", "context", "--task", "t", "--view", "planning-v9"]
                 )
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("invalid choice", stream.getvalue())

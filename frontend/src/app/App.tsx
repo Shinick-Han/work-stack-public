@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type SetStateAction } from 'react'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api, CommitUnknownError, createIdempotencyKey } from '../api/client'
 import { microsoftProviderGates, type MicrosoftProviderGates } from '../config/providerGates'
 import { workstackConnectionCenterGates, type ConnectionCenterGates } from '../config/connectionCenterGates'
 import type { AppUrlState, CapturePacket, CaptureTaskInput, QuickTaskInput, Task, TaskStatus, WorkspaceProjection } from '../domain/types'
 import { CommandPalette } from '../features/commands/CommandPalette'
 import { CaptureImportDialog } from '../features/inbox/CaptureImportDialog'
+import { useKnowledgeReviewHandoff } from '../features/inbox/useKnowledgeReviewHandoff'
 import { buildManualWebCapturePacket, type SourceCaptureDraft } from '../features/inbox/sourceCapture'
 import { MicrosoftOobDialog, type MicrosoftOobMode } from '../features/integrations/MicrosoftOobDialog'
 import { QuickTaskDialog } from '../features/tasks/QuickTaskDialog'
@@ -83,6 +84,61 @@ function filteredShortcutTasks(workspace: WorkspaceProjection, state: AppUrlStat
     // forwarded by passing the whole state: the coordinate is explicit here.
     outcome: state.outcomeFilter,
   })
+}
+
+function captureImportDialogProps(
+  importMutation: {
+    error: unknown
+    isPending: boolean
+    mutate: (packet: CapturePacket) => void
+    reset: () => void
+  },
+  importOpen: boolean,
+  knowledgeReview: ReturnType<typeof useKnowledgeReviewHandoff>,
+  queryClient: QueryClient,
+  setImportOpen: Dispatch<SetStateAction<boolean>>,
+): ComponentProps<typeof CaptureImportDialog> {
+  return {
+    onClose: () => {
+      if (importMutation.isPending) return
+      setImportOpen(false)
+      importMutation.reset()
+    },
+    onKnowledgeImported: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['captures'] }),
+        queryClient.invalidateQueries({ queryKey: ['workspace'] }),
+      ])
+      setImportOpen(false)
+      importMutation.reset()
+    },
+    onKnowledgeStatusChange: knowledgeReview.onKnowledgeStatusChange,
+    onSubmit: (packet) => importMutation.mutate(packet),
+    open: importOpen,
+    pending: importMutation.isPending,
+    prefill: knowledgeReview.prefill,
+    serverError: errorMessageOrNull(importMutation.error),
+  }
+}
+
+function syncStatusDialogProps(
+  sync: ReturnType<typeof useAppShellSync>,
+): ComponentProps<typeof SyncStatusDialog> | undefined {
+  const { syncReviewOpen, syncStatus, workspaceRebind } = sync
+  if (!syncReviewOpen || !syncStatus) return undefined
+  return {
+    adoptError: errorMessageOrNull(sync.syncAdoptMutation.error),
+    adopting: sync.syncAdoptMutation.isPending,
+    onAdopt: sync.adoptReviewedSync,
+    onClose: () => sync.setSyncReviewOpen(false),
+    onRebind: workspaceRebind.run,
+    onRefresh: sync.refreshSyncReview,
+    rebindError: sync.workspaceRebindError,
+    rebindPreview: workspaceRebind.previewQuery.data,
+    rebinding: workspaceRebind.mutation.isPending,
+    refreshing: sync.syncStatusQuery.isFetching,
+    status: syncStatus,
+  }
 }
 
 function adjacentTaskId(tasks: readonly { id: string }[], currentTaskId: string | null, key: string) {
@@ -219,6 +275,8 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
       showNotice(`Imported ${capture.id}`)
     },
   })
+
+  const knowledgeReview = useKnowledgeReviewHandoff({ importOpen, importPending: importMutation.isPending, setImportOpen, workspaceUid: workspaceQuery.data?.workspace.id })
 
   useEffect(() => subscribePlanningChanges(() => {
     void queryClient.invalidateQueries()
@@ -514,17 +572,7 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
     pending: workspaceActionMutation.isPending,
     workspace,
   } : undefined
-  const captureImportProps: ComponentProps<typeof CaptureImportDialog> = {
-    onClose: () => {
-      if (importMutation.isPending) return
-      setImportOpen(false)
-      importMutation.reset()
-    },
-    onSubmit: (packet) => importMutation.mutate(packet),
-    open: importOpen,
-    pending: importMutation.isPending,
-    serverError: errorMessageOrNull(importMutation.error),
-  }
+  const captureImportProps = captureImportDialogProps(importMutation, importOpen, knowledgeReview, queryClient, setImportOpen)
   const microsoftOobProps: ComponentProps<typeof MicrosoftOobDialog> = {
     initialMode: microsoftOobMode ?? 'request',
     onClose: () => {
@@ -538,19 +586,7 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
     providerGates,
     serverError: errorMessageOrNull(oobImportMutation.error),
   }
-  const syncStatusProps: ComponentProps<typeof SyncStatusDialog> | undefined = syncReviewOpen && syncStatus ? {
-    adoptError: errorMessageOrNull(syncAdoptMutation.error),
-    adopting: syncAdoptMutation.isPending,
-    onAdopt: adoptReviewedSync,
-    onClose: () => setSyncReviewOpen(false),
-    onRebind: workspaceRebind.run,
-    onRefresh: refreshSyncReview,
-    rebindError: workspaceRebindError,
-    rebindPreview: workspaceRebind.previewQuery.data,
-    rebinding: workspaceRebind.mutation.isPending,
-    refreshing: syncStatusQuery.isFetching,
-    status: syncStatus,
-  } : undefined
+  const syncStatusProps = syncStatusDialogProps(sync)
 
   return (
     <div className={appShellClass(drawerOpen, syncWriteBlocked)}>
@@ -574,6 +610,7 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
           onNotice={showNotice}
           onRefetchCaptures={() => void capturesQuery.refetch()}
           onRefetchWorkspace={() => void workspaceQuery.refetch()}
+          onReviewKnowledge={knowledgeReview.onReviewKnowledge}
           onReviewNavigationLockChange={(locked) => { reviewNavigationLockRef.current = locked }}
           providerGates={providerGates}
           state={state}
@@ -592,6 +629,7 @@ export function App({ connectionCenterGates = workstackConnectionCenterGates, pr
         capture={selectedCapture}
         onCreateCaptureTask={createCaptureTask}
         onNotice={showNotice}
+        onReviewKnowledge={knowledgeReview.onReviewKnowledge}
         providerGates={providerGates}
         state={state}
         taskNavigationLockRef={taskNavigationLockRef}

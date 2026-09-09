@@ -323,7 +323,7 @@ class ReportRouteRegistrationTest(_ReportHttpCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(
-            set(body["data"]), {"workspace_uid", "source_digest", "preview"}
+            set(body["data"]), {"workspace_uid", "source_digest", "preview", "context_catalog"}
         )
 
     def test_the_weekly_preview_still_answers_its_own_route(self) -> None:

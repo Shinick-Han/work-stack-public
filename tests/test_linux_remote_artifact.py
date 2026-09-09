@@ -87,8 +87,47 @@ def commit_source(source: Path) -> None:
     git(source, "config", "user.name", "Artifact Test")
     git(source, "config", "commit.gpgsign", "false")
     git(source, "config", "core.autocrlf", "false")
+    (source / ".gitignore").write_text(".artifacts/\n", encoding="utf-8", newline="\n")
     git(source, "add", "-A")
     git(source, "commit", "-m", "fixture")
+    seal_dist(source)
+
+
+def write_frontend_inputs(root: Path) -> None:
+    """The build-input roster the dist/source gate content-addresses."""
+
+    (root / "frontend" / "src").mkdir(parents=True, exist_ok=True)
+    (root / "frontend" / "src" / "main.tsx").write_text("export const main = 1\n", encoding="utf-8")
+    (root / "frontend" / "index.html").write_text("<div id=root></div>\n", encoding="utf-8")
+    (root / "frontend" / "package.json").write_text('{"name":"ui"}\n', encoding="utf-8")
+    (root / "frontend" / "package-lock.json").write_text('{"lockfileVersion":3}\n', encoding="utf-8")
+    (root / "frontend" / "vite.config.ts").write_text("export default {}\n", encoding="utf-8")
+    for name in ("tsconfig.json", "tsconfig.app.json", "tsconfig.node.json"):
+        (root / "frontend" / name).write_text("{}\n", encoding="utf-8")
+    (root / "scripts").mkdir(parents=True, exist_ok=True)
+    (root / "scripts" / "generate-theme-tokens.mjs").write_text(
+        "export const tokens = 1\n", encoding="utf-8"
+    )
+    (root / "theme").mkdir(parents=True, exist_ok=True)
+    (root / "theme" / "theme-tokens.json").write_text('{"color":{}}\n', encoding="utf-8")
+    generated = root / "desktop" / "python-webview-shell" / "generated"
+    generated.mkdir(parents=True, exist_ok=True)
+    (generated / "theme_tokens.py").write_text("TOKENS = {}\n", encoding="utf-8")
+    fixtures = root / "tests" / "fixtures"
+    fixtures.mkdir(parents=True, exist_ok=True)
+    (fixtures / "checkpoint_change_v1.json").write_text('{"event_id":1}\n', encoding="utf-8")
+
+
+def seal_dist(root: Path) -> Path:
+    """Record the dist/source receipt the builder now demands before packaging."""
+
+    gate = BUILDER.DIST_GATE
+    receipt = gate.receipt_path(root)
+    gate.write_receipt(
+        receipt,
+        gate.build_receipt(gate.source_entries(root), gate.dist_entries(root / "frontend" / "dist")),
+    )
+    return receipt
 
 
 def write_source(root: Path, *, lock: str | None = None, version: str = "1.0.7") -> None:
@@ -103,9 +142,10 @@ def write_source(root: Path, *, lock: str | None = None, version: str = "1.0.7")
     (root / "web" / "index.html").write_text("<html></html>\n", encoding="utf-8")
     (root / "frontend" / "dist").mkdir(parents=True)
     (root / "frontend" / "dist" / "index.html").write_text("frozen\n", encoding="utf-8")
+    write_frontend_inputs(root)
     (root / "licenses").mkdir()
     (root / "licenses" / "NOTICE.txt").write_text("notice\n", encoding="utf-8")
-    (root / "desktop" / "python-webview-shell").mkdir(parents=True)
+    (root / "desktop" / "python-webview-shell").mkdir(parents=True, exist_ok=True)
     (root / "desktop" / "python-webview-shell" / "remote_entry.py").write_text(
         "raise SystemExit('remote-entry')\n", encoding="utf-8"
     )
@@ -130,6 +170,17 @@ def write_source(root: Path, *, lock: str | None = None, version: str = "1.0.7")
     (root / "SECURITY.md").write_text("security\n", encoding="utf-8")
     (root / "THIRD_PARTY_NOTICES.md").write_text("notices\n", encoding="utf-8")
     (root / "requirements.txt").write_text(lock or "", encoding="utf-8")
+
+
+def ignore_generated_dist(source: Path) -> None:
+    """Mirror the repository, where frontend/dist is generated and ignored."""
+
+    (source / ".gitignore").write_text(
+        ".artifacts/\nfrontend/dist/\n", encoding="utf-8", newline="\n"
+    )
+    git(source, "rm", "-r", "-q", "--cached", "frontend/dist")
+    git(source, "add", ".gitignore")
+    git(source, "commit", "-m", "ignore generated dist")
 
 
 def drop_and_commit(source: Path, relative: str) -> None:
@@ -732,7 +783,9 @@ class LinuxRemoteArtifactTests(unittest.TestCase):
                 path.write_bytes(converted)
         git(source, "add", "-A")
         git(source, "commit", "-m", "store-lf-blobs")
-        (source / ".gitignore").write_text("frontend/dist/\n", encoding="utf-8", newline="\n")
+        (source / ".gitignore").write_text(
+            ".artifacts/\nfrontend/dist/\n", encoding="utf-8", newline="\n"
+        )
         git(source, "rm", "-r", "--cached", "frontend/dist")
         git(source, "add", ".gitignore")
         git(source, "commit", "-m", "ignore generated dist")
@@ -753,6 +806,8 @@ class LinuxRemoteArtifactTests(unittest.TestCase):
         )
         shutil.copytree(dist, lf_root / "frontend" / "dist")
         shutil.copytree(dist, crlf_root / "frontend" / "dist")
+        seal_dist(lf_root)
+        seal_dist(crlf_root)
         self.assertIn(b"\r\n", (crlf_root / "README.md").read_bytes())
         self.assertNotIn(b"\r\n", (lf_root / "README.md").read_bytes())
         self.assertNotEqual((crlf_root / "README.md").read_bytes(), (lf_root / "README.md").read_bytes())
@@ -826,8 +881,12 @@ class LinuxRemoteArtifactTests(unittest.TestCase):
                 self.assertFalse(os.path.lexists(output))
 
     def test_generated_dist_emptied_after_the_frozen_check_is_still_refused(self) -> None:
+        """The dist/source gate refuses it before any payload byte is assembled."""
+
         source, wheels = happy_fixture(self.base / "dist-gone")
-        (source / ".gitignore").write_text("frontend/dist/\n", encoding="utf-8", newline="\n")
+        (source / ".gitignore").write_text(
+            ".artifacts/\nfrontend/dist/\n", encoding="utf-8", newline="\n"
+        )
         git(source, "rm", "-r", "-q", "--cached", "frontend/dist")
         git(source, "add", ".gitignore")
         git(source, "commit", "-m", "ignore generated dist")
@@ -837,9 +896,80 @@ class LinuxRemoteArtifactTests(unittest.TestCase):
         output = self.output_dir("dist-out")
         with self.assertRaises(BUILDER.ArtifactBuildError) as raised:
             BUILDER.build_artifact(source, wheels, output, TARGET)
-        self.assertEqual("ROSTER_MISSING", raised.exception.code)
+        self.assertEqual("DIST_MISSING", raised.exception.code)
         self.assertIn("frontend/dist", raised.exception.detail)
         self.assertFalse(os.path.lexists(output))
+
+    def test_dist_that_does_not_match_its_recorded_source_is_refused(self) -> None:
+        """A committed frontend source change alone invalidates the dist."""
+
+        source, wheels = happy_fixture(self.base / "dist-drift")
+        (source / "frontend" / "src" / "main.tsx").write_text(
+            "export const main = 2\n", encoding="utf-8"
+        )
+        git(source, "add", "-A")
+        git(source, "commit", "-m", "advance the ui source")
+        self.assertEqual("", git(source, "status", "--porcelain"))
+
+        output = self.output_dir("dist-drift-out")
+        with self.assertRaises(BUILDER.ArtifactBuildError) as raised:
+            BUILDER.build_artifact(source, wheels, output, TARGET)
+
+        self.assertEqual("DIST_SOURCE_DRIFT", raised.exception.code)
+        self.assertIn("refresh-dist", raised.exception.detail)
+        self.assertFalse(os.path.lexists(output))
+
+    def test_packaging_without_a_dist_receipt_refuses_with_the_repair_command(self) -> None:
+        source, wheels = happy_fixture(self.base / "dist-unsealed")
+        BUILDER.DIST_GATE.receipt_path(source).unlink()
+
+        output = self.output_dir("dist-unsealed-out")
+        with self.assertRaises(BUILDER.ArtifactBuildError) as raised:
+            BUILDER.build_artifact(source, wheels, output, TARGET)
+
+        self.assertEqual("DIST_RECEIPT_MISSING", raised.exception.code)
+        self.assertIn("refresh-dist", raised.exception.detail)
+        self.assertFalse(os.path.lexists(output))
+
+    def test_hand_edited_dist_is_refused_even_when_the_source_is_unchanged(self) -> None:
+        source, wheels = happy_fixture(self.base / "dist-tampered")
+        ignore_generated_dist(source)
+        (source / "frontend" / "dist" / "index.html").write_text("tampered\n", encoding="utf-8")
+        self.assertEqual("", git(source, "status", "--porcelain"))
+
+        output = self.output_dir("dist-tampered-out")
+        with self.assertRaises(BUILDER.ArtifactBuildError) as raised:
+            BUILDER.build_artifact(source, wheels, output, TARGET)
+
+        self.assertEqual("DIST_CONTENT_DRIFT", raised.exception.code)
+        self.assertFalse(os.path.lexists(output))
+
+    def test_uncommitted_frontend_build_inputs_are_refused(self) -> None:
+        """The receipt binds dist to content; this binds that content to the commit."""
+
+        source, wheels = happy_fixture(self.base / "dist-dirty")
+        (source / "frontend" / "src" / "main.tsx").write_text(
+            "export const main = 3\n", encoding="utf-8"
+        )
+        seal_dist(source)
+
+        output = self.output_dir("dist-dirty-out")
+        with self.assertRaises(BUILDER.ArtifactBuildError) as raised:
+            BUILDER.build_artifact(source, wheels, output, TARGET)
+
+        self.assertEqual("SOURCE_DIRTY", raised.exception.code)
+        self.assertFalse(os.path.lexists(output))
+
+    def test_frontend_build_inputs_are_admission_only_and_never_payload(self) -> None:
+        for path in BUILDER.GENERATED_SOURCE_PATHS:
+            with self.subTest(path=path):
+                self.assertIn(path, BUILDER.CLEAN_PATHS)
+                self.assertNotIn(path, BUILDER.ADMISSION_PATHS)
+                self.assertNotIn(path, BUILDER.FROZEN_ROOTS)
+        self.assertEqual(
+            BUILDER.ADMISSION_PATHS,
+            BUILDER.ROSTER_DIRS + BUILDER.ROSTER_FILES + ("requirements.txt",),
+        )
 
     def test_required_roster_file_of_the_wrong_type_is_refused(self) -> None:
         link_source, wheels = happy_fixture(self.base / "roster-link")
@@ -887,6 +1017,121 @@ class LinuxRemoteArtifactTests(unittest.TestCase):
         (source / "workstack" / "link").write_bytes(b"target")
         git(source, "commit", "-m", "symlink-blob")
         self.refuse(source, wheels, self.output_dir("git-symlink"), "SYMLINK")
+
+    # --- what the packager actually consumes -------------------------------
+
+    def racing_materialize(self, mutate, restore=None):
+        """Change the live frontend/dist across the payload copy, as any process may.
+
+        frontend/dist is generated and git-ignored, so the gate call above it
+        cannot hold it still. The mutation lands after the gate has admitted the
+        tree and before materialize_payload reads a byte of it.
+        """
+
+        original = BUILDER.materialize_payload
+
+        def wrapper(source, payload, wheels, blobs):
+            mutate()
+            try:
+                original(source, payload, wheels, blobs)
+            finally:
+                if restore is not None:
+                    restore()
+
+        return mock.patch.object(BUILDER, "materialize_payload", wrapper)
+
+    def seal_two_file_dist(self, source: Path) -> Path:
+        ignore_generated_dist(source)
+        assets = source / "frontend" / "dist" / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        (assets / "app.js").write_bytes(b"export const build = 1\n")
+        seal_dist(source)
+        return assets / "app.js"
+
+    def refuse_staged(self, source: Path, wheels: Path, output: Path, expected: str):
+        with self.assertRaises(BUILDER.ArtifactBuildError) as raised:
+            BUILDER.build_artifact(source, wheels, output, TARGET)
+        self.assertEqual("DIST_STAGED_DRIFT", raised.exception.code)
+        self.assertIn(expected, raised.exception.detail)
+        self.assertFalse(os.path.lexists(output))
+        return raised.exception
+
+    def test_the_archive_ships_exactly_the_dist_bytes_the_gate_admitted(self) -> None:
+        source, wheels = happy_fixture(self.base / "dist-admitted")
+        ignore_generated_dist(source)
+        admitted = BUILDER.assert_dist_matches_source(source)
+
+        archive, _sidecar = BUILDER.build_artifact(
+            source, wheels, self.output_dir("dist-admitted-out"), TARGET
+        )
+
+        prefix = "payload/frontend/dist/"
+        with zipfile.ZipFile(archive) as handle:
+            shipped = {
+                info.filename[len(prefix):]: BUILDER.sha256_bytes(handle.read(info))
+                for info in handle.infolist()
+                if info.filename.replace("\\", "/").startswith(prefix)
+            }
+        self.assertTrue(shipped)
+        self.assertEqual(
+            {entry["path"]: entry["sha256"] for entry in admitted["dist_files"]}, shipped
+        )
+
+    def test_an_emitted_asset_mutated_after_the_gate_cannot_reach_the_archive(self) -> None:
+        source, wheels = happy_fixture(self.base / "dist-race")
+        ignore_generated_dist(source)
+        emitted = source / "frontend" / "dist" / "index.html"
+        output = self.output_dir("dist-race-out")
+
+        with self.racing_materialize(lambda: emitted.write_bytes(b"swapped\n")):
+            self.refuse_staged(source, wheels, output, "index.html")
+
+        self.assertEqual(b"swapped\n", emitted.read_bytes())
+
+    def test_a_live_dist_change_restored_during_materialization_is_still_refused(self) -> None:
+        """The staged copy is a mixed snapshot even though the live tree is honest."""
+
+        source, wheels = happy_fixture(self.base / "dist-restore")
+        ignore_generated_dist(source)
+        emitted = source / "frontend" / "dist" / "index.html"
+        original = emitted.read_bytes()
+        output = self.output_dir("dist-restore-out")
+
+        with self.racing_materialize(
+            lambda: emitted.write_bytes(b"swapped\n"), lambda: emitted.write_bytes(original)
+        ):
+            self.refuse_staged(source, wheels, output, "index.html")
+
+        # A second live check after the copy would have passed, which is exactly
+        # why it is not what binds the payload.
+        self.assertEqual(original, emitted.read_bytes())
+        self.assertIsNotNone(BUILDER.assert_dist_matches_source(source))
+
+    def test_an_emitted_file_added_during_materialization_is_refused(self) -> None:
+        source, wheels = happy_fixture(self.base / "dist-added")
+        ignore_generated_dist(source)
+        injected = source / "frontend" / "dist" / "injected.js"
+        output = self.output_dir("dist-added-out")
+
+        with self.racing_materialize(
+            lambda: injected.write_bytes(b"export const injected = 1\n"), injected.unlink
+        ):
+            self.refuse_staged(source, wheels, output, "injected.js")
+
+        self.assertFalse(injected.exists())
+        self.assertIsNotNone(BUILDER.assert_dist_matches_source(source))
+
+    def test_an_emitted_file_deleted_during_materialization_is_refused(self) -> None:
+        source, wheels = happy_fixture(self.base / "dist-deleted")
+        asset = self.seal_two_file_dist(source)
+        original = asset.read_bytes()
+        output = self.output_dir("dist-deleted-out")
+
+        with self.racing_materialize(asset.unlink, lambda: asset.write_bytes(original)):
+            self.refuse_staged(source, wheels, output, "assets/app.js")
+
+        self.assertEqual(original, asset.read_bytes())
+        self.assertIsNotNone(BUILDER.assert_dist_matches_source(source))
 
 
 if __name__ == "__main__":

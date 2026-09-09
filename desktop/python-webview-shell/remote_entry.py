@@ -36,6 +36,7 @@ from remote_command_contract import (
     R5_OWNERSHIP_NOT_IMPLEMENTED,
     RemoteCommandError,
     require_session_token,
+    validated_posix_path,
 )
 from remote_owner import (
     EntryError,
@@ -81,6 +82,7 @@ def parse_remote_entry_argv(argv: Sequence[str] | None = None) -> argparse.Names
     serve.add_argument("--public-port", required=True, type=int)
     serve.add_argument("--session-token", required=True)
     serve.add_argument("--exit-with-parent", action="store_true")
+    serve.add_argument("--knowledge-drivers-config", default=None)
     stop = sub.add_parser("stop-owned", add_help=False)
     stop.add_argument("--data-dir", required=True)
     stop.add_argument("--session-token", required=True)
@@ -215,12 +217,55 @@ def run_probe(app_dir: Path, data_dir: Path, session_token: str | None = None) -
     return encode_probe_stdout(payload)
 
 
+def _optional_knowledge_drivers_config(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        return validated_posix_path(value, "knowledge_drivers_config")
+    except RemoteCommandError as error:
+        raise EntryError("REMOTE_PROTOCOL_INVALID", "knowledge_drivers_config is invalid") from error
+
+
+def _graph_serve_argv(
+    *,
+    runner: Path,
+    data_dir: object,
+    host: object,
+    port: object,
+    public_port: object,
+    exit_with_parent: bool,
+    knowledge_drivers_config: str | None,
+) -> list[str]:
+    argv = [
+        sys.executable,
+        str(runner),
+        "--data-dir",
+        str(data_dir),
+        "graph",
+        "serve",
+        "--host",
+        str(host),
+        "--port",
+        str(port),
+        "--public-port",
+        str(public_port),
+    ]
+    if exit_with_parent:
+        argv.append("--exit-with-parent")
+    if knowledge_drivers_config is not None:
+        argv.extend(["--knowledge-drivers-config", knowledge_drivers_config])
+    return argv
+
+
 def run_serve(args: argparse.Namespace) -> None:
     if not getattr(args, "session_token", None):
         raise EntryError(
             R5_OWNERSHIP_NOT_IMPLEMENTED,
             "session_token must be supplied by the desktop start attempt",
         )
+    knowledge_drivers_config = _optional_knowledge_drivers_config(
+        getattr(args, "knowledge_drivers_config", None)
+    )
     app_dir = Path(args.app_dir)
     data_dir = Path(args.data_dir)
     runner = app_dir / "run_work_stack.py"
@@ -237,22 +282,15 @@ def run_serve(args: argparse.Namespace) -> None:
         release_id=str(probe_payload["product_version"]),
         session_token=str(args.session_token),
     )
-    argv = [
-        sys.executable,
-        str(runner),
-        "--data-dir",
-        str(args.data_dir),
-        "graph",
-        "serve",
-        "--host",
-        str(args.host),
-        "--port",
-        str(args.port),
-        "--public-port",
-        str(args.public_port),
-    ]
-    if args.exit_with_parent:
-        argv.append("--exit-with-parent")
+    argv = _graph_serve_argv(
+        runner=runner,
+        data_dir=args.data_dir,
+        host=args.host,
+        port=args.port,
+        public_port=args.public_port,
+        exit_with_parent=bool(args.exit_with_parent),
+        knowledge_drivers_config=knowledge_drivers_config,
+    )
     try:
         os.execv(sys.executable, argv)
     except OSError as error:

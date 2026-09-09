@@ -5,7 +5,6 @@ import ctypes
 import hashlib
 import json
 import os
-import re
 import socket
 import subprocess
 import sys
@@ -29,6 +28,7 @@ for import_root in (SCRIPT_DIRECTORY, APPLICATION_ROOT):
         sys.path.insert(0, str(import_root))
 
 from workstack import __version__ as WORKSTACK_VERSION
+from desktop_update_process import launch_update_process
 from brand_assets import BrandAssetMissing, has_mark_ico, inline_mark_markup, mark_ico_path
 from native_theme import (
     load_persisted_theme,
@@ -50,28 +50,35 @@ from workstack_update import (
     parse_update_manifest,
     save_update_preferences,
 )
+from workstack_update_status import (
+    current_version_message,
+    newer_than_channel_message,
+)
 from remote_attempt_resources import (
     CLEANUP_STALE,
     MonitorLease,
     RemoteAttemptResources,
     attempt_is_current,
     begin_remote_attempt,
+    captured_process_exited,
     cleanup_captured,
     commit_remote_ready,
     commit_resources,
     ensure_remote_server,
     fail_remote_attempt,
     fire_generation_barrier,
+    gate_for,
     initialize_attempt_resources,
     initialize_remote_attempt_state,
     monitor_slot_occupied,
     publish_monitor_lease,
+    resource_lock_for,
     stop_owned_connection,
     take_published_monitor,
     wait_until_ready,
 )
 from remote_connection_monitor import RemoteConnectionMonitor
-from remote_startup_state import RemoteStartupState, RemoteStartupStateMachine
+from remote_startup_state import READY_STATES, RemoteStartupState, RemoteStartupStateMachine
 from bounded_request_worker import BoundedRequestWorker
 from ssh_profile_metadata import run_remote_profile_metadata_check
 from connection_registry import ConnectionProfile, ConnectionRegistry, SshConnectionProfile
@@ -81,6 +88,7 @@ from connection_registry_compat import (
     rebind_active_remote_workspace,
 )
 from local_workspace_rebind import read_confirmed_local_rebind
+from owner_launch_config import graph_serve_argv
 
 
 class LocalRebindMirrorError(RuntimeError):
@@ -107,11 +115,10 @@ from connection_registry_startup import (
     fresh_local_store_required,
     select_active_profile_for_startup,
 )
-from connection_registry_host_contract import (
-    MAX_HOST_REQUEST_BYTES as CONNECTION_REGISTRY_MAX_REQUEST_BYTES,
-    ConnectionRegistryHostService,
-    RegistryHostErrorResponse,
-    encode_registry_host_response,
+from connection_registry_host_contract import ConnectionRegistryHostService
+from connection_registry_bridge import (
+    ConnectionRegistryBridgeMixin,
+    is_connection_registry_host_message,
 )
 from knowledge_desktop import KnowledgeDesktopMixin, post_workstack_web_message
 from ssot_connection import (
@@ -147,21 +154,13 @@ SOURCE_HOST_PREFIX = "workstack-source-host"
 UPDATE_HOST_PREFIX = "workstack-update-host"
 SSOT_HOST_PREFIX = "workstack-ssot-host"
 DESKTOP_MINIMUM_REMOTE_PROTOCOL = 1
+REMOTE_VERSION_PROBE_SECONDS = 3.0
 REMOTE_REBIND_COORDINATION_SECONDS = 30.0
 PROVIDER_URLS = {
     "outlook": "https://outlook.office.com/mail/",
     "teams": "https://teams.microsoft.com/v2/",
     "onenote": "https://www.office.com/launch/onenote",
 }
-_REGISTRY_TYPE_PATTERN = re.compile(
-    r'"type"\s*:\s*"workstack-connection-registry-request"'
-)
-_REGISTRY_REQUEST_ID_PATTERN = re.compile(
-    r'"request_id"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"'
-)
-_REGISTRY_OPERATION_PATTERN = re.compile(
-    r'"operation"\s*:\s*"(get-registry|save-registry|discover-ssh-aliases|choose-local-directory|test-profile|activate-profile)"'
-)
 
 
 def connection_registry_startup_enabled(environment: object = os.environ) -> bool:
@@ -170,16 +169,6 @@ def connection_registry_startup_enabled(environment: object = os.environ) -> boo
     getter = getattr(environment, "get", None)
     value = getter("WORKSTACK_CONNECTION_REGISTRY_V1", "1") if callable(getter) else "1"
     return value != "0"
-
-
-def _is_connection_registry_host_message(message: str) -> bool:
-    if not isinstance(message, str) or not message.lstrip().startswith("{"):
-        return False
-    try:
-        encoded = message.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return bool(_REGISTRY_TYPE_PATTERN.search(message[:4096]))
 
 
 class RemoteAuthorityMismatch(RuntimeError):
@@ -681,7 +670,38 @@ class NativeStartupSplash:
                     gdi32.DeleteObject(handle)
 
 
-class WorkStackDesktopHost(KnowledgeDesktopMixin):
+def _ssh_startup_runtime_from_registry(
+    selection: SshStartupSelection, matched: object | None,
+) -> tuple[RemoteConnectionProfile, dict[str, object]]:
+    remote_python = getattr(matched, "remote_python", None) if matched is not None else None
+    config = getattr(matched, "knowledge_drivers_config", None) if matched is not None else None
+    extra = {"knowledge_drivers_config": config} if isinstance(config, str) and config else {}
+    configured = RemoteConnectionProfile(
+        ssh_host_alias=selection.ssh_host_alias,
+        remote_app_dir=selection.remote_app_dir,
+        remote_data_dir=selection.remote_data_dir,
+        local_forward_port=selection.preferred_forward_port,
+        workspace_id=selection.expected_workspace_id,
+        remote_port=selection.remote_port,
+        remote_python=remote_python,
+        **extra,
+    )
+    draft: dict[str, object] = {
+        "storage_mode": "ssh-remote",
+        "ssh_host_alias": selection.ssh_host_alias,
+        "remote_app_dir": selection.remote_app_dir,
+        "remote_data_dir": selection.remote_data_dir,
+        "local_forward_port": selection.preferred_forward_port,
+        "workspace_id": selection.expected_workspace_id,
+        "remote_port": selection.remote_port,
+        **extra,
+    }
+    if remote_python:
+        draft["remote_python"] = remote_python
+    return configured, draft
+
+
+class WorkStackDesktopHost(ConnectionRegistryBridgeMixin, KnowledgeDesktopMixin):
     def __init__(self, options: argparse.Namespace) -> None:
         self.options = options
         self.install_root = options.install_root.resolve()
@@ -885,28 +905,10 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
                 ),
                 None,
             )
-            remote_python = getattr(matched, "remote_python", None) if matched is not None else None
-            configured = RemoteConnectionProfile(
-                ssh_host_alias=selection.ssh_host_alias,
-                remote_app_dir=selection.remote_app_dir,
-                remote_data_dir=selection.remote_data_dir,
-                local_forward_port=selection.preferred_forward_port,
-                workspace_id=selection.expected_workspace_id,
-                remote_port=selection.remote_port,
-                remote_python=remote_python,
+            configured, self.active_connection_draft = _ssh_startup_runtime_from_registry(
+                selection, matched
             )
             self.remote_profile = profile_with_runtime_forward_port(configured)
-            self.active_connection_draft = {
-                "storage_mode": "ssh-remote",
-                "ssh_host_alias": selection.ssh_host_alias,
-                "remote_app_dir": selection.remote_app_dir,
-                "remote_data_dir": selection.remote_data_dir,
-                "local_forward_port": selection.preferred_forward_port,
-                "workspace_id": selection.expected_workspace_id,
-                "remote_port": selection.remote_port,
-            }
-            if remote_python:
-                self.active_connection_draft["remote_python"] = remote_python
             self.workstack_url = (
                 f"http://127.0.0.1:{self.remote_profile.local_forward_port}/"
             )
@@ -1305,7 +1307,7 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
         self._show_source(provider, Rectangle(left, top, width, height))
 
     def _dispatch_workstack_host_message(self, message: str) -> bool:
-        if _is_connection_registry_host_message(message):
+        if is_connection_registry_host_message(message):
             self._handle_connection_registry_message(message)
             return True
         if self._dispatch_knowledge_host_message(message):
@@ -1328,119 +1330,6 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
                 self._apply_native_theme(theme)
             return True
         return False
-
-    def _handle_connection_registry_message(self, message: str) -> None:
-        if self.connection_registry_worker.submit(message):
-            return
-        response = self._connection_registry_busy_response(message)
-        self._post_connection_registry_response(response)
-
-    def _execute_connection_registry_request(self, message: str) -> str:
-        try:
-            return self.connection_registry_host.handle_json(message)
-        except Exception:
-            correlation = self._connection_registry_correlation(message)
-            request_id, operation = correlation if correlation is not None else (None, None)
-            return encode_registry_host_response(
-                RegistryHostErrorResponse(
-                    request_id=request_id,
-                    operation=operation,
-                    code="internal_error",
-                    message="Connection registry operation could not be completed.",
-                )
-            )
-
-    @staticmethod
-    def _connection_registry_busy_response(message: str) -> str:
-        correlation = WorkStackDesktopHost._connection_registry_correlation(message)
-        if correlation is None:
-            return encode_registry_host_response(
-                RegistryHostErrorResponse(
-                    request_id=None,
-                    operation=None,
-                    code="invalid_request",
-                    message="Connection registry request is invalid.",
-                )
-            )
-        request_id, operation = correlation
-        return encode_registry_host_response(
-            RegistryHostErrorResponse(
-                request_id=request_id,
-                operation=operation,
-                code="busy",
-                message="Connection registry is busy. Try again shortly.",
-            )
-        )
-
-    @staticmethod
-    def _connection_registry_correlation(message: str) -> tuple[str, str] | None:
-        if not isinstance(message, str) or len(message) > CONNECTION_REGISTRY_MAX_REQUEST_BYTES:
-            return None
-        prefix = message[:4096]
-        if len(_REGISTRY_TYPE_PATTERN.findall(prefix)) != 1:
-            return None
-        request_ids = _REGISTRY_REQUEST_ID_PATTERN.findall(prefix)
-        operations = _REGISTRY_OPERATION_PATTERN.findall(prefix)
-        if len(request_ids) != 1 or len(operations) != 1:
-            return None
-        try:
-            request_id = str(uuid.UUID(request_ids[0]))
-        except ValueError:
-            return None
-        if request_id != request_ids[0] or uuid.UUID(request_id).int == 0:
-            return None
-        return request_id, operations[0]
-
-    def _deliver_connection_registry_response(self, response: str) -> None:
-        form = self.form
-        if form is None or bool(getattr(form, "IsDisposed", False)):
-            return
-        from System import Action
-
-        def deliver_on_ui() -> None:
-            current = self.form
-            if current is not form or bool(getattr(current, "IsDisposed", False)):
-                return
-            self._post_connection_registry_response(response)
-
-        try:
-            form.BeginInvoke(Action(deliver_on_ui))
-        except Exception:
-            self._trace("connection registry response could not be marshalled to the UI thread")
-
-    def _post_connection_registry_response(self, response: str) -> None:
-        post_workstack_web_message(self, response)
-
-    def _choose_local_ssot_directory(self) -> str | None:
-        form = self.form
-        if form is None or bool(getattr(form, "IsDisposed", False)):
-            return None
-        from System import Action
-        from System.Windows.Forms import DialogResult, FolderBrowserDialog
-
-        selected: list[str | None] = [None]
-
-        def choose() -> None:
-            dialog = FolderBrowserDialog()
-            try:
-                dialog.Description = "Choose a Work Stack SSOT directory"
-                dialog.ShowNewFolderButton = True
-                if dialog.ShowDialog(form) == DialogResult.OK:
-                    selected[0] = str(dialog.SelectedPath)
-            finally:
-                dialog.Dispose()
-
-        try:
-            form.Invoke(Action(choose))
-        except Exception as error:
-            raise RuntimeError("The local SSOT directory picker could not be opened") from error
-        return selected[0]
-
-    @staticmethod
-    def _save_connection_registry_from_host(_state_root, _registry):
-        raise RuntimeError(
-            "Connection registry mutations are disabled until activation safety is released"
-        )
 
     def _dispatch_source_host_message(self, message: str) -> bool:
         if message == f"{SOURCE_HOST_PREFIX}|hide":
@@ -2324,6 +2213,136 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
         }
         self._dispatch_update_status()
 
+    def _settled_remote_session(self) -> RemoteAttemptResources | None:
+        """Return the installed bundle only for a settled, live, owned session.
+
+        A configured profile is not a session, and a freshly minted token is
+        not one either: `start_remote_attempt` publishes a token while entering
+        PROBING, long before a tunnel exists, and an intentional close leaves a
+        profile behind with no token at all. The attempt gate, the lifecycle
+        state, the published token and the owned process are all protected by
+        `remote_resource_lock`, so they are read together under that one lock
+        rather than as four independent observations.
+
+        A bundle is eligible only when the gate still holds it, its generation
+        is still the current attempt, the state machine has actually reached
+        READY or MONITORING, the ready id was published for that same
+        generation, its nonempty token is the token the host publishes, and its
+        captured process is the host's own and is still running. Every other
+        lifecycle position - never initialised, IDLE, PROBING, starting,
+        waiting, verifying, FAILED, STOPPED, or a bundle whose process has
+        exited - returns None so the caller reports "unknown". Nothing is
+        installed, detached or written, and the lock is released before the
+        caller performs any network read.
+        """
+
+        try:
+            lock = resource_lock_for(self)
+            gate = gate_for(self)
+        except RuntimeError:
+            self._trace("remote session unknown; the attempt protocol is not published")
+            return None
+        machine = getattr(self, "remote_startup", None)
+        if machine is None:
+            return None
+        with lock:
+            installed = gate.current_locked()
+            if installed is None:
+                return None
+            if machine.state not in READY_STATES:
+                return None
+            if not attempt_is_current(self, installed.generation):
+                return None
+            if getattr(self, "remote_ready_attempt_id", 0) != installed.generation:
+                return None
+            token = installed.token
+            if not token or token != getattr(self, "remote_session_token", None):
+                return None
+            process = installed.process
+            if process is None or process is not getattr(self, "remote_ssh_process", None):
+                return None
+            if captured_process_exited(installed):
+                return None
+            return installed
+
+    def _remote_binding_snapshot(self) -> dict[str, object] | None:
+        """Capture what identifies the remote this desktop is currently bound to.
+
+        Read-only, and taken under the existing remote-authority guard so the
+        facts that decide whose version an answer belongs to - the selected
+        profile, its workspace, the endpoint the probe will hit, and the
+        settled session that owns it - are observed as one consistent set. The
+        session bundle is captured inside that guard under the lifecycle lock
+        that actually protects it; the guard is the outer lock, matching the
+        established direction, since lifecycle code never reaches back for the
+        authority guard. Neither lock is held across the network.
+
+        A remote in the middle of a rebind coordination, one already flagged
+        for recovery, and one with no settled owned session have no authority
+        to speak for, so they return None and the caller reports "unknown".
+        Nothing is adopted, cleared or written.
+        """
+
+        with self._remote_authority_guard():
+            profile = self.remote_profile
+            if profile is None:
+                return None
+            rebind_target = str(getattr(self, "remote_rebind_target", "") or "")
+            rebind_deadline = float(getattr(self, "remote_rebind_deadline", 0.0) or 0.0)
+            if rebind_target and time.monotonic() <= rebind_deadline:
+                return None
+            if self._remote_recovery_is_required():
+                return None
+            session = self._settled_remote_session()
+            if session is None:
+                return None
+            return {
+                "profile": profile,
+                "workspace_id": profile.workspace_id,
+                "url": self.workstack_url,
+                "session": session,
+                "rebind_target": rebind_target,
+                "rebind_deadline": rebind_deadline,
+            }
+
+    def _observe_remote_version(self) -> tuple[str | None, int | None]:
+        """Read the connected remote server version for reporting only.
+
+        The update card must be able to say what the remote is running without
+        the answer deciding whether a desktop update exists. A refusal or an
+        unreachable endpoint therefore returns "unknown" instead of raising:
+        the caller reports the gap rather than hiding it behind an up-to-date
+        verdict.
+
+        A version is only worth displaying if it is provably this remote's, so
+        the observation is bound to a snapshot of the active binding - profile,
+        workspace, endpoint, rebind state and the settled session bundle that
+        owns the tunnel - taken before the probe. No lock is held across the
+        network. Afterwards the answer must have come from the selected
+        workspace and the whole snapshot must still hold: a different
+        workspace, a moved endpoint, a rebind that began meanwhile, a session
+        that stopped or was replaced by a newer generation, and a tunnel
+        process that died during the read all yield "unknown" rather than a
+        claim about the wrong server. Nothing here mutates the remote, the
+        cached remote identity or the session.
+        """
+
+        binding = self._remote_binding_snapshot()
+        if binding is None:
+            return None, None
+        try:
+            metadata = self._read_remote_storage_metadata(timeout=REMOTE_VERSION_PROBE_SECONDS)
+        except (RuntimeError, OSError, ValueError):
+            self._trace("remote version unavailable for the update status card")
+            return None, None
+        if metadata["workspace_id"] != binding["workspace_id"]:
+            self._trace("remote version discarded; the endpoint reported another workspace")
+            return None, None
+        if self._remote_binding_snapshot() != binding:
+            self._trace("remote version discarded; the remote session or binding changed during the probe")
+            return None, None
+        return str(metadata["product_version"]), int(metadata["remote_protocol_version"])
+
     def _start_update_check(self, *, force_download: bool = False) -> None:
         if self.update_check_thread is not None and self.update_check_thread.is_alive():
             return
@@ -2343,11 +2362,18 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
             if not manifest.is_newer:
                 self.downloaded_update = None
                 self.install_update_on_exit = False
+                remote_version, remote_protocol = self._observe_remote_version()
                 self._set_update_status(
                     "current",
                     latest_version=manifest.version,
                     release_url=manifest.release_url,
-                    message="Work Stack is up to date",
+                    message=current_version_message(
+                        desktop_version=WORKSTACK_VERSION,
+                        remote_connected=self.remote_profile is not None,
+                        remote_version=remote_version,
+                        remote_protocol=remote_protocol,
+                        minimum_protocol=manifest.minimum_remote_protocol,
+                    ),
                 )
                 return
             if self.remote_profile is not None:
@@ -2397,6 +2423,7 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
         except OlderUpdateManifest as error:
             self.downloaded_update = None
             self.install_update_on_exit = False
+            remote_version, remote_protocol = self._observe_remote_version()
             self._set_update_status(
                 "current",
                 latest_version=error.version,
@@ -2404,9 +2431,12 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
                     "https://github.com/Shinick-Han/work-stack-public/releases/tag/"
                     f"v{error.version}"
                 ),
-                message=(
-                    f"Installed Work Stack {error.installed_version} is newer than "
-                    f"the stable channel {error.version}"
+                message=newer_than_channel_message(
+                    installed_version=error.installed_version,
+                    channel_version=error.version,
+                    remote_connected=self.remote_profile is not None,
+                    remote_version=remote_version,
+                    remote_protocol=remote_protocol,
                 ),
             )
         except Exception as error:
@@ -2426,89 +2456,64 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
             self._start_update_check(force_download=True)
             return
         if parts == [UPDATE_HOST_PREFIX, "install"]:
-            if self.downloaded_update is None:
-                self._start_update_check(force_download=True)
-                return
-            self.install_update_on_exit = True
-            self._set_update_status(
-                "installing",
-                latest_version=self.downloaded_update.version,
-                release_url=self.downloaded_update.release_url,
-                message="Closing Work Stack to apply the verified update",
-            )
-            if self.window is not None:
-                self.window.destroy()
+            self._install_downloaded_update()
             return
         if len(parts) == 5 and parts[:2] == [UPDATE_HOST_PREFIX, "preferences"]:
-            values = parts[2:]
-            if any(value not in {"0", "1"} for value in values):
-                return
-            self.update_preferences = UpdatePreferences(*(value == "1" for value in values))
-            save_update_preferences(self.state_root, self.update_preferences)
-            if not self.update_preferences.install_on_exit:
-                self.install_update_on_exit = False
-            elif self.downloaded_update is not None:
-                self.install_update_on_exit = True
-            self._post_update_status()
-            if self.update_preferences.auto_check and self.update_status.get("state") == "idle":
-                self._start_update_check()
+            self._apply_update_preferences(parts[2:])
             return
         if parts == [UPDATE_HOST_PREFIX, "open-release"]:
             release_url = str(self.update_status.get("release_url", ""))
             if release_url.startswith("https://github.com/Shinick-Han/work-stack-public/releases/"):
                 webbrowser.open(release_url)
 
-    def _launch_pending_update(self) -> None:
+    def _install_downloaded_update(self) -> None:
+        """Install the verified download, or force one check when none is held."""
+
+        if self.downloaded_update is None:
+            self._start_update_check(force_download=True)
+            return
+        self.install_update_on_exit = True
+        if not self._launch_pending_update():
+            self.install_update_on_exit = False
+            return
+        self._set_update_status(
+            "installing",
+            latest_version=self.downloaded_update.version,
+            release_url=self.downloaded_update.release_url,
+            message="Closing Work Stack to apply the verified update",
+        )
+        if self.window is not None:
+            self.window.destroy()
+
+    def _apply_update_preferences(self, values: list[str]) -> None:
+        """Adopt one well-formed preference triple and republish the card."""
+
+        if any(value not in {"0", "1"} for value in values):
+            return
+        self.update_preferences = UpdatePreferences(*(value == "1" for value in values))
+        save_update_preferences(self.state_root, self.update_preferences)
+        if not self.update_preferences.install_on_exit:
+            self.install_update_on_exit = False
+        elif self.downloaded_update is not None:
+            self.install_update_on_exit = True
+        self._post_update_status()
+        if self.update_preferences.auto_check and self.update_status.get("state") == "idle":
+            self._start_update_check()
+
+    def _launch_pending_update(self) -> bool:
         downloaded = self.downloaded_update
         if not self.install_update_on_exit or downloaded is None:
-            return
-        apply_script = self.install_root / "scripts" / "windows" / "Apply-WorkStackUpdate.ps1"
-        if not apply_script.is_file():
-            self._trace("verified update was not launched because the update applicator is missing")
-            return
-        command = [
-            "powershell.exe",
-            "-NoProfile",
-            "-WindowStyle",
-            "Hidden",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(apply_script),
-            "-SetupPath",
-            str(downloaded.setup_path),
-            "-ChecksumPath",
-            str(downloaded.checksum_path),
-            "-InstallRoot",
-            str(self.install_root),
-            "-StateRoot",
-            str(self.state_root),
-            "-ParentProcessId",
-            str(os.getpid()),
-            "-TargetVersion",
-            downloaded.version,
-        ]
-        creation_flags = (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        )
+            return False
+        if getattr(self, "update_process", None) is not None:
+            return self.update_process.poll() is None
         try:
-            subprocess.Popen(
-                command,
-                # Install renames the old application directory. PowerShell's
-                # Move-Item refuses to move its current location, so run from
-                # the separate state directory, which survives installation.
-                cwd=self.state_root,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-                creationflags=creation_flags,
-            )
+            self.update_process = launch_update_process(self.install_root, self.state_root, downloaded)
             self._trace(f"verified Work Stack {downloaded.version} update applicator started")
-        except OSError as error:
+            return True
+        except (OSError, RuntimeError, ValueError) as error:
             self._trace(f"verified update applicator failed to start: {type(error).__name__}: {error}")
+            self._set_update_status("error", message=f"Update could not start: {error}")
+            return False
 
     def _send_source_capture(self, message: str) -> None:
         request = parse_source_capture_request(message)
@@ -2847,6 +2852,9 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
         entry_path = self.install_root / "run_work_stack.py"
         if not python_path.is_file() or not entry_path.is_file():
             raise RuntimeError("Work Stack installation is incomplete. Re-run the installer.")
+        serve_argv = graph_serve_argv(
+            str(python_path), str(entry_path), str(data_path), port, config
+        )
 
         log_path = self.state_root / "logs"
         for directory in (data_path, backup_path, log_path):
@@ -2881,18 +2889,7 @@ class WorkStackDesktopHost(KnowledgeDesktopMixin):
         stderr_path = log_path / "server.err.log"
         with stdout_path.open("wb") as server_stdout, stderr_path.open("wb") as server_stderr:
             process = subprocess.Popen(
-                [
-                    str(python_path),
-                    str(entry_path),
-                    "--data-dir",
-                    str(data_path),
-                    "graph",
-                    "serve",
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(port),
-                ],
+                serve_argv,
                 cwd=self.install_root,
                 creationflags=creation_flags,
                 stdin=subprocess.DEVNULL,

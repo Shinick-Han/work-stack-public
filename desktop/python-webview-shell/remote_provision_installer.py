@@ -17,6 +17,8 @@ import zipfile
 import zlib
 from collections.abc import Mapping, Sequence
 
+from remote_provision_installer_linux import PRODUCT
+from remote_provision_installer_linux import PROTOCOL
 from remote_provision_installer_linux import InstallerError
 from remote_provision_installer_linux import _LinuxInstallerOperations
 
@@ -29,11 +31,13 @@ MAX_MEMBERS = 4096
 MAX_UNCOMPRESSED = 256 * 1024 * 1024
 MAX_FILE = 32 * 1024 * 1024
 MAX_PATH = 240
-PRODUCT = "1.0.8"
-PROTOCOL = 1
 SCHEMA = 1
-ARCHIVE_NAME = "WorkStack-Linux-1.0.8-cp312-manylinux_2_17_x86_64.zip"
 TARGET_ID = "cp312-manylinux_2_17_x86_64"
+# PRODUCT/PROTOCOL come from the leaf so one release identity governs both
+# the artifact gate here and the smoke gate there. The builder names the
+# archive WorkStack-Linux-<version>-<target id>.zip, so the expected name is
+# derived from that same identity rather than restated as a third literal.
+ARCHIVE_NAME = "WorkStack-Linux-%s-%s.zip" % (PRODUCT, TARGET_ID)
 ENTRYPOINT = "desktop/python-webview-shell/remote_entry.py"
 SOABI = "cpython-312-x86_64-linux-gnu"
 COMMAND = "provision-install"

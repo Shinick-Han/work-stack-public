@@ -29,10 +29,14 @@ Read these references before issuing a command:
    is what you get when the flag is omitted. Apply, if used, requires this
    fresh context so `task_id` and `expected_revision` are current.
 4. Only when the Task's surroundings are needed, run `agent context` again
-   with the opt-in `--view planning-v1`. It adds bounded Objectives,
+   with the opt-in `--view planning-v1`, or `--view planning-v2` when stored
+   Capture evidence counts are required. Both add bounded Objectives,
    relationships and linked source metadata for the SAME selected Task in
-   the same workspace. It is a read; it grants no new authority and writes
-   nothing.
+   the same workspace. They are reads; they grant no new authority and write
+   nothing. The default view stays `core-v1`. The default `--format` is
+   `json`. Opt-in `--format markdown` is a presentation of that same
+   validated answer, not a new view; prefer `--view planning-v2` when the
+   Markdown should include stored Capture sources.
 5. Only after explicit user intent and that fresh `agent context` read,
    optionally run one `agent apply` that updates `changes.detail` on the
    selected Task. This is distinct from `agent checkpoint`. Do not apply

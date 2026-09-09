@@ -165,7 +165,20 @@ Success `200` key order is exact:
   "data": {
     "workspace_uid": "<actual owning Store UUID>",
     "source_digest": "sha256:<64 lowercase hex>",
-    "preview": { }
+    "preview": { },
+    "context_catalog": {
+      "captured_at": "<same generated_at as preview>",
+      "items": [
+        {
+          "capture_id": "C-0001",
+          "capture_revision": 1,
+          "title": "Synthetic context",
+          "linked_task_ids": ["T-0001"],
+          "status": "linked"
+        }
+      ],
+      "omitted_count": 0
+    }
   }
 }
 ```
@@ -173,6 +186,20 @@ Success `200` key order is exact:
 `preview` is the exact `preview_daily_report` object (same key order and
 values as the core). Empty active days use `"absence": "no records"` and
 never `"no work"`.
+
+`context_catalog` is a sibling of `preview`, not a field inside it. Day and
+Captures are read under the same `Store.consistent_read` snapshot already
+used for the preview. `captured_at` copies `preview.generated_at`. Each item
+is a Capture whose current explicit `linked_task_ids` intersect
+`preview.provenance.task_ids` (unique, natural-sorted). Converted provenance
+alone is not a link. Unrelated and unlinked rows are omitted. Empty days
+yield empty `items`. At most 32 items appear, in natural Capture ID order,
+with `omitted_count` naming additional qualifying Captures. The actual
+Capture status is included, so a dismissed Capture that still has explicit
+links is not shown as active. Titles are the admitted Capture
+`source.display_title` strings. The catalogue is not part of
+`preview.markdown`, copy output, saved report create/revise/finalize
+payloads, `provenance`, `source_digest`, or `reports.json`.
 
 `source_digest` is `capture.canonical_digest({"date": <requested date>,
 "day": projection["day"]})` over the same bounded single-day projection

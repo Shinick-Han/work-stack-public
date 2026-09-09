@@ -1,3 +1,4 @@
+import { projectCaptureBriefCatalog, type CaptureBriefCatalog } from './captureBriefCatalog'
 import { KnowledgeHostError } from './knowledgeErrors'
 import { maybeResumeBriefMarkdown } from './referenceBrief'
 import {
@@ -31,19 +32,46 @@ export interface LiveTaskSnapshot {
   title: string
   detail: string
   status: string
+  /** Final successful Task-detail context, when the live reader retained it. */
+  context?: unknown
 }
 
-export interface PreparedReferenceHandoff {
+/** How many stored Capture sources a Capture-only brief carries. Counts only, no content. */
+export interface CaptureBriefCounts {
+  included: number
+  omitted: number
+}
+
+interface PreparedHandoffFacts {
   briefMarkdown: string | null
   changedIds: string[]
-  envelope: KnowledgeContextEnvelope
-  json: string
   /** The recorded-progress facts frozen into this brief, never re-read afterwards. */
   progress: ResumeProgressFacts
   /** Identity of those facts, so a checkpoint-only change marks this brief stale. */
   progressKey: string
   referenceIds: string[]
 }
+
+/** The existing export: explicitly selected vault references plus the JSON envelope. */
+export interface PreparedVaultHandoff extends PreparedHandoffFacts {
+  sources: 'vault-selection'
+  envelope: KnowledgeContextEnvelope
+  json: string
+}
+
+/**
+ * A brief prepared with no selected reference. It carries the saved Task, its recorded
+ * progress and the stored Capture catalog as Markdown only: `knowledge-context.v1` stays
+ * a vault-selection format, so this variant has no envelope and no JSON to export.
+ */
+export interface PreparedCaptureOnlyHandoff extends PreparedHandoffFacts {
+  sources: 'capture-only'
+  capture: CaptureBriefCounts
+  envelope: null
+  json: null
+}
+
+export type PreparedReferenceHandoff = PreparedVaultHandoff | PreparedCaptureOnlyHandoff
 
 export class ReferenceHandoffError extends Error {
   readonly code: string
@@ -284,7 +312,7 @@ export async function assertLiveTaskBinding(
   return live
 }
 
-export async function prepareReferenceHandoff(input: {
+export interface ReferenceHandoffRequest {
   binding: KnowledgeBinding
   listReferences: (signal: AbortSignal) => Promise<readonly KnowledgeSavedReference[]>
   progress: ResumeProgressFacts
@@ -295,7 +323,66 @@ export async function prepareReferenceHandoff(input: {
   selectedIds: readonly string[]
   signal: AbortSignal
   vaults: readonly KnowledgeVault[]
-}): Promise<PreparedReferenceHandoff> {
+}
+
+/**
+ * The Capture catalog is the whole non-Task payload of a Capture-only brief, so a context
+ * that is missing or could not be projected refuses the preparation. Emitting the brief
+ * with its authored "could not be included" line would read, to whoever receives it, like
+ * a Task that simply has no sources. A valid empty selection is not a failure and is kept.
+ */
+function captureOnlyCounts(catalog: CaptureBriefCatalog): CaptureBriefCounts {
+  if (catalog.kind === 'absent') {
+    throw new ReferenceHandoffError(
+      'capture_context_absent',
+      'This Task was read without its stored context, so no Capture catalog could be prepared. Nothing was prepared.',
+    )
+  }
+  if (catalog.kind === 'unavailable') {
+    throw new ReferenceHandoffError(
+      'capture_context_unavailable',
+      'The stored Capture context for this Task could not be read. Nothing was prepared.',
+    )
+  }
+  if (catalog.kind === 'empty') return { included: 0, omitted: 0 }
+  return { included: catalog.sources.length, omitted: catalog.omitted }
+}
+
+/**
+ * Preparation with nothing selected. One live Task/workspace read is both the first and
+ * the final one, because no vault read lies between them; the knowledge host is never
+ * contacted, so this path works on a client that has no local document access at all.
+ */
+async function prepareCaptureOnlyHandoff(
+  input: ReferenceHandoffRequest,
+): Promise<PreparedCaptureOnlyHandoff> {
+  const live = await assertLiveTaskBinding(input.binding, input.readLiveTask, input.readWorkspaceUid)
+  if (input.signal.aborted) throw new KnowledgeHostError('cancelled', 'The knowledge request was cancelled.')
+  const capture = captureOnlyCounts(projectCaptureBriefCatalog(live.context, input.binding.task_id))
+  return {
+    briefMarkdown: maybeResumeBriefMarkdown({
+      binding: input.binding,
+      captureContext: live.context,
+      progress: input.progress,
+      reads: [],
+      saved: [],
+      task: live,
+      vaults: input.vaults,
+    }),
+    capture,
+    changedIds: [],
+    envelope: null,
+    json: null,
+    progress: input.progress,
+    progressKey: resumeProgressKey(input.progress),
+    referenceIds: [],
+    sources: 'capture-only',
+  }
+}
+
+async function prepareVaultReferenceHandoff(
+  input: ReferenceHandoffRequest,
+): Promise<PreparedVaultHandoff> {
   selectedSavedReferences(input.references, input.selectedIds)
   await assertLiveTaskBinding(input.binding, input.readLiveTask, input.readWorkspaceUid)
   if (input.signal.aborted) throw new KnowledgeHostError('cancelled', 'The knowledge request was cancelled.')
@@ -316,6 +403,7 @@ export async function prepareReferenceHandoff(input: {
   return {
     briefMarkdown: maybeResumeBriefMarkdown({
       binding: input.binding,
+      captureContext: live.context,
       progress: input.progress,
       reads,
       saved: selected,
@@ -328,7 +416,20 @@ export async function prepareReferenceHandoff(input: {
     progress: input.progress,
     progressKey: resumeProgressKey(input.progress),
     referenceIds: selected.map((item) => item.reference_id),
+    sources: 'vault-selection',
   }
+}
+
+/**
+ * The path is chosen from the selection alone, before the first request, and the two
+ * branches are disjoint. No list, read, freshness or selection refusal on the vault path
+ * can therefore be answered with a Capture-only brief: there is nothing to fall back to.
+ */
+export function prepareReferenceHandoff(
+  input: ReferenceHandoffRequest,
+): Promise<PreparedReferenceHandoff> {
+  if (input.selectedIds.length === 0) return prepareCaptureOnlyHandoff(input)
+  return prepareVaultReferenceHandoff(input)
 }
 
 export function downloadKnowledgeContextJson(filename: string, json: string) {

@@ -23,6 +23,8 @@ const GENERATED = '2026-09-06T11:59:00Z'
 const CURSOR = `A${'b'.repeat(63)}`
 const MARKDOWN = '# Hello <script>alert(1)</script>\n\n| a | b |\n'
 const KEY_PREFIX = 'workstack:'
+/** Whatever the workspace says about a refusal is never the reader's copy. */
+const REMOTE_PROSE = 'remote prose that must never be shown'
 
 function period() {
   return { kind: 'day' as const, date: '2026-09-06' }
@@ -369,6 +371,47 @@ test('a revision conflict keeps the read body and requires an explicit refresh b
   await waitFor(() => expect(screen.getByRole('button', { name: 'Finalize' })).toBeEnabled())
   await userEvent.click(screen.getByRole('button', { name: 'Finalize' }))
   expect(JSON.parse(String(posts(fetchMock, '/finalize?')[1][1]?.body)).expected_revision).toBe(4)
+})
+
+/**
+ * `assertOk` copies `error.code` out of the envelope with no allowlist, so the workspace
+ * can answer with a code that names an `Object.prototype` member. On an ordinary lookup
+ * table `__proto__` returned the prototype OBJECT, and `transitionError` — rendered as
+ * `{model.transitionError}` — is a React child: an object child throws and takes the
+ * whole saved-report panel down; `constructor` returned a function, which renders blank.
+ */
+test.each([
+  '__proto__',
+  'constructor',
+  'toString',
+  'hasOwnProperty',
+  'valueOf',
+  'report_code_no_table_holds',
+])('a transition refused with the code %s stays mounted and reads as authored copy', async (code) => {
+  const fetchMock = sessionFetch((url) => {
+    if (url.includes('/finalize?')) {
+      return jsonResponse({ error: { code, message: REMOTE_PROSE } }, 409)
+    }
+    if (url.startsWith(`/api/v1/reports/${REPORT_UID}?`)) return jsonResponse({ data: readDocument() })
+    if (url.startsWith('/api/v1/reports?')) return jsonResponse({ data: listPage([listItem()]) })
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  renderPanel()
+  await userEvent.click(await screen.findByText(/Report version 1/))
+  expect(await screen.findByLabelText('Current authored markdown')).toHaveTextContent('<script>alert(1)</script>')
+  await userEvent.click(screen.getByRole('button', { name: 'Finalize' }))
+
+  // The panel is still mounted and the one authored fallback is what the reader gets.
+  const alert = await screen.findByText(/This saved report could not be updated, so nothing was written\./)
+  expect(alert).toBeVisible()
+  expect(screen.getByLabelText('Current authored markdown')).toHaveTextContent('<script>alert(1)</script>')
+  expect(document.body.textContent).not.toContain('native code')
+  expect(document.body.textContent).not.toContain('[object Object]')
+  expect(document.body.textContent).not.toContain(REMOTE_PROSE)
+
+  // A refusal wrote nothing: the row keeps its confirmed state and only one write left.
+  expect(screen.queryByText('Finalized')).toBeNull()
+  expect(posts(fetchMock, '/finalize?')).toHaveLength(1)
 })
 
 test('a workspace A-B-A swap drops the in-flight list instead of showing stale rows', async () => {

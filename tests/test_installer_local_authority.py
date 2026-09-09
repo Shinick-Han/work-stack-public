@@ -509,6 +509,33 @@ class InstallerLocalAuthorityTest(unittest.TestCase):
         self.assertEqual(self.resolve_pure()["baseline"]["state"], "present")
         self.assertTrue(self.ast()["ok"])
 
+    def test_genuine_v6_upgrade_keeps_authority_and_backup_read_only(self):
+        from workstack.knowledge_ledger_document import KNOWLEDGE_DEFAULT
+        self.write_v5(self.b)
+        metadata_path = self.b / "store-meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["store_schema_version"] = 6
+        metadata["migrations"]["knowledge"] = {
+            "id": "workstack.knowledge.v6", "origin": "fresh", "source_sha256": None,
+        }
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        (self.b / "knowledge.json").write_text(json.dumps(KNOWLEDGE_DEFAULT), encoding="utf-8")
+        self.save_registry()
+        self.assertEqual(self.resolve_pure()["baseline"]["state"], "absent")
+        self.save_baseline(self.manifest(schema=6))
+        self.assertEqual(self.resolve_pure()["baseline"]["state"], "present")
+        result = self.ast()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["persisted"], str(self.b))
+        self.assertEqual(result["backup"][0][1:3], ["--data-dir", str(self.b)])
+        self.save_baseline(self.false_task_baseline(schema=6))
+        with self.assertRaisesRegex(self.resolver.AuthorityError, "baseline_tasks_mismatch"):
+            self.resolve_pure()
+        refused = self.ast()
+        self.assertFalse(refused["ok"], refused)
+        self.assertEqual(refused["stops"], [])
+        self.assertEqual(refused["backup"], [])
+
     def test_schema_mismatch_foreign_newer_and_mixed_baselines_refuse_without_writes(self):
         self.save_registry()
         v3 = self.manifest()

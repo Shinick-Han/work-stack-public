@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { Button, ErrorState, LoadingBlock } from '../../components/Primitives'
+import type { DailyReportContextCatalog } from '../../domain/reporting'
 import type {
   WeeklyReportPreviewDocument,
   WeeklyReportPreviewResponse,
 } from '../../domain/weeklyReporting'
 import { formatDate, formatDateTime, getErrorMessage } from '../../utils/format'
 import { copyTextToClipboard } from '../../utils/clipboard'
+import { DailyReportContextPanel } from './DailyReportContextPanel'
 import { DailyReportDocument } from './DailyReportDocument'
 import { reviewWeeklySourceToken, useOwnerGeneration } from './DailyReportPreview'
 import './weeklyReportPreview.css'
@@ -23,6 +25,8 @@ interface WeeklyReportPreviewProps {
 interface OwnedPreview {
   owner: string
   preview: WeeklyReportPreviewDocument
+  /** Absent from a pre-R45 server; never carried across an owner change. */
+  contextCatalog: DailyReportContextCatalog | undefined
 }
 
 function ownerBoundFlags(
@@ -101,12 +105,14 @@ function saveOwnedMarkdown(
 
 function WeeklyReportResult({
   actionError,
+  contextCatalog,
   copyState,
   onCopy,
   onDownload,
   preview,
 }: {
   actionError: string | null
+  contextCatalog: DailyReportContextCatalog | undefined
   copyState: 'idle' | 'copied'
   onCopy: () => void
   onDownload: () => void
@@ -134,12 +140,14 @@ function WeeklyReportResult({
       {actionError ? (
         <p className="weekly-report-preview__status" data-tone="error" role="alert">{actionError}</p>
       ) : null}
+      {contextCatalog ? <DailyReportContextPanel catalog={contextCatalog} /> : null}
     </>
   )
 }
 
 function WeeklyReportPreviewPanel({
   actionError,
+  contextCatalog,
   copyState,
   currentFailed,
   currentPending,
@@ -152,6 +160,7 @@ function WeeklyReportPreviewPanel({
   setCopyState,
 }: {
   actionError: string | null
+  contextCatalog: DailyReportContextCatalog | undefined
   copyState: 'idle' | 'copied'
   currentFailed: boolean
   currentPending: boolean
@@ -184,6 +193,7 @@ function WeeklyReportPreviewPanel({
       {owned ? (
         <WeeklyReportResult
           actionError={actionError}
+          contextCatalog={contextCatalog}
           copyState={copyState}
           onCopy={() => void copyOwnedMarkdown(owned, resultOwner, currentOwner, setActionError, setCopyState)}
           onDownload={() => saveOwnedMarkdown(owned, resultOwner, currentOwner(), setActionError)}
@@ -220,7 +230,11 @@ export function WeeklyReportPreview({
     ),
     onSuccess: ({ frozenOwner, payload }) => {
       if (frozenOwner !== currentOwner()) return
-      setResult({ owner: frozenOwner, preview: payload.preview })
+      setResult({
+        owner: frozenOwner,
+        preview: payload.preview,
+        contextCatalog: payload.context_catalog,
+      })
       setActionError(null)
       setCopyState('idle')
     },
@@ -252,6 +266,7 @@ export function WeeklyReportPreview({
   return sourceAvailable ? (
     <WeeklyReportPreviewPanel
       actionError={actionError}
+      contextCatalog={owned ? result?.contextCatalog : undefined}
       copyState={copyState}
       currentFailed={currentFailed}
       currentPending={currentPending}

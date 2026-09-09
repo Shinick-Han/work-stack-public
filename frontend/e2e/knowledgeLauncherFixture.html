@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Knowledge request launcher — render fixture</title>
+  </head>
+  <body>
+    <!--
+      A dev-server-only render fixture for the Inbox knowledge launcher.
+
+      It exists so the real component can be looked at in a browser without a user SSOT
+      and without faking the product's API surface: `fetch` is replaced *inside this page
+      only*, and it answers exactly the three canonical knowledge routes with synthetic,
+      non-sensitive values. Nothing here ships — it is served by `vite dev` from the e2e
+      directory and is not referenced by the application entry point.
+    -->
+    <div id="root"></div>
+    <script type="module">
+      import { createRoot } from 'react-dom/client'
+      import { createElement } from 'react'
+      import '/src/styles.css'
+      import { KnowledgeRequestLauncher } from '/src/features/inbox/KnowledgeRequestLauncher.tsx'
+
+      const WORKSPACE_UID = '210aefb5-edf0-4841-af90-ffb5f778a255'
+      const policy = {
+        connections: [
+          {
+            alias: 'team-nas',
+            corpus_refs: ['nas-team-share', 'product-notes'],
+            scope: 'workspace',
+            upstream_workspace_uid: '66666666-6666-4666-8666-666666666666',
+          },
+          {
+            alias: 'release-archive',
+            corpus_refs: ['release-notes'],
+            scope: 'workspace',
+            upstream_workspace_uid: '77777777-7777-4777-8777-777777777777',
+          },
+        ],
+        policy_revision: 3,
+      }
+
+      const json = (body, status = 200) =>
+        new Response(JSON.stringify(body), {
+          headers: { 'Content-Type': 'application/json' },
+          status,
+        })
+
+      window.fetch = async (input, init = {}) => {
+        const url = String(input)
+        if (url.includes('/api/v1/session')) return json({ data: { csrf_token: 'fixture-csrf' } })
+        if (url === '/api/v1/knowledge/connections') return json({ data: policy })
+        if (url === '/api/v1/knowledge/requests') {
+          const body = JSON.parse(init.body)
+          return json({
+            data: {
+              binding: body.binding,
+              corpus_refs: body.corpus_refs,
+              expires_at: new Date(Date.now() + 300000).toISOString().replace(/\.\d+Z$/, 'Z'),
+              purpose: body.purpose,
+              query: body.query,
+              request_id: '2cce8f7c-7961-5614-bc6f-ca4a093661e2',
+              requested_at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+              result_limit: body.result_limit,
+              schema: 'workstack.knowledge-request.v1',
+            },
+            meta: {
+              connection_alias: body.connection_alias,
+              policy_revision: policy.policy_revision,
+              replayed: false,
+              state: 'pending',
+            },
+          })
+        }
+        throw new Error(`The fixture answers no such route: ${url}`)
+      }
+
+      createRoot(document.getElementById('root')).render(
+        createElement(
+          'section',
+          { className: 'inbox-page' },
+          createElement(
+            'header',
+            { className: 'page-heading page-heading--compact' },
+            createElement(
+              'div',
+              null,
+              createElement('h1', null, 'Turn signal into useful work.'),
+            ),
+            createElement(
+              'div',
+              { className: 'page-heading__actions inbox-heading-actions' },
+              createElement(KnowledgeRequestLauncher, { workspaceUid: WORKSPACE_UID }),
+            ),
+          ),
+        ),
+      )
+    </script>
+  </body>
+</html>

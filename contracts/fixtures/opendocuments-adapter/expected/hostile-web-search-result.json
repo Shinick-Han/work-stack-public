@@ -1,0 +1,116 @@
+{
+  "ok": true,
+  "result": {
+    "format": "workstack.opendocuments-adapter.proposed",
+    "schema_version": 0,
+    "mapping_status": "proposed",
+    "request_id": "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1",
+    "connection_id": "conn_opendocuments_pilot_1",
+    "query": "What does the web say about the checklist?",
+    "retriever": {
+      "id": "opendocuments",
+      "role": "retriever",
+      "capabilities": [
+        "search"
+      ],
+      "unsupported": [
+        "verify_origin",
+        "open_origin",
+        "collection_filter",
+        "conversation_persistence",
+        "source_document_identity"
+      ]
+    },
+    "engine": {
+      "query_id": "a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2",
+      "route": "rag",
+      "profile": "precise",
+      "confidence": {
+        "score": 0.6,
+        "level": "medium",
+        "kind": "engine_relevance",
+        "reason": "Partial match found"
+      }
+    },
+    "generated_answer": "discarded",
+    "candidates": [
+      {
+        "indexed_identity": {
+          "retriever_id": "opendocuments",
+          "connection_id": "conn_opendocuments_pilot_1",
+          "indexed_document_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+          "indexed_chunk_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1_chunk_0",
+          "identity_scope": "opendocuments_index"
+        },
+        "source": {
+          "kind": "notion",
+          "declared_source_type": "@opendocuments/connector-notion",
+          "type_locator_agreement": "agree",
+          "locator": {
+            "type": "uri",
+            "value": "notion://11111111-2222-4333-8444-555555555555",
+            "reason": null
+          },
+          "identity": {
+            "status": "unknown",
+            "value": null,
+            "basis": "chat_response_cannot_prove_source_identity"
+          }
+        },
+        "title": "Handbook",
+        "locator": {
+          "type": "chunk_index",
+          "position": 0,
+          "index_chunk_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1_chunk_0",
+          "source_locator": false
+        },
+        "index_heading_path": {
+          "segments": [
+            "Handbook"
+          ],
+          "addressable": false
+        },
+        "excerpt": "The genuine indexed workspace hit.",
+        "excerpt_truncated": false,
+        "excerpt_sanitized": false,
+        "engine_score": 0.8,
+        "source_version": {
+          "status": "unavailable",
+          "value": null,
+          "basis": "chat_response"
+        },
+        "content_hash": {
+          "status": "unavailable",
+          "value": null,
+          "basis": "chat_response"
+        },
+        "verification": {
+          "status": "indexed_snapshot_unverified",
+          "checked_at": null,
+          "origin_current": false
+        },
+        "trust": "external_reference",
+        "read_only": true
+      }
+    ],
+    "omitted": [
+      {
+        "index": 0,
+        "reason": "non_workspace_result"
+      },
+      {
+        "index": 1,
+        "reason": "non_workspace_result"
+      }
+    ],
+    "limitations": {
+      "query_logging_attempted_by_route": true,
+      "query_log_persistence_confirmed": false,
+      "source_version_from_chat": false,
+      "origin_verified": false,
+      "collection_filter_applied": false,
+      "source_document_identity_proven": false,
+      "non_workspace_results_omitted": true
+    }
+  }
+}

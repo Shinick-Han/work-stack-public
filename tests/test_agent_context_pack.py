@@ -91,8 +91,9 @@ def _capture(
     display_title: str = "Fixture source title",
     provider: str = "manual",
     status: str = "linked",
+    retrieval: dict | None = None,
 ) -> dict:
-    return {
+    item = {
         "connections": [
             {"target": {"kind": "task", "id": task_id}, "reasons": list(reasons)},
         ],
@@ -114,6 +115,23 @@ def _capture(
         "status": status,
         "task_hints": {"recipients": [CANARIES[3]]},
     }
+    if retrieval is not None:
+        item["retrieval"] = retrieval
+    return item
+
+
+def _retrieval(**changes: object) -> dict:
+    value: dict[str, object] = {
+        "answer_scope": "single_source",
+        "confidence": {"level": "medium"},
+        "evidence": [{"document_ref": CANARIES[1], "query_id": "engine-q-LEAK"}],
+        "origin_state": "verified",
+        "query_id": "engine-q-LEAK",
+        "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "truncated": False,
+    }
+    value.update(changes)
+    return value
 
 
 class _Backend:
@@ -178,6 +196,19 @@ class PlanningProjectionTest(unittest.TestCase):
         rendered = json.dumps(blocks, ensure_ascii=False, sort_keys=True)
         for canary in CANARIES:
             self.assertNotIn(canary, rendered)
+
+    def test_planning_v1_ignores_stored_retrieval(self) -> None:
+        blocks, _ = pack.build_planning_blocks(
+            task_id="T-0001",
+            objectives=[],
+            tasks=[_task("T-0001")],
+            context=[_capture("C-0001", task_id="T-0001", retrieval=_retrieval())],
+        )
+        self.assertEqual(
+            set(blocks["sources"][0]),
+            {"display_title", "id", "link_reasons", "provider", "resource_type", "status"},
+        )
+        self.assertNotIn("evidence", blocks["sources"][0])
 
     def test_every_relationship_kind_resolves_and_sorts_deterministically(self) -> None:
         tasks = [
@@ -577,7 +608,7 @@ class PlanningEnvelopeTest(unittest.TestCase):
     def test_an_unknown_view_refuses_before_the_backend_is_touched(self) -> None:
         backend = _Backend(_material())
         outcome = handle_context(
-            request=ContextRequest(task_id="T-0001", view="planning-v2"),
+            request=ContextRequest(task_id="T-0001", view="planning-v9"),
             backend=backend,
             today=TODAY,
         )
@@ -605,6 +636,128 @@ class PlanningEnvelopeTest(unittest.TestCase):
         parsed = json.loads(rendered)
         self.assertNotIn("data", parsed)
         self.assertEqual(parsed["error"]["code"], "internal_error")
+
+
+class PlanningV2ProjectionTest(unittest.TestCase):
+    """Opt-in planning-v2: distinguishable view plus counts-only evidence."""
+
+    def _planning_v2(self, material: dict[str, object]):
+        return handle_context(
+            request=ContextRequest(task_id="T-0001", view=pack.PLANNING_V2_VIEW),
+            backend=_Backend(material),
+            today=TODAY,
+        )
+
+    def test_zero_source_v2_is_distinguishable(self) -> None:
+        outcome = self._planning_v2(_material(context=[]))
+        self.assertIsNone(outcome.error_code)
+        self.assertEqual(outcome.data["view"], pack.PLANNING_V2_VIEW)
+        self.assertEqual(outcome.data["sources"], [])
+        self.assertEqual(
+            set(outcome.data),
+            set(pack.PLANNING_V2_DATA_FIELDS),
+        )
+
+    def test_legacy_source_omits_evidence_key(self) -> None:
+        outcome = self._planning_v2(_material())
+        self.assertIsNone(outcome.error_code)
+        self.assertEqual(outcome.data["view"], pack.PLANNING_V2_VIEW)
+        self.assertEqual(
+            set(outcome.data["sources"][0]),
+            {"display_title", "id", "link_reasons", "provider", "resource_type", "status"},
+        )
+
+    def test_linked_v11_projects_five_field_unattested_evidence(self) -> None:
+        outcome = self._planning_v2(
+            _material(
+                context=[
+                    _capture("C-0001", task_id="T-0001", retrieval=_retrieval())
+                ]
+            )
+        )
+        self.assertIsNone(outcome.error_code)
+        source = outcome.data["sources"][0]
+        self.assertEqual(
+            source["evidence"],
+            {
+                "answer_scope": "single_source",
+                "attested": False,
+                "confidence_level": "medium",
+                "evidence_count": 1,
+                "truncated": False,
+            },
+        )
+        rendered = _rendered(outcome)
+        self.assertNotIn("engine-q-LEAK", rendered)
+        self.assertNotIn("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", rendered)
+        self.assertNotIn(CANARIES[0], rendered)
+        self.assertNotIn(CANARIES[1], rendered)
+
+    def test_forged_verified_origin_stays_unattested(self) -> None:
+        outcome = self._planning_v2(
+            _material(
+                context=[
+                    _capture(
+                        "C-0001",
+                        task_id="T-0001",
+                        retrieval=_retrieval(origin_state="verified"),
+                    )
+                ]
+            )
+        )
+        self.assertIs(outcome.data["sources"][0]["evidence"]["attested"], False)
+
+    def test_unlinked_capture_is_still_omitted(self) -> None:
+        outcome = self._planning_v2(
+            _material(
+                context=[
+                    _capture(
+                        "C-0001",
+                        task_id="T-0002",
+                        retrieval=_retrieval(),
+                    )
+                ]
+            )
+        )
+        self.assertEqual(outcome.data["sources"], [])
+
+    def test_malformed_retrieval_is_content_free(self) -> None:
+        outcome = self._planning_v2(
+            _material(
+                context=[
+                    _capture(
+                        "C-0001",
+                        task_id="T-0001",
+                        retrieval=_retrieval(evidence=True),
+                    )
+                ]
+            )
+        )
+        self.assertEqual(outcome.error_code, "internal_error")
+        self.assertIsNone(outcome.data)
+
+    def test_six_linked_sources_still_overflow(self) -> None:
+        material = _material(
+            context=[
+                _capture(
+                    "C-%04d" % n,
+                    task_id="T-0001",
+                    retrieval=_retrieval(),
+                )
+                for n in range(1, 7)
+            ]
+        )
+        outcome = self._planning_v2(material)
+        self.assertIsNone(outcome.error_code)
+        self.assertEqual(len(outcome.data["sources"]), pack.SOURCES_CAP)
+        self.assertIn("sources_overflow", outcome.data["omitted"])
+        rendered = json.dumps(
+            {"contract": "workstack.cli.v1", "data": outcome.data},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        self.assertLessEqual(len(rendered.encode("utf-8")), 32768)
 
 
 class LocalAndRunningParityTest(unittest.TestCase):
@@ -728,6 +881,64 @@ class LocalAndRunningParityTest(unittest.TestCase):
             self.assertEqual(local.data[block], remote.data[block])
         self.assertEqual(local.data["task"], remote.data["task"])
 
+    def test_running_owner_projects_the_same_planning_v2_sources(self) -> None:
+        packet = json.loads(
+            (Path(__file__).resolve().parents[1] / "contracts" / "capture-packet-v1.fixture.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        ingested = self.stack.ingest_capture(packet, "r25.ingest.0001")["body"]["data"]
+        self.stack.link_capture(ingested["id"], self.task["id"], "r25.link.0001")
+        captures = self.store.load("captures.json")
+        for record in captures["captures"]:
+            if record["id"] != ingested["id"]:
+                continue
+            record["schema_version"] = "1.1"
+            record["retrieval"] = {
+                "schema": "workstack.capture-retrieval.v1.1",
+                "capture_schema_version": "1.1",
+                "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "query_id": "engine-q-00194f5a",
+                "answer_scope": "single_source",
+                "confidence": {"level": "medium", "score": 0.62},
+                "evidence": [
+                    {
+                        "source_type": "notion.page",
+                        "title": "Release quality gate",
+                        "document_ref": "od-page-7f3ba1d34f50c884600112ab",
+                        "chunk_ref": "chunk-0004abcd",
+                        "source_version": "od-version-14",
+                        "indexed_digest": "sha256:" + "a" * 64,
+                        "web_url": None,
+                    }
+                ],
+                "truncated": False,
+            }
+        self.store.save("captures.json", captures)
+        request = ContextRequest(task_id=self.task["id"], view=pack.PLANNING_V2_VIEW)
+        local = handle_context(request=request, backend=self._local(), today=TODAY)
+        remote = handle_context(
+            request=request,
+            backend=self._running(_OwnerRequester(self.stack, self.task["id"])),
+            today=TODAY,
+        )
+        self.assertIsNone(local.error_code)
+        self.assertIsNone(remote.error_code)
+        self.assertEqual(local.data["view"], pack.PLANNING_V2_VIEW)
+        self.assertEqual(local.data["sources"], remote.data["sources"])
+        self.assertEqual(len(local.data["sources"]), 1)
+        self.assertEqual(
+            local.data["sources"][0]["evidence"],
+            {
+                "answer_scope": "single_source",
+                "attested": False,
+                "confidence_level": "medium",
+                "evidence_count": 1,
+                "truncated": False,
+            },
+        )
+        self.assertEqual(local.data["task"], remote.data["task"])
+
     def test_a_task_identity_change_between_the_two_gets_is_refused(self) -> None:
         for field, value in (("revision", 99), ("uid", WORKSPACE_UID), ("id", "T-9999")):
             with self.subTest(field=field):
@@ -812,12 +1023,21 @@ class ParserTest(unittest.TestCase):
         )
         self.assertEqual(parsed.view, "planning-v1")
 
+    def test_the_planning_v2_view_is_accepted(self) -> None:
+        parsed = build_parser().parse_args(
+            [
+                "--data-dir", "/workstack-fixture/authority", "agent", "context",
+                "--task", "T-0001", "--view", "planning-v2",
+            ]
+        )
+        self.assertEqual(parsed.view, "planning-v2")
+
     def test_an_unknown_view_is_refused_by_the_parser(self) -> None:
         with self.assertRaises(SystemExit) as raised:
             build_parser().parse_args(
                 [
                     "--data-dir", "/workstack-fixture/authority", "agent", "context",
-                    "--task", "T-0001", "--view", "planning-v2",
+                    "--task", "T-0001", "--view", "planning-v9",
                 ]
             )
         self.assertEqual(raised.exception.code, 2)

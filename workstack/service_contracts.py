@@ -33,6 +33,28 @@ class CaptureReplyCommands(Protocol):
         path: str | None = None,
     ) -> dict[str, Any]: ...
 
+    def unlink_capture(
+        self,
+        capture_id: str,
+        task_id: str,
+        revision: int,
+        idempotency_key: str,
+        request_digest: str | None = None,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def undo_capture_unlink(
+        self,
+        capture_id: str,
+        receipt_id: str,
+        revision: int,
+        idempotency_key: str,
+        request_digest: str | None = None,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]: ...
+
     def approve_reply(
         self,
         request: dict[str, Any],

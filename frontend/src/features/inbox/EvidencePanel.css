@@ -1,0 +1,143 @@
+.evidence-panel { display: grid; gap: 11px; min-width: 0; }
+.evidence-panel__head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.evidence-panel__head h3 { margin: 0; min-width: 0; }
+.evidence-panel__state,
+.evidence-panel__footnote,
+.evidence-panel__empty,
+.evidence-panel__item-meta {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.55;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.evidence-panel__state { color: var(--ws-text-secondary); }
+.evidence-panel__meta {
+  display: grid;
+  gap: 8px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  margin: 0;
+  min-width: 0;
+}
+.evidence-panel__meta > div { display: grid; gap: 2px; min-width: 0; }
+.evidence-panel__meta dt {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.evidence-panel__meta dd {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-meta, 12px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.evidence-panel__meta dd small {
+  color: var(--ws-text-muted);
+  display: block;
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.5;
+}
+.evidence-panel__warning {
+  background: var(--ws-status-warning-surface);
+  border: 1px solid var(--ws-status-warning-border);
+  border-radius: 10px;
+  color: var(--ws-status-warning-text);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+  padding: 8px 10px;
+}
+.evidence-panel__rows { display: grid; gap: 0; list-style: none; margin: 0; min-width: 0; padding: 0; }
+.evidence-panel__item {
+  border-top: 1px solid var(--ws-border-subtle);
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 0;
+}
+.evidence-panel__item:first-child { border-top: 0; padding-top: 0; }
+.evidence-panel__item-title {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-body, 14px);
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.evidence-panel__empty {
+  border: 1px dashed var(--ws-border-default);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+/* One explicit, transient source check: the action, its outcome line, and its caveat. */
+.evidence-panel__check {
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  min-width: 0;
+  padding: 10px;
+}
+.evidence-panel__check .button { max-width: 100%; }
+.evidence-panel__check .evidence-panel__footnote { margin: 0; }
+.evidence-panel__checked {
+  color: var(--ws-text-secondary);
+  font-size: var(--ws-type-reading-meta, 12px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  margin: 0;
+}
+.evidence-panel__check-error {
+  color: var(--ws-status-danger-text);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.evidence-panel__observation { margin: 0; min-width: 0; }
+
+/* Observed status sits beside the reported claims. It never restyles or hides them. */
+.evidence-status {
+  background: var(--ws-status-neutral-surface);
+  border: 1px solid var(--ws-status-neutral-border);
+  border-radius: 999px;
+  color: var(--ws-status-neutral-text);
+  display: inline-block;
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.45;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 2px 9px;
+}
+.evidence-status--current {
+  background: var(--ws-status-success-surface);
+  border-color: var(--ws-status-success-border);
+  color: var(--ws-status-success-text);
+}
+.evidence-status--stale {
+  background: var(--ws-status-warning-surface);
+  border-color: var(--ws-status-warning-border);
+  color: var(--ws-status-warning-text);
+}
+.evidence-status--denied,
+.evidence-status--refused,
+.evidence-status--revoked {
+  background: var(--ws-status-danger-surface);
+  border-color: var(--ws-status-danger-border);
+  color: var(--ws-status-danger-text);
+}

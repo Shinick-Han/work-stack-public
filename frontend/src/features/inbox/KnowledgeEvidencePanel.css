@@ -1,0 +1,114 @@
+/* Scoped to the evidence panel. Sizes come from the shared reading and control scales;
+   the fallbacks keep this file correct on its own if a token is not yet defined. */
+.evidence-panel { display: grid; gap: 11px; min-width: 0; }
+.evidence-panel__head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.evidence-panel__head h3 { margin: 0; min-width: 0; }
+.evidence-panel__state,
+.evidence-panel__scope,
+.evidence-panel__footnote,
+.evidence-panel__more {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.55;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+/* What the state means is the reason this panel exists, so it outranks the asides. */
+.evidence-panel__state { color: var(--ws-text-secondary); }
+/* Caveats and counts annotate a claim rather than making one of their own. */
+.evidence-panel__footnote,
+.evidence-panel__more { font-size: var(--ws-type-reading-label, 11px); }
+.evidence-panel__more { font-variant-numeric: tabular-nums; }
+.evidence-panel__scope strong { color: var(--ws-text-secondary); }
+
+.evidence-panel__meta {
+  display: grid;
+  gap: 8px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  margin: 0;
+  min-width: 0;
+}
+.evidence-panel__meta > div { display: grid; gap: 2px; min-width: 0; }
+.evidence-panel__meta dt {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.evidence-panel__meta dd {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-meta, 12px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.evidence-panel__meta dd small {
+  color: var(--ws-text-muted);
+  display: block;
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.5;
+}
+
+.evidence-panel__warnings { display: grid; gap: 7px; list-style: none; margin: 0; padding: 0; }
+.evidence-panel__warning {
+  background: var(--ws-status-warning-surface);
+  border: 1px solid var(--ws-status-warning-border);
+  border-radius: 10px;
+  color: var(--ws-status-warning-text);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.5;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 8px 10px;
+}
+
+.evidence-panel__rows { display: grid; gap: 0; list-style: none; margin: 0; min-width: 0; padding: 0; }
+.evidence-item {
+  border-top: 1px solid var(--ws-border-subtle);
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 0;
+}
+.evidence-item:first-child { border-top: 0; padding-top: 0; }
+.evidence-item__title {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-body, 14px);
+  font-weight: 600;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.evidence-item__meta,
+.evidence-item__note {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.5;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.evidence-item__meta em { font-style: normal; }
+.evidence-item__meta--unverified em { color: var(--ws-status-warning-text); }
+
+.evidence-panel__empty {
+  border: 1px dashed var(--ws-border-default);
+  border-radius: 10px;
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.55;
+  margin: 0;
+  padding: 12px;
+}
+
+.evidence-panel__actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.evidence-panel__actions .button { min-height: var(--ws-control-min-height, 34px); }

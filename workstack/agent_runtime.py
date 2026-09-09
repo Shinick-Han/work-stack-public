@@ -25,6 +25,11 @@ from workstack.agent_command_checkpoint import handle_checkpoint
 from workstack.agent_command_context import datetime as _context_datetime
 from workstack.agent_command_context import handle_context
 from workstack.agent_command_status import handle_status
+from workstack.agent_context_brief import (
+    BriefTooLarge,
+    MARKDOWN_FORMAT,
+    render_context_brief,
+)
 from workstack.agent_local_backend import create_local_backend
 from workstack.agent_transport import create_running_server_backend
 from workstack.owner_authority import EXCLUSIVE_LOCAL_HELD, OwnerAuthority
@@ -381,6 +386,35 @@ def _emit_rendered_bytes(*, stdout: typing.TextIO, rendered: bytes) -> None:
     stdout.write(rendered.decode("utf-8"))
 
 
+def _maybe_markdown(
+    *,
+    args: argparse.Namespace,
+    outcome: AgentOutcome,
+    rendered: bytes,
+) -> tuple[AgentOutcome, bytes]:
+    """Replace a validated context JSON envelope with Markdown when requested.
+
+    Failures, including formatting failure, stay the existing JSON error
+    envelope. The JSON bytes are produced first so raw backend data cannot
+    skip contract validation.
+    """
+
+    if getattr(args, "action", None) != CONTEXT_COMMAND:
+        return outcome, rendered
+    if getattr(args, "context_format", None) != MARKDOWN_FORMAT:
+        return outcome, rendered
+    if outcome.error_code is not None:
+        return outcome, rendered
+    try:
+        return outcome, render_context_brief(data=outcome.data)
+    except BriefTooLarge:
+        failed = _failure(command="agent.context", code="context_too_large")
+        return failed, render_outcome(outcome=failed)
+    except Exception:
+        failed = _failure(command="agent.context", code="internal_error")
+        return failed, render_outcome(outcome=failed)
+
+
 def run_agent_command(
     *,
     args: argparse.Namespace,
@@ -397,5 +431,6 @@ def run_agent_command(
     except Exception:
         outcome = _failure(command=_command_name(getattr(args, "action", None)), code="internal_error")
         rendered = render_outcome(outcome=outcome)
+    outcome, rendered = _maybe_markdown(args=args, outcome=outcome, rendered=rendered)
     _emit_rendered_bytes(stdout=stdout, rendered=rendered)
     return 0 if outcome.error_code is None else 1

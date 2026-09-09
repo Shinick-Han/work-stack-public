@@ -42,6 +42,7 @@ def _write_historical_v3(destination: Path, source_root: Path) -> None:
             migrations = metadata.get("migrations")
             if isinstance(migrations, dict):
                 migrations.pop("reports", None)
+                migrations.pop("knowledge", None)
             body = _serialized_json_bytes(metadata)
         (destination / name).write_bytes(body)
     validate_document_values(

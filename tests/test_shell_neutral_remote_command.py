@@ -53,6 +53,38 @@ def _load(name: str, path: Path):
 SSOT = _load("ssot_connection_r0", SHELL / "ssot_connection.py")
 META = _load("ssh_profile_metadata_r0", SHELL / "ssh_profile_metadata.py")
 REGISTRY = _load("connection_registry_r0", SHELL / "connection_registry.py")
+CONTRACT = sys.modules[SSOT.join_probe_command.__module__]
+
+CLASSIC_SERVE_KWARGS = {
+    "remote_python": REQUIRED_REMOTE_PYTHON,
+    "remote_app_dir": "/srv/workstack/app",
+    "remote_data_dir": "/srv/workstack/ssot",
+    "remote_port": 8765,
+    "local_forward_port": 18765,
+    "session_token": RUNTIME_SESSION_TOKEN,
+}
+CLASSIC_SERVE_TOKENS = [
+    "exec",
+    REQUIRED_REMOTE_PYTHON,
+    "-I",
+    "-B",
+    "/srv/workstack/app/desktop/python-webview-shell/remote_entry.py",
+    "serve",
+    "--app-dir",
+    "/srv/workstack/app",
+    "--data-dir",
+    "/srv/workstack/ssot",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8765",
+    "--public-port",
+    "18765",
+    "--session-token",
+    RUNTIME_SESSION_TOKEN,
+    "--exit-with-parent",
+]
+VALID_DRIVERS_CONFIG = "/u/agent/drivers.json"
 
 
 def ssot_profile():
@@ -406,6 +438,119 @@ class ShellNeutralRemoteCommandContractTest(unittest.TestCase):
         self.assertNotIn("pkill", remote)
         self.assertEqual(bash_words(remote), csh_words(remote))
         self.assertEqual(csh_words(remote), tcsh_words(remote))
+
+
+class KnowledgeDriversServeArgvTest(unittest.TestCase):
+    def test_omitted_config_is_byte_identical_classic_19_tokens(self) -> None:
+        omitted = CONTRACT.serve_tokens(**CLASSIC_SERVE_KWARGS)
+        explicit_none = CONTRACT.serve_tokens(
+            **CLASSIC_SERVE_KWARGS, knowledge_drivers_config=None
+        )
+        joined = CONTRACT.join_serve_command(**CLASSIC_SERVE_KWARGS)
+        self.assertEqual(omitted, CLASSIC_SERVE_TOKENS)
+        self.assertEqual(explicit_none, CLASSIC_SERVE_TOKENS)
+        self.assertEqual(len(omitted), 19)
+        self.assertEqual(omitted[0], "exec")
+        self.assertEqual(omitted.count("exec"), 1)
+        self.assertEqual(omitted[17], RUNTIME_SESSION_TOKEN)
+        self.assertEqual(" ".join(omitted), joined)
+        self.assertEqual(joined.encode("utf-8"), serve_command().encode("utf-8"))
+        self.assertNotIn("--knowledge-drivers-config", omitted)
+        self.assertNotIn(VALID_DRIVERS_CONFIG, omitted)
+
+    def test_valid_posix_config_is_exact_21_token_roundtrip(self) -> None:
+        tokens = CONTRACT.serve_tokens(
+            **CLASSIC_SERVE_KWARGS, knowledge_drivers_config=VALID_DRIVERS_CONFIG
+        )
+        expected = CLASSIC_SERVE_TOKENS + [
+            "--knowledge-drivers-config",
+            VALID_DRIVERS_CONFIG,
+        ]
+        joined = CONTRACT.join_exact_serve_tokens(tokens)
+        self.assertEqual(tokens, expected)
+        self.assertEqual(len(tokens), 21)
+        self.assertEqual(tokens[:19], CLASSIC_SERVE_TOKENS)
+        self.assertEqual(tokens[17], RUNTIME_SESSION_TOKEN)
+        self.assertEqual(tokens[18], "--exit-with-parent")
+        self.assertEqual(
+            tokens[19:], ["--knowledge-drivers-config", VALID_DRIVERS_CONFIG]
+        )
+        self.assertEqual(tokens.count("exec"), 1)
+        self.assertEqual(tokens[0], "exec")
+        self.assertEqual(joined, " ".join(expected))
+        self.assertEqual(forbidden_in(joined), ())
+        self.assertEqual(bash_words(joined), csh_words(joined))
+        self.assertEqual(csh_words(joined), tcsh_words(joined))
+        self.assertEqual(bash_words(joined), expected)
+        self.assertNotIn(POSIX_QUOTE_DANCE, joined)
+        self.assertEqual(
+            CONTRACT.join_serve_command(
+                **CLASSIC_SERVE_KWARGS, knowledge_drivers_config=VALID_DRIVERS_CONFIG
+            ),
+            joined,
+        )
+
+    def test_join_admits_only_classic_19_or_exact_21_shape(self) -> None:
+        classic = list(CLASSIC_SERVE_TOKENS)
+        valid_21 = classic + ["--knowledge-drivers-config", VALID_DRIVERS_CONFIG]
+        self.assertEqual(CONTRACT.join_exact_serve_tokens(classic), " ".join(classic))
+        self.assertEqual(CONTRACT.join_exact_serve_tokens(valid_21), " ".join(valid_21))
+        truncated = classic + ["--knowledge-drivers-config"]
+        unknown = classic + ["--other-flag", VALID_DRIVERS_CONFIG]
+        reordered = classic[:-1] + [
+            "--knowledge-drivers-config",
+            VALID_DRIVERS_CONFIG,
+            "--exit-with-parent",
+        ]
+        swapped = classic + [VALID_DRIVERS_CONFIG, "--knowledge-drivers-config"]
+        extra = valid_21 + ["--extra"]
+        for label, tokens in (
+            ("truncated", truncated),
+            ("unknown", unknown),
+            ("reordered", reordered),
+            ("swapped", swapped),
+            ("extra", extra),
+            ("empty", []),
+            ("exec-only", ["exec"]),
+        ):
+            with self.subTest(shape=label):
+                with self.assertRaisesRegex(RuntimeError, "REMOTE_PROTOCOL_INVALID"):
+                    CONTRACT.join_exact_serve_tokens(tokens)
+
+    def test_builder_refuses_unsafe_relative_root_dotdot_control_nonstring_paths(
+        self,
+    ) -> None:
+        cases = (
+            ("relative", "u/agent/drivers.json"),
+            ("dot-relative", "./drivers.json"),
+            ("root", "/"),
+            ("dotdot", "/u/../agent/drivers.json"),
+            ("dot-segment", "/u/agent/./drivers.json"),
+            ("control", "/u/agent/drivers.json\n"),
+            ("unsafe-space", "/u/agent/drivers.json;rm"),
+            ("trailing-slash", "/u/agent/drivers.json/"),
+            ("nonstring-int", 1),
+            ("nonstring-bytes", b"/u/agent/drivers.json"),
+        )
+        for label, value in cases:
+            with self.subTest(path=label):
+                with self.assertRaisesRegex(RuntimeError, "REMOTE_PROTOCOL_INVALID") as caught:
+                    CONTRACT.serve_tokens(
+                        **CLASSIC_SERVE_KWARGS, knowledge_drivers_config=value
+                    )
+                message = str(caught.exception)
+                self.assertNotIn(RUNTIME_SESSION_TOKEN, message)
+                if isinstance(value, str) and value not in {"/"}:
+                    self.assertNotIn(value, message)
+
+    def test_session_token_is_not_the_appended_config_pair(self) -> None:
+        tokens = CONTRACT.serve_tokens(
+            **CLASSIC_SERVE_KWARGS, knowledge_drivers_config=VALID_DRIVERS_CONFIG
+        )
+        self.assertEqual(tokens[16], "--session-token")
+        self.assertEqual(tokens[17], RUNTIME_SESSION_TOKEN)
+        self.assertNotEqual(tokens[20], RUNTIME_SESSION_TOKEN)
+        self.assertNotIn(RUNTIME_SESSION_TOKEN, tokens[19:])
 
 
 class ShellNeutralRegressionTest(unittest.TestCase):

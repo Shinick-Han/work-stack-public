@@ -79,6 +79,61 @@ function ConvertTo-WindowsCommandLineArgument {
     return '"' + $escaped + '"'
 }
 
+function Test-DriveAbsoluteOwnerConfigPath {
+    param([string]$Text)
+    if ($Text.Length -lt 3) { return $false }
+    $letter = $Text[0]
+    $isLetter = ($letter -ge 'A' -and $letter -le 'Z') -or ($letter -ge 'a' -and $letter -le 'z')
+    if (-not $isLetter) { return $false }
+    if ($Text[1] -ne ':') { return $false }
+    return ($Text[2] -eq '\' -or $Text[2] -eq '/')
+}
+
+function Test-UncOwnerConfigBody {
+    param([string]$Body)
+    if ([string]::IsNullOrEmpty($Body) -or $Body.StartsWith('\') -or $Body.StartsWith('/')) {
+        return $false
+    }
+    $parts = $Body.Replace('/', '\').Split('\')
+    return ($parts.Length -ge 2 -and $parts[0].Length -gt 0 -and $parts[1].Length -gt 0)
+}
+
+function Test-WindowsAbsoluteOwnerConfigPath {
+    param($Value)
+    if ($Value -isnot [string] -or $Value.Length -eq 0) { return $false }
+    for ($index = 0; $index -lt $Value.Length; $index++) {
+        $code = [int][char]$Value[$index]
+        if ($code -lt 32 -or $code -eq 127) { return $false }
+    }
+    if ($Value.StartsWith('\\?\')) {
+        $rest = $Value.Substring(4)
+        if ($rest.Length -ge 4 -and $rest.Substring(0, 4).ToUpperInvariant() -eq 'UNC\') {
+            return Test-UncOwnerConfigBody $rest.Substring(4)
+        }
+        return Test-DriveAbsoluteOwnerConfigPath $rest
+    }
+    if ($Value.StartsWith('\\')) {
+        return Test-UncOwnerConfigBody $Value.Substring(2)
+    }
+    return Test-DriveAbsoluteOwnerConfigPath $Value
+}
+
+function Resolve-KnowledgeDriversConfigArguments {
+    param([Parameter(Mandatory = $true)]$Config)
+    $property = $Config.PSObject.Properties |
+        Where-Object { $_.Name -ceq 'knowledge_drivers_config' } |
+        Select-Object -First 1
+    if ($null -eq $property) { return [string[]]@() }
+    $raw = $property.Value
+    if (-not (Test-WindowsAbsoluteOwnerConfigPath -Value $raw)) {
+        throw "Work Stack knowledge drivers configuration path is invalid."
+    }
+    return [string[]]@(
+        '--knowledge-drivers-config'
+        (ConvertTo-WindowsCommandLineArgument ([string]$raw))
+    )
+}
+
 function Open-WorkStackBrowser {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
@@ -117,6 +172,8 @@ if (Test-LoopbackPortListening) {
     throw "Configured port $port is already in use by a non-Work Stack process. Re-run the installer to select an available port."
 }
 
+$knowledgeDriversArguments = @(Resolve-KnowledgeDriversConfigArguments -Config $config)
+
 New-Item -ItemType Directory -Force -Path $dataPath, $backupPath, $logPath | Out-Null
 if (-not $SkipBackup -and (Test-Path -LiteralPath (Join-Path $dataPath 'workspace.json'))) {
     & $pythonPath $entryPath --data-dir $dataPath maintenance backup --out $backupPath | Out-Null
@@ -136,7 +193,7 @@ if (-not $SkipBackup -and (Test-Path -LiteralPath (Join-Path $dataPath 'workspac
 
 $stdout = Join-Path $logPath 'server.out.log'
 $stderr = Join-Path $logPath 'server.err.log'
-$arguments = @(
+$argumentTokens = @(
     (ConvertTo-WindowsCommandLineArgument $entryPath)
     '--data-dir'
     (ConvertTo-WindowsCommandLineArgument $dataPath)
@@ -146,7 +203,8 @@ $arguments = @(
     '127.0.0.1'
     '--port'
     [string]$port
-) -join ' '
+) + $knowledgeDriversArguments
+$arguments = $argumentTokens -join ' '
 $process = Start-Process -FilePath $pythonPath -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 
 $ready = $false

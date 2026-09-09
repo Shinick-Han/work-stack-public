@@ -26,9 +26,33 @@ SHELL = ROOT / "desktop" / "python-webview-shell"
 LINUX_PATH = SHELL / "remote_provision_installer_linux.py"
 INSTALLER_PATH = SHELL / "remote_provision_installer.py"
 
+import workstack
 from workstack.service import WorkStack
 from workstack.store import Store, StoreCorruptError
-from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES
+from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES, V6_DOCUMENT_NAMES
+
+
+def _load(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+LINUX = _load(LINUX_PATH, "remote_provision_installer_linux")
+MODULE = _load(INSTALLER_PATH, "remote_provision_installer")
+
+
+# Happy-path fixtures state the release identity the shipped engine declares
+# rather than a frozen literal, so a release bump moves them with the engine
+# instead of leaving them describing a superseded release. ReleaseIdentityTests
+# pins that declared identity to workstack/__init__.py and proves a neighbouring
+# version, protocol, or archive name is still refused.
+PRODUCT = MODULE.PRODUCT
+PROTOCOL = MODULE.PROTOCOL
+ARCHIVE_NAME = MODULE.ARCHIVE_NAME
 
 COMMIT = "a" * 40
 TREE = "b" * 40
@@ -37,12 +61,13 @@ UID = "11111111-1111-4111-8111-111111111111"
 INSTALL = "/workstack-fixture/owner/app"
 DATA = "/workstack-fixture/owner/data"
 OWNER = "probe_owner"
-ARCHIVE_NAME = "WorkStack-Linux-1.0.8-cp312-manylinux_2_17_x86_64.zip"
 PAYLOAD_FILES = {
     "desktop/python-webview-shell/remote_command_contract.py": b"CONTRACT = 1\n",
     "desktop/python-webview-shell/remote_entry.py": b"print('entry')\n",
     "run_work_stack.py": b"print('run')\n",
-    "workstack/__init__.py": b'__version__ = "1.0.8"\nREMOTE_PROTOCOL_VERSION = 1\n',
+    "workstack/__init__.py": ('__version__ = "%s"\nREMOTE_PROTOCOL_VERSION = %d\n' % (PRODUCT, PROTOCOL)).encode(
+        "ascii"
+    ),
 }
 STORE_META = {
     "migrations": {
@@ -73,19 +98,6 @@ EVENTS = (
     "cleanup_stage",
 )
 PRE_COMMIT = EVENTS[:8]
-
-
-def _load(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-LINUX = _load(LINUX_PATH, "remote_provision_installer_linux")
-MODULE = _load(INSTALLER_PATH, "remote_provision_installer")
 
 
 def dump(value: object) -> bytes:
@@ -180,13 +192,30 @@ def wheels_with_compressed_rpds(
     return wheels
 
 
-def make_artifact(*, blobs: dict[str, bytes] | None = None, wheels: list[object] | None = None) -> tuple[bytes, bytes]:
+def make_artifact(
+    *,
+    blobs: dict[str, bytes] | None = None,
+    wheels: list[object] | None = None,
+    manifest_product: str = PRODUCT,
+    manifest_protocol: object = PROTOCOL,
+    sidecar_product: str = PRODUCT,
+    sidecar_protocol: object = PROTOCOL,
+    archive_name: str = ARCHIVE_NAME,
+) -> tuple[bytes, bytes]:
+    """Build a self-consistent artifact, optionally restating one identity field.
+
+    The manifest and sidecar identity are stated separately so a negative case
+    can differ from the accepted artifact in exactly one release-identity field
+    while every hash, size, and canonical form stays correct. A refusal then
+    isolates the identity gate rather than some incidental corruption.
+    """
+
     files = dict(PAYLOAD_FILES if blobs is None else blobs)
     manifest = {
         "entrypoint": "desktop/python-webview-shell/remote_entry.py",
         "files": file_records(files),
-        "product_version": "1.0.8",
-        "remote_protocol_version": 1,
+        "product_version": manifest_product,
+        "remote_protocol_version": manifest_protocol,
         "requirements_lock_sha256": LOCK,
         "schema_version": 1,
         "source_commit": COMMIT,
@@ -203,10 +232,10 @@ def make_artifact(*, blobs: dict[str, bytes] | None = None, wheels: list[object]
     archive_bytes = buffer.getvalue()
     sidecar = dump(
         {
-            "archive": {"name": ARCHIVE_NAME, "sha256": digest_of(archive_bytes), "size": len(archive_bytes)},
+            "archive": {"name": archive_name, "sha256": digest_of(archive_bytes), "size": len(archive_bytes)},
             "artifact_manifest_sha256": digest_of(manifest_bytes),
-            "product_version": "1.0.8",
-            "remote_protocol_version": 1,
+            "product_version": sidecar_product,
+            "remote_protocol_version": sidecar_protocol,
             "schema_version": 1,
             "source_commit": COMMIT,
             "target_id": "cp312-manylinux_2_17_x86_64",
@@ -516,7 +545,7 @@ class ArtifactAdmissionTests(unittest.TestCase):
             {
                 "entrypoint": "desktop/python-webview-shell/remote_entry.py",
                 "files": file_records(files),
-                "product_version": "1.0.8",
+                "product_version": PRODUCT,
                 "remote_protocol_version": 1,
                 "requirements_lock_sha256": LOCK,
                 "schema_version": 1,
@@ -540,7 +569,7 @@ class ArtifactAdmissionTests(unittest.TestCase):
                     "size": len(buffer.getvalue()),
                 },
                 "artifact_manifest_sha256": digest_of(manifest),
-                "product_version": "1.0.8",
+                "product_version": PRODUCT,
                 "remote_protocol_version": 1,
                 "schema_version": 1,
                 "source_commit": COMMIT,
@@ -590,7 +619,7 @@ class ArtifactAdmissionTests(unittest.TestCase):
             {
                 "entrypoint": "desktop/python-webview-shell/remote_entry.py",
                 "files": file_records(files),
-                "product_version": "1.0.8",
+                "product_version": PRODUCT,
                 "remote_protocol_version": 1,
                 "requirements_lock_sha256": LOCK,
                 "schema_version": 1,
@@ -614,7 +643,7 @@ class ArtifactAdmissionTests(unittest.TestCase):
                     "size": len(archive_bytes),
                 },
                 "artifact_manifest_sha256": digest_of(manifest),
-                "product_version": "1.0.8",
+                "product_version": PRODUCT,
                 "remote_protocol_version": 1,
                 "schema_version": 1,
                 "source_commit": COMMIT,
@@ -630,7 +659,7 @@ class ArtifactAdmissionTests(unittest.TestCase):
             {
                 "entrypoint": "desktop/python-webview-shell/remote_entry.py",
                 "files": file_records(files),
-                "product_version": "1.0.8",
+                "product_version": PRODUCT,
                 "remote_protocol_version": 1,
                 "requirements_lock_sha256": LOCK,
                 "schema_version": 1,
@@ -654,7 +683,7 @@ class ArtifactAdmissionTests(unittest.TestCase):
                     "size": len(archive_bytes),
                 },
                 "artifact_manifest_sha256": digest_of(manifest),
-                "product_version": "1.0.8",
+                "product_version": PRODUCT,
                 "remote_protocol_version": 1,
                 "schema_version": 1,
                 "source_commit": COMMIT,
@@ -767,7 +796,7 @@ class ArtifactAdmissionTests(unittest.TestCase):
             {
                 "entrypoint": "desktop/python-webview-shell/remote_entry.py",
                 "files": records,
-                "product_version": "1.0.8",
+                "product_version": PRODUCT,
                 "remote_protocol_version": 1,
                 "requirements_lock_sha256": LOCK,
                 "schema_version": 1,
@@ -791,7 +820,7 @@ class ArtifactAdmissionTests(unittest.TestCase):
                     "size": len(archive_bytes),
                 },
                 "artifact_manifest_sha256": digest_of(manifest),
-                "product_version": "1.0.8",
+                "product_version": PRODUCT,
                 "remote_protocol_version": 1,
                 "schema_version": 1,
                 "source_commit": COMMIT,
@@ -817,7 +846,7 @@ class ArtifactAdmissionTests(unittest.TestCase):
             {
                 "entrypoint": "desktop/python-webview-shell/remote_entry.py",
                 "files": file_records(files),
-                "product_version": "1.0.8",
+                "product_version": PRODUCT,
                 "remote_protocol_version": 1,
                 "requirements_lock_sha256": LOCK,
                 "schema_version": 1,
@@ -843,7 +872,7 @@ class ArtifactAdmissionTests(unittest.TestCase):
                     "size": len(archive_bytes),
                 },
                 "artifact_manifest_sha256": digest_of(manifest),
-                "product_version": "1.0.8",
+                "product_version": PRODUCT,
                 "remote_protocol_version": 1,
                 "schema_version": 1,
                 "source_commit": COMMIT,
@@ -855,13 +884,131 @@ class ArtifactAdmissionTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "REMOTE_ARTIFACT_INVALID")
 
 
+class ReleaseIdentityTests(unittest.TestCase):
+    """The engine's release identity is single-sourced, current, and still exact.
+
+    The install engine cannot import ``workstack`` on the remote host: it is
+    executed as two standalone modules decoded from the stdin payload, before
+    any product package exists there. Its release identity is therefore an
+    explicit constant, and these tests are what keeps that constant honest --
+    they fail when it drifts from workstack/__init__.py, when the admission
+    module restates it instead of reading the leaf's, and when any identity gate
+    is loosened from equality into acceptance.
+    """
+
+    # 1.0.8 is the release this engine was pinned to before the constants were
+    # single-sourced and moved forward. It is kept here as the concrete
+    # neighbouring release each gate must still refuse.
+    SUPERSEDED = "1.0.8"
+
+    def test_engine_identity_equals_the_source_release(self) -> None:
+        self.assertEqual(workstack.__version__, LINUX.PRODUCT)
+        self.assertEqual(workstack.REMOTE_PROTOCOL_VERSION, LINUX.PROTOCOL)
+        self.assertNotEqual(self.SUPERSEDED, workstack.__version__)
+
+    def test_admission_module_reads_the_leaf_identity(self) -> None:
+        self.assertIs(MODULE.PRODUCT, LINUX.PRODUCT)
+        self.assertIs(MODULE.PROTOCOL, LINUX.PROTOCOL)
+        source = INSTALLER_PATH.read_text(encoding="utf-8")
+        # One definition site: the admission module imports the pair, never
+        # restates it, so a release bump cannot leave the two gates disagreeing.
+        self.assertNotIn("PRODUCT = ", source)
+        self.assertNotIn("PROTOCOL = ", source)
+        self.assertIn("from remote_provision_installer_linux import PRODUCT", source)
+        self.assertIn("from remote_provision_installer_linux import PROTOCOL", source)
+
+    def test_expected_archive_name_is_derived_from_that_identity(self) -> None:
+        self.assertEqual(
+            "WorkStack-Linux-%s-%s.zip" % (workstack.__version__, MODULE.TARGET_ID),
+            MODULE.ARCHIVE_NAME,
+        )
+
+    def test_current_release_artifact_is_admitted_and_installs(self) -> None:
+        archive, sidecar = make_artifact()
+
+        admitted = MODULE._admit_artifact(archive, sidecar)
+
+        self.assertEqual(digest_of(archive), admitted["digest"])
+        ops = RecordingOps()
+        result = MODULE._install_with_operations(ops, **valid_kwargs())
+        self.assertEqual("installed", result["outcome"])
+        self.assertEqual(workstack.__version__, result["product_version"])
+        self.assertEqual(workstack.REMOTE_PROTOCOL_VERSION, result["remote_protocol_version"])
+        self.assertEqual(workstack.__version__, ops.receipt["product_version"])
+
+    def test_sidecar_stating_the_superseded_release_is_refused(self) -> None:
+        archive, sidecar = make_artifact(sidecar_product=self.SUPERSEDED, manifest_product=self.SUPERSEDED)
+
+        with self.assertRaises(MODULE.InstallerError) as raised:
+            MODULE._admit_artifact(archive, sidecar)
+
+        self.assertEqual("REMOTE_ARTIFACT_INVALID", raised.exception.code)
+
+    def test_manifest_stating_another_release_is_refused(self) -> None:
+        # The sidecar is correct and its manifest digest is over these very
+        # bytes, so only the manifest's own product_version differs.
+        archive, sidecar = make_artifact(manifest_product=self.SUPERSEDED)
+
+        with self.assertRaises(MODULE.InstallerError) as raised:
+            MODULE._admit_artifact(archive, sidecar)
+
+        self.assertEqual("REMOTE_ARTIFACT_INVALID", raised.exception.code)
+
+    def test_protocol_mismatch_is_refused_on_both_documents(self) -> None:
+        other = MODULE.PROTOCOL + 1
+        for kwargs in ({"sidecar_protocol": other, "manifest_protocol": other}, {"manifest_protocol": other}):
+            with self.subTest(**kwargs):
+                archive, sidecar = make_artifact(**kwargs)
+
+                with self.assertRaises(MODULE.InstallerError) as raised:
+                    MODULE._admit_artifact(archive, sidecar)
+
+                self.assertEqual("REMOTE_ARTIFACT_INVALID", raised.exception.code)
+
+    def test_archive_named_for_another_release_is_refused(self) -> None:
+        stale = "WorkStack-Linux-%s-%s.zip" % (self.SUPERSEDED, MODULE.TARGET_ID)
+        self.assertNotEqual(MODULE.ARCHIVE_NAME, stale)
+        archive, sidecar = make_artifact(archive_name=stale)
+
+        with self.assertRaises(MODULE.InstallerError) as raised:
+            MODULE._admit_artifact(archive, sidecar)
+
+        self.assertEqual("REMOTE_ARTIFACT_INVALID", raised.exception.code)
+
+    def test_post_install_probe_must_report_the_same_release(self) -> None:
+        ops = LINUX._LinuxInstallerOperations(INSTALL, DATA, OWNER, UID)
+
+        def probe(product: object, protocol: object) -> bytes:
+            document = {"workspace_id": UID, "product_version": product, "protocol_version": protocol}
+            return json.dumps(document, ensure_ascii=True, separators=(",", ":")).encode("utf-8") + b"\n"
+
+        ops._accept_probe(probe(LINUX.PRODUCT, LINUX.PROTOCOL), b"")
+        for product, protocol in (
+            (self.SUPERSEDED, LINUX.PROTOCOL),
+            (LINUX.PRODUCT, LINUX.PROTOCOL + 1),
+        ):
+            with self.subTest(product=product, protocol=protocol):
+                with self.assertRaises(LINUX.InstallerError) as raised:
+                    ops._accept_probe(probe(product, protocol), b"")
+
+                self.assertEqual("REMOTE_SMOKE_FAILED", raised.exception.code)
+
+    def test_staged_package_import_gate_uses_the_same_identity(self) -> None:
+        # smoke_imports needs a real dirfd-anchored stage (Linux only), so the
+        # equality itself is asserted at the source: the staged workstack must
+        # match PRODUCT/PROTOCOL, not merely be present or importable.
+        source = LINUX_PATH.read_text(encoding="utf-8")
+        self.assertIn('getattr(workstack, "__version__", None) == PRODUCT', source)
+        self.assertIn('getattr(workstack, "REMOTE_PROTOCOL_VERSION", None) == PROTOCOL', source)
+
+
 class FakeInstallOrderTests(unittest.TestCase):
     def test_full_fake_event_order(self) -> None:
         ops = RecordingOps()
         result = MODULE._install_with_operations(ops, **valid_kwargs())
         self.assertEqual(result["outcome"], "installed")
         self.assertEqual(result["workspace_uid"], UID)
-        self.assertEqual(result["product_version"], "1.0.8")
+        self.assertEqual(result["product_version"], PRODUCT)
         names = [name for name in ops.events if name != "write_file"]
         self.assertEqual(
             names,
@@ -1048,7 +1195,7 @@ class BoundedChildIoTests(unittest.TestCase):
         ops = self._ops()
         good = (
             json.dumps(
-                {"workspace_id": UID, "product_version": "1.0.8", "protocol_version": 1},
+                {"workspace_id": UID, "product_version": PRODUCT, "protocol_version": 1},
                 ensure_ascii=True,
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -1059,7 +1206,7 @@ class BoundedChildIoTests(unittest.TestCase):
             ops._accept_probe(good, b"x")
         pretty = (
             json.dumps(
-                {"workspace_id": UID, "product_version": "1.0.8", "protocol_version": 1},
+                {"workspace_id": UID, "product_version": PRODUCT, "protocol_version": 1},
                 indent=2,
             ).encode("utf-8")
             + b"\n"
@@ -1070,7 +1217,7 @@ class BoundedChildIoTests(unittest.TestCase):
             json.dumps(
                 {
                     "workspace_id": UID,
-                    "product_version": "1.0.8",
+                    "product_version": PRODUCT,
                     "protocol_version": 1,
                     "extra": 1,
                 },
@@ -1081,13 +1228,14 @@ class BoundedChildIoTests(unittest.TestCase):
         with self.assertRaises(LINUX.InstallerError):
             ops._accept_probe(extra, b"")
         boolean_protocol = (
-            b'{"workspace_id":"%s","product_version":"1.0.8","protocol_version":true}\n' % UID.encode("ascii")
+            b'{"workspace_id":"%s","product_version":"%s","protocol_version":true}\n'
+            % (UID.encode("ascii"), PRODUCT.encode("ascii"))
         )
         with self.assertRaises(LINUX.InstallerError):
             ops._accept_probe(boolean_protocol, b"")
         duplicate = (
-            b'{"workspace_id":"%s","product_version":"1.0.8","protocol_version":1,'
-            b'"workspace_id":"%s"}\n' % (UID.encode("ascii"), UID.encode("ascii"))
+            b'{"workspace_id":"%s","product_version":"%s","protocol_version":1,'
+            b'"workspace_id":"%s"}\n' % (UID.encode("ascii"), PRODUCT.encode("ascii"), UID.encode("ascii"))
         )
         with self.assertRaises(LINUX.InstallerError):
             ops._accept_probe(duplicate, b"")
@@ -1098,7 +1246,8 @@ class BoundedChildIoTests(unittest.TestCase):
         with self.assertRaises(LINUX.InstallerError):
             ops._accept_probe(nan_const, b"")
         inf_payload = (
-            b'{"workspace_id":"%s","product_version":"1.0.8","protocol_version":Infinity}\n' % UID.encode("ascii")
+            b'{"workspace_id":"%s","product_version":"%s","protocol_version":Infinity}\n'
+            % (UID.encode("ascii"), PRODUCT.encode("ascii"))
         )
         with self.assertRaises(LINUX.InstallerError):
             ops._accept_probe(inf_payload, b"")
@@ -1174,6 +1323,24 @@ def _authority_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def disposable_v6_authority():
+    temporary = tempfile.TemporaryDirectory(prefix="ws-install-v6-")
+    store = Store(Path(temporary.name))
+    readiness = store.initialize()
+    values = {
+        name: json.loads((store.root / name).read_text(encoding="utf-8"))
+        for name in V6_DOCUMENT_NAMES
+    }
+    oracle = Store.validate_document_values(values, schema_version=6)
+    if oracle.workspace_uid != readiness.workspace_uid:
+        raise AssertionError("initialize UID and oracle UID diverged")
+    if oracle.schema_version != 6:
+        raise AssertionError("current initialize did not admit schema 6")
+    meta = (store.root / "store-meta.json").read_bytes()
+    workspace = (store.root / "workspace.json").read_bytes()
+    return temporary, oracle, values, meta, workspace
+
+
 def disposable_v5_authority():
     temporary = tempfile.TemporaryDirectory(prefix="ws-install-v5-")
     store = Store(Path(temporary.name))
@@ -1182,10 +1349,17 @@ def disposable_v5_authority():
         name: json.loads((store.root / name).read_text(encoding="utf-8"))
         for name in V5_DOCUMENT_NAMES
     }
+    # This build writes schema 6, so a genuine v5 authority is the ten v5 names
+    # with the metadata stepped back: the current version and the evidence
+    # record schema 6 introduced. The remaining nine payloads are already
+    # exactly what a v5 store held.
+    metadata = values["store-meta.json"]
+    metadata["store_schema_version"] = 5
+    metadata["migrations"].pop("knowledge", None)
     oracle = Store.validate_document_values(values, schema_version=5)
     if oracle.workspace_uid != readiness.workspace_uid:
         raise AssertionError("initialize UID and oracle UID diverged")
-    meta = (store.root / "store-meta.json").read_bytes()
+    meta = _authority_bytes(metadata)
     workspace = (store.root / "workspace.json").read_bytes()
     return temporary, oracle, values, meta, workspace
 
@@ -1202,7 +1376,7 @@ def genuine_v3_authority():
 
 
 class RemoteSchemaAdmissionTests(unittest.TestCase):
-    """Installer metadata predicate admits exact v3/v5; 10-document oracle stays in tests."""
+    """Installer metadata predicate admits exact v3/v5/v6; v5/v6 oracles stay in tests."""
 
     def decode(self, meta: bytes, workspace: bytes):
         return LINUX._data_object(meta), LINUX._data_object(workspace)
@@ -1212,10 +1386,31 @@ class RemoteSchemaAdmissionTests(unittest.TestCase):
         mutator(metadata)
         return _authority_bytes(metadata)
 
+    def test_genuine_v6_initialize_bytes_admit_and_bind_oracle_uid(self) -> None:
+        temporary, oracle, values, meta, workspace = disposable_v6_authority()
+        self.addCleanup(temporary.cleanup)
+        parsed_meta, parsed_space = self.decode(meta, workspace)
+        self.assertEqual(parsed_meta["store_schema_version"], 6)
+        self.assertEqual(
+            set(parsed_meta["migrations"]),
+            {"identity", "planning_status", "reports", "knowledge"},
+        )
+        knowledge = parsed_meta["migrations"]["knowledge"]
+        self.assertEqual(knowledge["id"], "workstack.knowledge.v6")
+        self.assertEqual(knowledge["origin"], "fresh")
+        self.assertIsNone(knowledge["source_sha256"])
+        self.assertTrue(LINUX._store_meta_ok(parsed_meta))
+        self.assertEqual(LINUX._data_uid(parsed_space), oracle.workspace_uid)
+        self.assertEqual(oracle.schema_version, 6)
+        self.assertEqual(set(values), set(V6_DOCUMENT_NAMES))
+        self.assertNotEqual(oracle.schema_version, 5)
+
     def test_genuine_v5_bytes_admit_and_bind_oracle_uid(self) -> None:
         temporary, oracle, _values, meta, workspace = disposable_v5_authority()
         self.addCleanup(temporary.cleanup)
         parsed_meta, parsed_space = self.decode(meta, workspace)
+        self.assertEqual(parsed_meta["store_schema_version"], 5)
+        self.assertNotIn("knowledge", parsed_meta["migrations"])
         self.assertTrue(LINUX._store_meta_ok(parsed_meta))
         self.assertEqual(LINUX._data_uid(parsed_space), oracle.workspace_uid)
         self.assertEqual(oracle.schema_version, 5)
@@ -1250,6 +1445,29 @@ class RemoteSchemaAdmissionTests(unittest.TestCase):
                 self.assertTrue(LINUX._store_meta_ok(parsed_meta))
                 self.assertEqual(LINUX._data_uid(parsed_space), oracle.workspace_uid)
 
+    def test_migrated_knowledge_evidence_is_admitted(self) -> None:
+        temporary, oracle, values, _meta, workspace = disposable_v6_authority()
+        self.addCleanup(temporary.cleanup)
+        parsed_space = LINUX._data_object(workspace)
+        for origin in ("migrated_v1", "migrated_v2", "migrated_v3", "migrated_v5"):
+            with self.subTest(origin=origin):
+                def mutate(metadata, chosen=origin):
+                    metadata["migrations"]["knowledge"] = {
+                        "id": "workstack.knowledge.v5-to-v6",
+                        "origin": chosen,
+                        "source_sha256": LOCK,
+                    }
+
+                meta = self.mutated_meta(values, mutate)
+                Store.validate_document_values(
+                    {**values, "store-meta.json": json.loads(meta.decode("utf-8"))},
+                    schema_version=6,
+                )
+                parsed_meta = LINUX._data_object(meta)
+                self.assertEqual(parsed_meta["store_schema_version"], 6)
+                self.assertTrue(LINUX._store_meta_ok(parsed_meta))
+                self.assertEqual(LINUX._data_uid(parsed_space), oracle.workspace_uid)
+
     def test_bool_float_and_unsupported_schema_versions_are_refused(self) -> None:
         temporary, _oracle, values, _meta, _workspace = disposable_v5_authority()
         self.addCleanup(temporary.cleanup)
@@ -1261,7 +1479,8 @@ class RemoteSchemaAdmissionTests(unittest.TestCase):
             ("schema_1", lambda metadata: metadata.__setitem__("store_schema_version", 1)),
             ("schema_2", lambda metadata: metadata.__setitem__("store_schema_version", 2)),
             ("schema_4", lambda metadata: metadata.__setitem__("store_schema_version", 4)),
-            ("schema_future", lambda metadata: metadata.__setitem__("store_schema_version", 6)),
+            ("schema_6_without_knowledge", lambda metadata: metadata.__setitem__("store_schema_version", 6)),
+            ("schema_future", lambda metadata: metadata.__setitem__("store_schema_version", 7)),
         )
         for name, mutator in cases:
             with self.subTest(name=name):
@@ -1284,11 +1503,46 @@ class RemoteSchemaAdmissionTests(unittest.TestCase):
         def extra_top(metadata):
             metadata["extra"] = 1
 
+        def v6_claimed_as_v5(metadata):
+            metadata["store_schema_version"] = 5
+            metadata["migrations"]["knowledge"] = {
+                "id": "workstack.knowledge.v6",
+                "origin": "fresh",
+                "source_sha256": None,
+            }
+
         for name, mutator in (
             ("partial_v5", drop_reports),
             ("extra_record", extra_record),
             ("v3_with_reports", mixed_v3_reports),
             ("extra_top_field", extra_top),
+            ("v5_with_knowledge", v6_claimed_as_v5),
+        ):
+            with self.subTest(name=name):
+                parsed = LINUX._data_object(self.mutated_meta(values, mutator))
+                self.assertFalse(LINUX._store_meta_ok(parsed))
+
+    def test_partial_v6_roster_and_v7_are_refused(self) -> None:
+        temporary, _oracle, values, _meta, _workspace = disposable_v6_authority()
+        self.addCleanup(temporary.cleanup)
+
+        def drop_knowledge(metadata):
+            del metadata["migrations"]["knowledge"]
+
+        def drop_reports(metadata):
+            del metadata["migrations"]["reports"]
+
+        def future(metadata):
+            metadata["store_schema_version"] = 7
+
+        def relabel_v5(metadata):
+            metadata["store_schema_version"] = 5
+
+        for name, mutator in (
+            ("partial_v6_no_knowledge", drop_knowledge),
+            ("partial_v6_no_reports", drop_reports),
+            ("v6_relabeled_v5", relabel_v5),
+            ("schema_7", future),
         ):
             with self.subTest(name=name):
                 parsed = LINUX._data_object(self.mutated_meta(values, mutator))
@@ -1314,6 +1568,26 @@ class RemoteSchemaAdmissionTests(unittest.TestCase):
                 meta = self.mutated_meta(values, lambda metadata, payload=fields: set_reports(metadata, **payload))
                 self.assertFalse(LINUX._store_meta_ok(LINUX._data_object(meta)))
 
+    def test_invalid_knowledge_evidence_is_refused(self) -> None:
+        temporary, _oracle, values, _meta, _workspace = disposable_v6_authority()
+        self.addCleanup(temporary.cleanup)
+
+        def set_knowledge(metadata, **fields):
+            metadata["migrations"]["knowledge"].update(fields)
+
+        cases = (
+            ("fresh_digest", {"source_sha256": LOCK}),
+            ("wrong_fresh_id", {"id": "workstack.knowledge.v5-to-v6"}),
+            ("unknown_origin", {"origin": "migrated_v4", "id": "workstack.knowledge.v5-to-v6", "source_sha256": LOCK}),
+            ("migrated_null_digest", {"origin": "migrated_v5", "id": "workstack.knowledge.v5-to-v6", "source_sha256": None}),
+            ("migrated_wrong_id", {"origin": "migrated_v5", "id": "workstack.knowledge.v6", "source_sha256": LOCK}),
+            ("uppercase_digest", {"origin": "migrated_v5", "id": "workstack.knowledge.v5-to-v6", "source_sha256": LOCK.replace("c", "C")}),
+        )
+        for name, fields in cases:
+            with self.subTest(name=name):
+                meta = self.mutated_meta(values, lambda metadata, payload=fields: set_knowledge(metadata, **payload))
+                self.assertFalse(LINUX._store_meta_ok(LINUX._data_object(meta)))
+
     def test_noncanonical_nil_and_different_expected_uid(self) -> None:
         temporary, oracle, _values, meta, workspace = disposable_v5_authority()
         self.addCleanup(temporary.cleanup)
@@ -1333,14 +1607,14 @@ class RemoteSchemaAdmissionTests(unittest.TestCase):
         service.add_task("Held task")
         values = {
             name: json.loads((Path(temporary.name) / name).read_text(encoding="utf-8"))
-            for name in V5_DOCUMENT_NAMES
+            for name in V6_DOCUMENT_NAMES
         }
-        original = Store.validate_document_values(values, schema_version=5)
+        original = Store.validate_document_values(values, schema_version=6)
         task_uid = values["backlog.json"]["tasks"][0]["uid"]
         mixed = json.loads(json.dumps(values))
         mixed["workspace.json"]["id"] = task_uid
         with self.assertRaises(StoreCorruptError):
-            Store.validate_document_values(mixed, schema_version=5)
+            Store.validate_document_values(mixed, schema_version=6)
         parsed_meta = LINUX._data_object((Path(temporary.name) / "store-meta.json").read_bytes())
         parsed_space = LINUX._data_object(_authority_bytes(mixed["workspace.json"]))
         self.assertTrue(LINUX._store_meta_ok(parsed_meta))
@@ -1449,6 +1723,13 @@ def load_linux(path):
     return module
 
 
+# The loaded engine is the only source of the release identity these fixtures
+# must agree with; main() fills these in from it so a release bump cannot leave
+# this script smoke-testing a superseded version.
+PRODUCT = ""
+PROTOCOL = 0
+
+
 def digest(data):
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
@@ -1523,7 +1804,7 @@ def write_tree(root, files):
 
 
 def smoke_files(marker=None):
-    workstack = b'__version__ = "1.0.8"\nREMOTE_PROTOCOL_VERSION = 1\n'
+    workstack = ('__version__ = "%s"\nREMOTE_PROTOCOL_VERSION = %d\n' % (PRODUCT, PROTOCOL)).encode()
     if marker is not None:
         workstack = ("open(%r,'w').write('executed')\n" % marker).encode() + workstack
     return {
@@ -1536,7 +1817,7 @@ def smoke_files(marker=None):
 
 def probe_bytes(uid, marker=None):
     line = json.dumps(
-        {"workspace_id": uid, "product_version": "1.0.8", "protocol_version": 1},
+        {"workspace_id": uid, "product_version": PRODUCT, "protocol_version": PROTOCOL},
         ensure_ascii=True,
         separators=(",", ":"),
     ) + "\n"
@@ -1547,7 +1828,10 @@ def probe_bytes(uid, marker=None):
 
 
 def main():
+    global PRODUCT, PROTOCOL
     linux = load_linux(sys.argv[1])
+    PRODUCT = linux.PRODUCT
+    PROTOCOL = linux.PROTOCOL
     uid = "11111111-1111-4111-8111-111111111111"
     report = {
         "python": sys.version.split()[0],
@@ -1898,7 +2182,7 @@ def main():
         ops = linux._LinuxInstallerOperations(install, data, "owner", uid)
         ops.open_roots()
         ops.create_stage()
-        payload = b'__version__ = "1.0.8"\nREMOTE_PROTOCOL_VERSION = 1\n'
+        payload = ('__version__ = "%s"\nREMOTE_PROTOCOL_VERSION = %d\n' % (PRODUCT, PROTOCOL)).encode()
         ops.write_file("workstack/__init__.py", payload, digest(payload))
         orig_bind = ops._bind_stage_and_data
         binds = {"n": 0}

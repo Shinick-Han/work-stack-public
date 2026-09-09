@@ -13,7 +13,7 @@ import type {
 import { ReferenceHandoffPanel } from './ReferenceHandoffPanel'
 import { referenceListSignature } from './TaskKnowledgePanel'
 import type { ResumeProgressFacts, ResumeProgressSnapshot } from './resumeProgressContract'
-import { task, workspace } from '../../test/fixtures'
+import { capture, task, workspace } from '../../test/fixtures'
 
 interface WebViewMessageEvent extends Event { data?: unknown }
 
@@ -225,6 +225,7 @@ test('prepares only the selected read through the host contract, copies JSON, an
   }
   expect(payload.schema).toBe('workstack.knowledge-context.v1')
   expect(payload.generated).toBe(false)
+  expect(Object.keys(payload).sort()).toEqual(['binding', 'generated', 'references', 'schema'])
   expect(payload.references).toEqual([expect.objectContaining({
     document_path: 'projects/other.md',
     excerpt_truncated: true,
@@ -249,8 +250,69 @@ test('prepares only the selected read through the host contract, copies JSON, an
   expect(brief).toContain(other.reason)
   expect(brief).toContain('## Recorded progress')
   expect(brief).toContain('does not include a recorded progress snapshot')
+  expect(brief).toContain('No linked Capture sources included.')
   expect(brief).not.toMatch(/C:\\|StateRoot|vault_root/i)
   expect(await screen.findByRole('button', { name: 'Resume brief copied' })).toBeInTheDocument()
+})
+
+test('copies stored Capture catalog fields in Markdown and keeps them out of vault JSON', async () => {
+  const transport = installTransport((request) => {
+    if (request.operation === 'list-references') {
+      return ok(request, { binding: request.binding, local_only: true, references: [saved] })
+    }
+    if (request.operation === 'read-reference') {
+      return ok(request, { binding: request.binding, reference: readFor(saved) })
+    }
+    throw new Error(request.operation)
+  })
+  const getTask = vi.spyOn(api, 'getTask').mockResolvedValue({
+    task: { ...task, revision: task.revision },
+    context: [{
+      ...capture,
+      status: 'linked',
+      linked_task_ids: [task.id],
+      ref: { kind: 'capture', id: capture.id },
+      connections: [{ target: { kind: 'task', id: task.id }, reasons: ['capture-link'] }],
+      date_precision: 'instant',
+    }],
+    activity: [],
+    replies: [],
+  })
+  vi.spyOn(api, 'getWorkspace').mockResolvedValue(workspace)
+  render(<ReferenceHandoffPanel task={task} workspaceUid={workspace.workspace.id} />)
+  const user = openHandoff()
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  await screen.findByLabelText(includeReview)
+  getTask.mockClear()
+  await user.click(screen.getByLabelText(includeReview))
+  await acceptProgressOmission(user)
+  await user.click(screen.getByRole('button', { name: 'Prepare brief' }))
+  expect(await screen.findByText(/stored Capture catalog from that prepare/)).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Copy resume brief' }))
+  await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+  const brief = String(writeText.mock.calls[0]?.[0])
+  expect(brief).toContain('## Saved Capture sources')
+  expect(brief).toContain('C-0001')
+  expect(brief).toContain('Release review feedback')
+  expect(brief).toContain('microsoft-outlook')
+  expect(brief).toContain('capture-link')
+  expect(brief).not.toContain('https://outlook.office.com')
+  expect(brief).not.toContain('This continues the release-quality discussion.')
+  await user.click(screen.getByRole('button', { name: 'Copy JSON' }))
+  await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2))
+  const json = String(writeText.mock.calls[1]?.[0])
+  const payload = JSON.parse(json) as { schema: string }
+  expect(payload.schema).toBe('workstack.knowledge-context.v1')
+  expect(Object.keys(payload).sort()).toEqual(['binding', 'generated', 'references', 'schema'])
+  expect(json).not.toContain('C-0001')
+  expect(json).not.toContain('Release review feedback')
+  expect(transport.calls.map((call) => call.operation).sort()).toEqual([
+    'list-references',
+    'list-references',
+    'read-reference',
+  ])
+  expect(getTask).toHaveBeenCalledTimes(2)
 })
 
 test('discards A-B-A late prepares after owner switches', async () => {
@@ -822,6 +884,8 @@ test('a seeded reload after a failed copy retires the dead brief instead of leav
     return (
       <ReferenceHandoffPanel
         seed={{
+          enumerated: true,
+          listed: true,
           references,
           // An unchanged catalog: the reload answers with equal records, so the
           // signature — and with it the selection session — stays the same.

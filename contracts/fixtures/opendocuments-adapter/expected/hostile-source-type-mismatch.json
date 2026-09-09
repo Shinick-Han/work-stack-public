@@ -1,0 +1,220 @@
+{
+  "ok": true,
+  "result": {
+    "format": "workstack.opendocuments-adapter.proposed",
+    "schema_version": 0,
+    "mapping_status": "proposed",
+    "request_id": "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1",
+    "connection_id": "conn_opendocuments_pilot_1",
+    "query": "Which hits have a trustworthy source locator?",
+    "retriever": {
+      "id": "opendocuments",
+      "role": "retriever",
+      "capabilities": [
+        "search"
+      ],
+      "unsupported": [
+        "verify_origin",
+        "open_origin",
+        "collection_filter",
+        "conversation_persistence",
+        "source_document_identity"
+      ]
+    },
+    "engine": {
+      "query_id": "d2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2",
+      "route": "rag",
+      "profile": "balanced",
+      "confidence": {
+        "score": 0.3,
+        "level": "low",
+        "kind": "engine_relevance",
+        "reason": "Weak match"
+      }
+    },
+    "generated_answer": "discarded",
+    "candidates": [
+      {
+        "indexed_identity": {
+          "retriever_id": "opendocuments",
+          "connection_id": "conn_opendocuments_pilot_1",
+          "indexed_document_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+          "indexed_chunk_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1_chunk_0",
+          "identity_scope": "opendocuments_index"
+        },
+        "source": {
+          "kind": "unknown",
+          "declared_source_type": "@opendocuments/connector-notion",
+          "type_locator_agreement": "mismatch",
+          "locator": {
+            "type": "redacted",
+            "value": null,
+            "reason": "source_type_locator_mismatch"
+          },
+          "identity": {
+            "status": "unknown",
+            "value": null,
+            "basis": "chat_response_cannot_prove_source_identity"
+          }
+        },
+        "title": "Access",
+        "locator": {
+          "type": "chunk_index",
+          "position": 0,
+          "index_chunk_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1_chunk_0",
+          "source_locator": false
+        },
+        "index_heading_path": {
+          "segments": [
+            "Handbook",
+            "Access"
+          ],
+          "addressable": false
+        },
+        "excerpt": "A Notion-typed hit whose path is a Windows drive path.",
+        "excerpt_truncated": false,
+        "excerpt_sanitized": false,
+        "engine_score": 0.9,
+        "source_version": {
+          "status": "unavailable",
+          "value": null,
+          "basis": "chat_response"
+        },
+        "content_hash": {
+          "status": "unavailable",
+          "value": null,
+          "basis": "chat_response"
+        },
+        "verification": {
+          "status": "indexed_snapshot_unverified",
+          "checked_at": null,
+          "origin_current": false
+        },
+        "trust": "external_reference",
+        "read_only": true
+      },
+      {
+        "indexed_identity": {
+          "retriever_id": "opendocuments",
+          "connection_id": "conn_opendocuments_pilot_1",
+          "indexed_document_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+          "indexed_chunk_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff_chunk_1",
+          "identity_scope": "opendocuments_index"
+        },
+        "source": {
+          "kind": "unknown",
+          "declared_source_type": "local",
+          "type_locator_agreement": "mismatch",
+          "locator": {
+            "type": "redacted",
+            "value": null,
+            "reason": "source_type_locator_mismatch"
+          },
+          "identity": {
+            "status": "unknown",
+            "value": null,
+            "basis": "chat_response_cannot_prove_source_identity"
+          }
+        },
+        "title": "Untitled",
+        "locator": {
+          "type": "chunk_index",
+          "position": 1,
+          "index_chunk_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff_chunk_1",
+          "source_locator": false
+        },
+        "index_heading_path": {
+          "segments": [],
+          "addressable": false
+        },
+        "excerpt": "A local-typed hit whose path claims to be a Notion page.",
+        "excerpt_truncated": false,
+        "excerpt_sanitized": false,
+        "engine_score": 0.5,
+        "source_version": {
+          "status": "unavailable",
+          "value": null,
+          "basis": "chat_response"
+        },
+        "content_hash": {
+          "status": "unavailable",
+          "value": null,
+          "basis": "chat_response"
+        },
+        "verification": {
+          "status": "indexed_snapshot_unverified",
+          "checked_at": null,
+          "origin_current": false
+        },
+        "trust": "external_reference",
+        "read_only": true
+      },
+      {
+        "indexed_identity": {
+          "retriever_id": "opendocuments",
+          "connection_id": "conn_opendocuments_pilot_1",
+          "indexed_document_id": "cccccccc-dddd-4eee-8fff-000000000001",
+          "indexed_chunk_id": "cccccccc-dddd-4eee-8fff-000000000001_chunk_2",
+          "identity_scope": "opendocuments_index"
+        },
+        "source": {
+          "kind": "notion",
+          "declared_source_type": "@opendocuments/connector-notion",
+          "type_locator_agreement": "agree",
+          "locator": {
+            "type": "redacted",
+            "value": null,
+            "reason": "malformed_notion_page_id"
+          },
+          "identity": {
+            "status": "unknown",
+            "value": null,
+            "basis": "chat_response_cannot_prove_source_identity"
+          }
+        },
+        "title": "Untitled",
+        "locator": {
+          "type": "chunk_index",
+          "position": 2,
+          "index_chunk_id": "cccccccc-dddd-4eee-8fff-000000000001_chunk_2",
+          "source_locator": false
+        },
+        "index_heading_path": {
+          "segments": [],
+          "addressable": false
+        },
+        "excerpt": "A Notion-typed hit whose page id is not a Notion page id.",
+        "excerpt_truncated": false,
+        "excerpt_sanitized": false,
+        "engine_score": 0.4,
+        "source_version": {
+          "status": "unavailable",
+          "value": null,
+          "basis": "chat_response"
+        },
+        "content_hash": {
+          "status": "unavailable",
+          "value": null,
+          "basis": "chat_response"
+        },
+        "verification": {
+          "status": "indexed_snapshot_unverified",
+          "checked_at": null,
+          "origin_current": false
+        },
+        "trust": "external_reference",
+        "read_only": true
+      }
+    ],
+    "omitted": [],
+    "limitations": {
+      "query_logging_attempted_by_route": true,
+      "query_log_persistence_confirmed": false,
+      "source_version_from_chat": false,
+      "origin_verified": false,
+      "collection_filter_applied": false,
+      "source_document_identity_proven": false,
+      "non_workspace_results_omitted": true
+    }
+  }
+}

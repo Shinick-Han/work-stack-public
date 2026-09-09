@@ -63,6 +63,11 @@ class RemoteConnectionProfile:
     workspace_id: str
     remote_port: int = 8765
     remote_python: str | None = None
+    #: Absolute POSIX path of the operator's knowledge-driver registry on the
+    #: remote host. Appended last so every existing positional construction
+    #: keeps its meaning, and ``None`` means the profile carries no path at
+    #: all -- not a null one. Changing it needs a restart; nothing reloads it.
+    knowledge_drivers_config: str | None = None
 
 
 def _validated_port(value: object, field: str) -> int:
@@ -103,7 +108,7 @@ def _validate_remote_shape(raw: dict[object, object]) -> None:
         "workspace_id",
         "remote_python",
     }
-    allowed = required | {"remote_port"}
+    allowed = required | {"remote_port", "knowledge_drivers_config"}
     unexpected = set(raw) - allowed
     if unexpected:
         fields = ", ".join(sorted(str(field) for field in unexpected))
@@ -125,7 +130,7 @@ def _normalize_remote_draft(raw: dict[object, object]) -> dict[str, object]:
     _validate_remote_shape(raw)
     alias = _validated_alias(raw["ssh_host_alias"])
     try:
-        return {
+        normalized: dict[str, object] = {
             "storage_mode": "ssh-remote",
             "ssh_host_alias": alias,
             "remote_app_dir": _validated_remote_path(raw["remote_app_dir"], "remote_app_dir"),
@@ -135,6 +140,14 @@ def _normalize_remote_draft(raw: dict[object, object]) -> dict[str, object]:
             "remote_port": _validated_port(raw.get("remote_port", 8765), "remote_port"),
             "remote_python": require_remote_python(raw["remote_python"]),
         }
+        if "knowledge_drivers_config" in raw:
+            # Appended last, and only when the operator wrote one: an absent
+            # path stays absent rather than becoming an explicit null, so a
+            # record written before this field keeps its exact canonical bytes.
+            normalized["knowledge_drivers_config"] = _validated_remote_path(
+                raw["knowledge_drivers_config"], "knowledge_drivers_config"
+            )
+        return normalized
     except (AttributeError, ValueError, RemoteCommandError) as error:
         raise RuntimeError(f"Remote connection draft is invalid: {error}") from error
 
@@ -162,6 +175,11 @@ def connection_profile_from_draft(draft: dict[str, object]) -> RemoteConnectionP
         workspace_id=str(normalized["workspace_id"]),
         remote_port=int(normalized["remote_port"]),
         remote_python=str(normalized["remote_python"]),
+        knowledge_drivers_config=(
+            str(normalized["knowledge_drivers_config"])
+            if "knowledge_drivers_config" in normalized
+            else None
+        ),
     )
 
 
@@ -241,6 +259,16 @@ def profile_with_runtime_forward_port(profile: RemoteConnectionProfile) -> Remot
 def build_remote_server_command(
     profile: RemoteConnectionProfile, session_token: object = None
 ) -> str:
+    """Compose the remote serve command for one profile.
+
+    ``knowledge_drivers_config`` is passed as a keyword **only** when the
+    profile carries one, so a profile without a configured registry produces
+    exactly the command it produced before this field existed.
+    """
+
+    optional: dict[str, object] = {}
+    if profile.knowledge_drivers_config is not None:
+        optional["knowledge_drivers_config"] = profile.knowledge_drivers_config
     return join_serve_command(
         remote_python=profile.remote_python,
         remote_app_dir=profile.remote_app_dir,
@@ -248,6 +276,7 @@ def build_remote_server_command(
         remote_port=profile.remote_port,
         local_forward_port=profile.local_forward_port,
         session_token=session_token,
+        **optional,
     )
 
 

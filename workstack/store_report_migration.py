@@ -50,6 +50,9 @@ from .planning_status import append_bootstrap
 BACKUP_SCHEMA_VERSION = 1
 BACKUP_MANIFEST = "manifest.json"
 BACKUP_WORKSPACE_ID_LIMIT = 128
+# The version *this* planner produces. It is deliberately not the version the
+# build writes: ``plan_upgrade`` below is the historical record of the v5 step,
+# and ``workstack.store_knowledge_migration`` owns the one that follows it.
 CURRENT_SCHEMA_VERSION = 5
 # One archive, and everything it expands to, stays inside this bound. It is the
 # released `maintenance.MAX_BACKUP_BYTES`, moved down so the reader that
@@ -121,6 +124,7 @@ def backup_roster(store_schema_version: object, /) -> tuple[str, ...]:
         2: store_rosters.V2_DOCUMENT_NAMES,
         3: store_rosters.V3_DOCUMENT_NAMES,
         5: store_rosters.V5_DOCUMENT_NAMES,
+        6: store_rosters.V6_DOCUMENT_NAMES,
     }
     if type(store_schema_version) is not int or store_schema_version not in rosters:
         raise BackupPackError("backup store schema version is unsupported")

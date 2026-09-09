@@ -97,8 +97,8 @@ class ModuleSurface(unittest.TestCase):
                 with self.subTest(module=owner.__name__, name=name):
                     self.assertIs(getattr(store, name), getattr(owner, name))
 
-    def test_the_document_roster_is_still_the_frozen_v5_roster(self) -> None:
-        self.assertEqual(frozenset(store.DEFAULTS), store.store_rosters.V5_DOCUMENT_NAMES)
+    def test_the_document_roster_is_still_the_frozen_current_roster(self) -> None:
+        self.assertEqual(frozenset(store.DEFAULTS), store.store_rosters.V6_DOCUMENT_NAMES)
 
     def test_each_store_method_is_defined_by_exactly_one_class(self) -> None:
         """A name two classes in the MRO define is resolved by accident."""

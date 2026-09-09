@@ -28,6 +28,7 @@ from workstack.store_rosters import (  # noqa: E402
     REPORTS_DOCUMENT_NAME,
     V3_DOCUMENT_NAMES,
     V5_DOCUMENT_NAMES,
+    V6_DOCUMENT_NAMES,
 )
 
 
@@ -734,16 +735,19 @@ class ProfileInspectionRosterOccupancyTest(unittest.TestCase):
         self.assertEqual(set(MODULE.STORE_FILES), set(V3_DOCUMENT_NAMES))
         self.assertEqual(len(MODULE.STORE_FILES), 9)
         self.assertEqual(len(V5_DOCUMENT_NAMES), 10)
+        self.assertEqual(len(V6_DOCUMENT_NAMES), 11)
         self.assertIn(REPORTS_DOCUMENT_NAME, V5_DOCUMENT_NAMES)
 
     @unittest.skipUnless(_CORE_SEAM, _SKIP_CORE)
-    def test_complete_v3_and_v5_directories_are_read_once_then_stability_hashed(self) -> None:
+    def test_complete_v3_and_current_directories_are_read_once_then_stability_hashed(
+        self,
+    ) -> None:
         clone_v3_fixture(self.data, "empty")
-        v5 = self.root / "v5"
-        create_store(v5, self.root / "runtime-v5")
+        current = self.root / "current"
+        create_store(current, self.root / "runtime-current")
         cases = (
             (self.data, V3_DOCUMENT_NAMES, "v3", 3),
-            (v5, V5_DOCUMENT_NAMES, "v5", 5),
+            (current, V6_DOCUMENT_NAMES, "v6", 6),
         )
         for path, roster, label, schema in cases:
             with self.subTest(label=label):

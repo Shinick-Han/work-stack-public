@@ -1,0 +1,30 @@
+{
+  "request": {
+    "request_id": "33333333-3333-4333-8333-333333333333",
+    "connection_id": "conn_opendocuments_pilot_1",
+    "query": "Show the shared drive notes"
+  },
+  "chat": {
+    "queryId": "44444444-4444-4444-8444-444444444444",
+    "answer": "Notes are on the shared drive.",
+    "sources": [
+      {
+        "chunkId": "cccccccc-dddd-4eee-8fff-000000000001_chunk_0",
+        "content": "Quarterly notes for the pilot corpus.",
+        "score": 0.5,
+        "documentId": "cccccccc-dddd-4eee-8fff-000000000001",
+        "chunkType": "semantic",
+        "headingHierarchy": ["Notes"],
+        "sourcePath": "Z:\\PilotShare\\..\\Secrets\\token.txt",
+        "sourceType": "local"
+      }
+    ],
+    "confidence": {
+      "score": 0.4,
+      "level": "medium",
+      "reason": "Partial match found"
+    },
+    "route": "rag",
+    "profile": "balanced"
+  }
+}

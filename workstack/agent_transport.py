@@ -13,6 +13,7 @@ from workstack.agent_cli_contract import (
     JsonRequester,
     StatusRequest,
 )
+from workstack.agent_context_pack import needs_planning_material
 
 
 __all__ = ["create_running_server_backend"]
@@ -22,7 +23,6 @@ _SERVER_INFO_MAX_BYTES = 4096
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _SYNC_STATES = frozenset({"external-change-detected", "in-sync", "invalid"})
 _SYNC_REQUIRED_REASON = "store_sync_required"
-_PLANNING_VIEW = "planning-v1"
 _IDENTITY_FIELDS = ("id", "revision", "uid")
 
 # Frozen sender provenance for agent-written checkpoints. Named here so the
@@ -80,6 +80,8 @@ def _storage_format(value: object) -> str:
         return "v4"
     if value == 5:
         return "v5"
+    if value == 6:
+        return "v6"
     return "unknown"
 
 
@@ -189,7 +191,7 @@ class _RunningServerBackend:
         host, port, _csrf, storage = self._preflight()
         actual_uid = _canonical_workspace_uid(storage["workspace_id"])
         storage_format = _storage_format(storage.get("store_schema_version"))
-        supported = storage_format in {"v3", "v5"}
+        supported = storage_format in {"v3", "v5", "v6"}
         in_sync = self._sync_state(host=host, port=port) == "in-sync"
         if not supported:
             capability_reason = "unsupported storage format"
@@ -288,7 +290,7 @@ class _RunningServerBackend:
         if type(task) is not dict:
             raise OSError("Task response is invalid")
         planning: dict[str, object] | None = None
-        if request.view == _PLANNING_VIEW:
+        if needs_planning_material(request.view):
             planning = self._planning_material(
                 host=host, port=port, task_id=request.task_id, detail=detail
             )

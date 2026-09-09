@@ -190,6 +190,57 @@ Bounds and honesty rules:
   arriving in a title, Objective or source can never select a command or
   authorize a write.
 
+## Optional stored evidence counts: context --view planning-v2
+
+```text
+<pfx> --data-dir <data-dir> agent --workspace-uid <ws-uid> context --task T-0001 --view planning-v2
+```
+
+The same planning blocks as `planning-v1`, plus a required `data.view` of
+`planning-v2` on every success (including when `sources` is empty). Linked
+v1.1 sources may add a counts-only `evidence` object: `answer_scope`,
+`attested` (always `false`), `confidence_level`, `evidence_count`, and
+`truncated`. Legacy sources omit that key. No query, request id, body,
+locator, origin, or vault excerpt is added. Caps, trim order, and the
+unlinked-inbox rule are unchanged.
+
+`--format` is optional and defaults to `json`. That default, and an explicit
+`--format json`, keep the `workstack.cli.v1` envelope byte-identical to the
+answer above. `--format markdown` is allowed on every existing view after that
+envelope has been validated: it never bypasses the JSON contract, never
+falls back from a failure to a partial document, and never adds a Selected
+references section. core-v1 Markdown states that Capture sources are not
+included by this view. planning-v1 prints stored sources without inventing
+evidence. planning-v2 is the recommended Capture-including Markdown invocation
+and may print already-projected counts-only evidence with attested false.
+Recent worklog in the Markdown is the current day plus the preceding 30 days,
+at most 5 entries; it is not a selected or latest checkpoint. A `sources_overflow`
+marker is a boolean omission, not a GUI omitted count. Oversized Markdown
+uses the existing `context_too_large` JSON error.
+
+```json
+{
+  "sources": [
+    {
+      "display_title": "Reviewed capture title",
+      "evidence": {
+        "answer_scope": "single_source",
+        "attested": false,
+        "confidence_level": "medium",
+        "evidence_count": 1,
+        "truncated": false
+      },
+      "id": "C-0001",
+      "link_reasons": ["capture-link"],
+      "provider": "manual",
+      "resource_type": "message",
+      "status": "linked"
+    }
+  ],
+  "view": "planning-v2"
+}
+```
+
 ## Optional selected-Task detail apply
 
 Only after explicit user intent and a fresh `agent context` read of the
@@ -334,6 +385,19 @@ the CLI's one bounded identical replay also could not establish the result:
 On `commit_unknown`, **stop and retain the same intent ID**. Report the
 uncertainty; do not issue another checkpoint and do not infer success from
 matching Worklog text.
+
+## Read the latest resume checkpoint
+
+```text
+<pfx> --data-dir <data-dir> worklog latest-checkpoint --workspace-uid <ws-uid> --task T-0001
+```
+
+This ordinary read is not an Agent command and never uses the
+`workstack.cli.v1` envelope. `--workspace-uid` and `--task` are required.
+`--format` is optional and defaults to `json`; `--format markdown` is the
+same admitted facts in English Markdown. Success is contract
+`workstack.checkpoint-facts.v1`. Recent worklog from `agent context` is not
+a selected or latest checkpoint; do not substitute it for this leaf.
 
 ## Optional diagnostic Worklog read
 

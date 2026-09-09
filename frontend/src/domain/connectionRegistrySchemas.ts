@@ -100,6 +100,7 @@ export const sshConnectionProfileSchema = z.object({
   preferred_forward_port: z.number().int().min(1).max(65_535),
   remote_port: z.number().int().min(1).max(65_535),
   remote_python: remotePythonExecutableSchema.optional(),
+  knowledge_drivers_config: remoteLinuxPathSchema.optional(),
 }).strict().readonly()
 
 export const connectionProfileSchema = z.discriminatedUnion('kind', [
@@ -130,6 +131,7 @@ export const sshConnectionProfileDraftSchema = z.object({
   preferred_forward_port: z.number().int().min(1).max(65_535),
   remote_port: z.number().int().min(1).max(65_535),
   remote_python: z.union([z.literal(''), remotePythonExecutableSchema]),
+  knowledge_drivers_config: remoteLinuxPathSchema.optional(),
 }).strict().readonly()
 
 export const sshConnectionProfileWriteSchema = z.object({
@@ -141,6 +143,7 @@ export const sshConnectionProfileWriteSchema = z.object({
   preferred_forward_port: z.number().int().min(1).max(65_535),
   remote_port: z.number().int().min(1).max(65_535),
   remote_python: remotePythonExecutableSchema,
+  knowledge_drivers_config: remoteLinuxPathSchema.optional(),
 }).strict().readonly()
 
 export const connectionProfileWriteSchema = z.discriminatedUnion('kind', [

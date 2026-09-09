@@ -50,14 +50,14 @@ class PreUpgradeBackupTests(unittest.TestCase):
         self.assertFalse((self.source / "reports.json").exists())
         self.assertFalse((self.source / ".workstack-migration-backups").exists())
 
-    def test_v5_cli_keeps_current_backup_path(self):
+    def test_current_cli_keeps_current_backup_path(self):
         Store(self.source).initialize()
         before = self.documents()
         result = self.cli("backup", "--out", self.out)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         archive = verify_archive_file(json.loads(result.stdout)["path"])
-        self.assertEqual(archive.store_schema_version, 5)
-        self.assertEqual(archive.file_count, 10)
+        self.assertEqual(archive.store_schema_version, 6)
+        self.assertEqual(archive.file_count, 11)
         self.assertEqual(archive.bodies, before)
         self.assertEqual(self.documents(), before)
 

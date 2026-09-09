@@ -25,12 +25,14 @@ from workstack.maintenance import (
     create_backup_download,
 )
 from workstack.store import DEFAULTS, STORE_SCHEMA_VERSION, Store
+from workstack.knowledge_ledger_document import KNOWLEDGE_DOCUMENT_NAME
 from workstack.store_rosters import (
     REPORTS_DOCUMENT_NAME,
     V1_DOCUMENT_NAMES,
     V2_DOCUMENT_NAMES,
     V3_DOCUMENT_NAMES,
     V5_DOCUMENT_NAMES,
+    V6_DOCUMENT_NAMES,
 )
 
 
@@ -84,6 +86,7 @@ class BackupRosterMappingTest(unittest.TestCase):
             (2, 9, V2_DOCUMENT_NAMES),
             (3, 9, V3_DOCUMENT_NAMES),
             (5, 10, V5_DOCUMENT_NAMES),
+            (6, 11, V6_DOCUMENT_NAMES),
         )
         for version, count, frozen in expected:
             with self.subTest(version=version):
@@ -94,7 +97,7 @@ class BackupRosterMappingTest(unittest.TestCase):
                 self.assertEqual(roster, tuple(sorted(roster)))
 
     def test_bool_four_and_unknown_versions_are_refused(self) -> None:
-        for value in (True, False, 0, 4, 6, 99, -1, "3", 3.0, None, object()):
+        for value in (True, False, 0, 4, 7, 99, -1, "3", 3.0, None, object()):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(BackupValidationError, SCHEMA_UNSUPPORTED) as caught:
                     _backup_roster(value)
@@ -109,6 +112,7 @@ class BackupArchivePackagingTest(unittest.TestCase):
             (2, V2_DOCUMENT_NAMES, b"v2:"),
             (3, V3_DOCUMENT_NAMES, b"v3:"),
             (5, V5_DOCUMENT_NAMES, b"v5:"),
+            (6, V6_DOCUMENT_NAMES, b"v6:"),
         )
         for version, frozen, tag in cases:
             roster = tuple(sorted(frozen))
@@ -146,10 +150,14 @@ class BackupArchivePackagingTest(unittest.TestCase):
                         WORKSPACE_ID[:8]
                     ),
                 )
-                if version == 5:
+                if version in (5, 6):
                     self.assertIn(REPORTS_DOCUMENT_NAME, names)
                 else:
                     self.assertNotIn(REPORTS_DOCUMENT_NAME, names)
+                if version == 6:
+                    self.assertIn(KNOWLEDGE_DOCUMENT_NAME, names)
+                else:
+                    self.assertNotIn(KNOWLEDGE_DOCUMENT_NAME, names)
 
 
 class BackupBuilderRefusalTest(unittest.TestCase):
@@ -347,15 +355,15 @@ class PublicV3BackupDownloadTest(unittest.TestCase):
         self.assertEqual(Counter(document_reads), Counter(sorted(DEFAULTS)))
         self.assertEqual(sum(writes.values()), 0)
         names, members, manifest = _open_archive(download.body)
-        # The public download follows this build's readiness, which is now v5.
-        # The frozen v3 roster is still what a v3 archive is packed against,
-        # and the builder cases above still prove that.
-        roster = tuple(sorted(V5_DOCUMENT_NAMES))
+        # The public download follows this build's readiness, which is now v6.
+        # The frozen v3 and v5 rosters are still what an archive of those
+        # versions is packed against, and the builder cases above prove that.
+        roster = tuple(sorted(V6_DOCUMENT_NAMES))
         self.assertEqual(names, [BACKUP_MANIFEST, *roster])
-        self.assertEqual(download.file_count, 10)
-        self.assertEqual(manifest["store_schema_version"], 5)
-        self.assertEqual(STORE_SCHEMA_VERSION, 5)
-        self.assertEqual(frozenset(DEFAULTS), V5_DOCUMENT_NAMES)
+        self.assertEqual(download.file_count, 11)
+        self.assertEqual(manifest["store_schema_version"], 6)
+        self.assertEqual(STORE_SCHEMA_VERSION, 6)
+        self.assertEqual(frozenset(DEFAULTS), V6_DOCUMENT_NAMES)
         self.assertIn(REPORTS_DOCUMENT_NAME, DEFAULTS)
         self.assertIn(REPORTS_DOCUMENT_NAME, names)
         self.assertTrue((self.source / REPORTS_DOCUMENT_NAME).exists())

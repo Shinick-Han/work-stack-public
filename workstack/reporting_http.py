@@ -18,6 +18,7 @@ from urllib.parse import parse_qs
 # report composer compares against it, and neither may import this adapter to
 # reach it. Re-exported here so the released `day_source_digest` import path
 # keeps naming the one function all three surfaces call.
+from .report_context_catalog import build_context_catalog
 from .report_source_digest import day_source_digest as day_source_digest
 from .reporting import (
     TEMPLATE_DAILY_V1,
@@ -63,7 +64,7 @@ def daily_preview_payload(stack: Any, query: str) -> dict[str, Any]:
     _require_in_sync(stack.store)
     _after_precheck_race_hook()
     try:
-        projection = _held_preview_projection(
+        projection, captures = _held_preview_snapshot(
             stack, parsed["date"], parsed["workspace_uid"]
         )
     except StoreCorruptError:
@@ -86,6 +87,11 @@ def daily_preview_payload(stack: Any, query: str) -> dict[str, Any]:
         "workspace_uid": owner_uid,
         "source_digest": day_source_digest(date=parsed["date"], day=projection["day"]),
         "preview": preview,
+        "context_catalog": build_context_catalog(
+            captures=captures,
+            provenance_task_ids=preview["provenance"]["task_ids"],
+            captured_at=preview["generated_at"],
+        ),
     }
 
 
@@ -94,18 +100,21 @@ def _after_precheck_race_hook() -> None:
 
 
 def _after_projection_race_hook() -> None:
-    """Patch point after review_projection and before post-read sync."""
+    """Patch point after the held day/capture read and before post-read sync."""
 
 
-def _held_preview_projection(stack: Any, date: str, workspace_uid: str) -> Any:
+def _held_preview_snapshot(
+    stack: Any, date: str, workspace_uid: str
+) -> tuple[Any, list[Any]]:
     with stack.store.consistent_read() as snapshot:
         _require_in_sync(stack.store)
         if snapshot.workspace_uid != workspace_uid:
             raise DailyPreviewHttpError("workspace_mismatch", _MISMATCH_MESSAGE, 409)
         projection = stack.review_projection(date, 1)
+        captures = stack.list_captures(status="all")
         _after_projection_race_hook()
         _require_in_sync(stack.store)
-        return projection
+        return projection, captures
 
 
 def parse_daily_preview_query(query: str) -> dict[str, str]:

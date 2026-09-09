@@ -303,7 +303,7 @@ class StatusHandlerContractTests(unittest.TestCase):
             "bad expected uid": {"expected_workspace_uid": OTHER_UID},
             "bad actual uid": {"actual_workspace_uid": "not-a-uuid"},
             "bad contract": {"contract": "another.contract"},
-            "bad storage": {"storage_format": "v6"},
+            "bad storage": {"storage_format": "v7"},
             "bad reason": {"capability_reason": []},
             "bad data availability": {"data_dir_available": 1},
             "bad capability": {"capability_supported": "yes"},

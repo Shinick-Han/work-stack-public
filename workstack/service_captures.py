@@ -1,4 +1,4 @@
-"""Capture ingestion, linking, dismissal and conversion to Tasks.
+"""Capture ingestion, linking, unlinking, dismissal and conversion to Tasks.
 
 Re-ingesting a source is the delicate path: an identical fingerprint must carry
 identical reviewed content, an older retrieval is stale, and an equal retrieval
@@ -10,13 +10,40 @@ Idempotency-Key.
 from __future__ import annotations
 
 import copy
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .capture import canonical_digest, parse_rfc3339, validate_capture_packet
 from .planning_status import append_bootstrap, validate_and_project
+from .capture_unlink_policy import (
+    CaptureUnlinkPolicyError,
+    UNLINK_REVISION_CONFLICT,
+    UNLINK_UNDO_CONFLICT,
+    admit_displayed_capture_revision,
+    plan_capture_unlink,
+    plan_capture_unlink_undo,
+)
+from .capture_unlink_receipt import (
+    CaptureUnlinkReceiptError,
+    admit_receipt_id,
+    build_receipt,
+    capture_row_digest,
+    find_unlink_receipt,
+    record_committed_unlink_receipt,
+)
 from .service_capture_rules import (
+    _projected_capture_retrieval,
+    _refuse_imported_capture_overwrite,
     _require_matching_capture_review,
     _validate_capture_task_fields,
+)
+from .service_errors import (
+    CaptureUnlinkUndoConflictError,
+    DomainError,
+    IdempotencyConflictError,
+    NotFoundError,
+    RevisionConflictError,
+    SourceRevisionConflictError,
+    StaleCaptureError,
 )
 from .service_composition import _capture_reply_backend, _transactional
 from .service_domain import (
@@ -25,12 +52,6 @@ from .service_domain import (
     _next_id,
     _next_revision,
     _task_uid,
-)
-from .service_errors import (
-    DomainError,
-    IdempotencyConflictError,
-    SourceRevisionConflictError,
-    StaleCaptureError,
 )
 from .storage.document_repository import WorkspaceDocument
 from .store import StoreCorruptError
@@ -46,7 +67,15 @@ class CaptureServiceMixin:
             "provenance", "status", "linked_task_ids", "converted_task_ids", "revision",
             "created_at", "updated_at",
         )
-        return {field: copy.deepcopy(capture[field]) for field in fields}
+        projected = {field: copy.deepcopy(capture[field]) for field in fields}
+        # A 1.1 record carries its retrieval state; a 1.0 record has none and
+        # gains no key. The state is re-derived from the stored wire on every
+        # read rather than copied, so nothing a writer stored is displayed as
+        # attested provenance.
+        retrieval = _projected_capture_retrieval(capture)
+        if retrieval is not None:
+            projected["retrieval"] = retrieval
+        return projected
 
     def list_captures(self, status: str = "inbox") -> list[dict[str, Any]]:
         if status != "all" and status not in CAPTURE_STATUSES:
@@ -97,11 +126,13 @@ class CaptureServiceMixin:
             response_status = 201
             self._event(activity, "capture.ingested", capture_id=capture["id"])
         elif existing["source"].get("fingerprint") == sanitized["source"]["fingerprint"]:
+            _refuse_imported_capture_overwrite(existing)
             _require_matching_capture_review(existing, sanitized)
             capture = existing
             duplicate = True
             response_status = 200
         else:
+            _refuse_imported_capture_overwrite(existing)
             old_time = parse_rfc3339(existing["source"]["retrieved_at"], "stored source.retrieved_at")
             new_time = parse_rfc3339(sanitized["source"]["retrieved_at"], "source.retrieved_at")
             if new_time < old_time:
@@ -188,6 +219,204 @@ class CaptureServiceMixin:
         self.documents.save_many(
             {WorkspaceDocument.CAPTURES: captures_data, WorkspaceDocument.ACTIVITY: activity},
             operation_id="capture-link-{}".format(idempotency_key),
+        )
+        return {"status": 200, "body": body}
+
+    @_capture_reply_backend
+    @_transactional
+    def unlink_capture(
+        self,
+        capture_id: str,
+        task_id: str,
+        revision: int,
+        idempotency_key: str,
+        request_digest: str | None = None,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            admitted = admit_displayed_capture_revision(revision)
+        except CaptureUnlinkPolicyError as error:
+            raise DomainError(
+                "revision is required and must be a non-negative integer"
+            ) from error
+        body_input = {"task_id": task_id, "revision": admitted}
+        request_digest = request_digest or self._request_digest(body_input)
+        path = path or "/api/v1/captures/{}/unlink".format(capture_id)
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
+        replay = self._idempotency_replay(
+            activity, idempotency_key, "POST", path, request_digest
+        )
+        if replay:
+            return replay
+        task = _find(self.documents.load(WorkspaceDocument.TASKS).get("tasks", []), task_id, "task")
+        captures_data = self.documents.load(WorkspaceDocument.CAPTURES)
+        capture = _find(captures_data.get("captures", []), capture_id, "capture")
+        try:
+            plan = plan_capture_unlink(
+                linked_task_ids=capture.get("linked_task_ids") or [],
+                converted_task_ids=capture.get("converted_task_ids") or [],
+                status=str(capture.get("status") or ""),
+                task_id=task["id"],
+                stored_revision=capture["revision"],
+                displayed_revision=admitted,
+            )
+        except CaptureUnlinkPolicyError as error:
+            if error.code != UNLINK_REVISION_CONFLICT:
+                raise DomainError(
+                    "revision is required and must be a non-negative integer"
+                ) from error
+            raise RevisionConflictError(
+                "capture revision is stale",
+                {"expected": capture["revision"], "received": admitted},
+            ) from error
+        receipt_id = None
+        if plan.mutate:
+            status_before = str(capture.get("status") or "")
+            before_revision = capture["revision"]
+            capture["linked_task_ids"] = list(plan.linked_task_ids)
+            capture["status"] = plan.status
+            capture["revision"] = _next_revision(capture)
+            capture["updated_at"] = self._utc_now()
+            self._event(
+                activity, "capture.unlinked", capture_id=capture["id"], task_id=task["id"]
+            )
+            receipt = self._record_unlink_receipt(
+                activity, capture, task, status_before, before_revision, idempotency_key
+            )
+            receipt_id = receipt["receipt_id"]
+        body: dict[str, Any] = {
+            "data": self._project_capture(capture),
+            "meta": {"duplicate": plan.duplicate},
+        }
+        if receipt_id is not None:
+            body["meta"]["undo_receipt_id"] = receipt_id
+        self._record_idempotency(activity, idempotency_key, "POST", path, request_digest, 200, body)
+        self.documents.save_many(
+            {WorkspaceDocument.CAPTURES: captures_data, WorkspaceDocument.ACTIVITY: activity},
+            operation_id="capture-unlink-{}".format(idempotency_key),
+        )
+        return {"status": 200, "body": body}
+
+    def _record_unlink_receipt(
+        self,
+        activity: dict[str, Any],
+        capture: Mapping[str, Any],
+        task: Mapping[str, Any],
+        status_before: str,
+        before_revision: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        try:
+            receipt = build_receipt(
+                workspace_uid=self._workspace_uid(),
+                capture=capture,
+                task=task,
+                status_before=status_before,
+                before_revision=before_revision,
+                idempotency_key=idempotency_key,
+            )
+            return record_committed_unlink_receipt(activity, receipt, self._utc_now())
+        except CaptureUnlinkReceiptError as error:
+            raise self._raise_receipt_error(error) from error
+
+    @staticmethod
+    def _raise_receipt_error(error: CaptureUnlinkReceiptError) -> DomainError:
+        if error.code == "not_found":
+            return NotFoundError("capture unlink receipt not found")
+        if error.code == "idempotency_conflict":
+            return IdempotencyConflictError(
+                "Idempotency-Key was already used for a different request",
+                {"key": error.code},
+            )
+        return DomainError("capture unlink receipt is invalid")
+
+    @_capture_reply_backend
+    @_transactional
+    def undo_capture_unlink(
+        self,
+        capture_id: str,
+        receipt_id: str,
+        revision: int,
+        idempotency_key: str,
+        request_digest: str | None = None,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            admitted = admit_displayed_capture_revision(revision)
+            canonical_receipt_id = admit_receipt_id(receipt_id)
+        except (CaptureUnlinkPolicyError, CaptureUnlinkReceiptError) as error:
+            raise DomainError(
+                "undo-unlink requires receipt_id and revision"
+            ) from error
+        body_input = {"receipt_id": canonical_receipt_id, "revision": admitted}
+        request_digest = request_digest or self._request_digest(body_input)
+        path = path or "/api/v1/captures/{}/undo-unlink".format(capture_id)
+        activity = self.documents.load(WorkspaceDocument.ACTIVITY)
+        replay = self._idempotency_replay(
+            activity, idempotency_key, "POST", path, request_digest
+        )
+        if replay:
+            return replay
+        captures_data = self.documents.load(WorkspaceDocument.CAPTURES)
+        capture = _find(captures_data.get("captures", []), capture_id, "capture")
+        try:
+            receipt = find_unlink_receipt(
+                activity,
+                canonical_receipt_id,
+                workspace_uid=self._workspace_uid(),
+                capture_id=capture["id"],
+            )
+        except CaptureUnlinkReceiptError as error:
+            raise self._raise_receipt_error(error) from error
+        task = _find(
+            self.documents.load(WorkspaceDocument.TASKS).get("tasks", []),
+            receipt["task_id"],
+            "task",
+        )
+        if task.get("uid") != receipt["task_uid"] or task["id"] != receipt["task_id"]:
+            raise CaptureUnlinkUndoConflictError()
+        try:
+            plan = plan_capture_unlink_undo(
+                linked_task_ids=capture.get("linked_task_ids") or [],
+                stored_revision=capture["revision"],
+                displayed_revision=admitted,
+                after_revision=receipt["after_revision"],
+                stored_digest=capture_row_digest(capture),
+                after_digest=receipt["after_digest"],
+                task_id=receipt["task_id"],
+                status_before=receipt["status_before"],
+            )
+        except CaptureUnlinkPolicyError as error:
+            if error.code == UNLINK_REVISION_CONFLICT:
+                raise RevisionConflictError(
+                    "capture revision is stale",
+                    {"expected": capture["revision"], "received": admitted},
+                ) from error
+            if error.code == UNLINK_UNDO_CONFLICT:
+                raise CaptureUnlinkUndoConflictError() from error
+            raise DomainError(
+                "undo-unlink requires receipt_id and revision"
+            ) from error
+        capture["linked_task_ids"] = list(plan.linked_task_ids)
+        capture["status"] = plan.status
+        capture["revision"] = _next_revision(capture)
+        capture["updated_at"] = self._utc_now()
+        self._event(
+            activity,
+            "capture.unlink_undone",
+            capture_id=capture["id"],
+            task_id=task["id"],
+        )
+        body: dict[str, Any] = {
+            "data": self._project_capture(capture),
+            "meta": {"duplicate": False},
+        }
+        self._record_idempotency(activity, idempotency_key, "POST", path, request_digest, 200, body)
+        self.documents.save_many(
+            {WorkspaceDocument.CAPTURES: captures_data, WorkspaceDocument.ACTIVITY: activity},
+            operation_id="capture-undo-unlink-{}".format(idempotency_key),
         )
         return {"status": 200, "body": body}
 

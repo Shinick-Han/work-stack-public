@@ -692,6 +692,7 @@ code { color: var(--ws-text-code); font-family: 'Cascadia Code', Consolas, monos
 .long-copy { color: var(--ws-text-muted); font-size: 9px; line-height: 1.55; margin: 0 0 8px; }
 .context-entry ul { color: var(--ws-text-secondary); font-size: var(--ws-type-reading-body); line-height: 1.55; margin: 7px 0; overflow-wrap: anywhere; padding-left: 16px; }
 .context-entry a { align-items: center; color: var(--ws-signal-blue); display: inline-flex; font-size: var(--ws-type-reading-meta); gap: 4px; }
+.context-entry__actions { display: grid; gap: 6px; justify-items: start; margin: 2px 0 9px; }.context-entry__actions .button { font-size: var(--ws-type-reading-label); padding: 4px 9px; }.context-entry__actions p { color: var(--ws-text-muted); font-size: var(--ws-type-reading-meta); line-height: 1.45; margin: 0; }.context-entry__actions .context-entry__action-error { color: var(--ws-status-danger-text); }
 .context-entry__extras { border: 1px solid var(--ws-border-subtle); border-radius: 6px; }
 .context-entry__extras > summary { color: var(--ws-text-muted); cursor: pointer; font-size: var(--ws-type-reading-label); font-weight: 650; padding: 6px 8px; }
 .context-entry__extras > summary:hover { color: var(--ws-text-secondary); }

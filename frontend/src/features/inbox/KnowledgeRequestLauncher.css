@@ -1,0 +1,142 @@
+/* Scoped to the knowledge request launcher and its connection settings form. Colours,
+   spacing and the reading scale come from the shared tokens; the literal fallbacks keep
+   this file correct on its own if a token is not yet defined. Nothing here restyles the
+   dialog chrome, the shared form primitives or the editor it hands off to. */
+
+.knowledge-launcher__lede,
+.knowledge-settings__lede {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  margin: 0 0 10px;
+}
+
+.knowledge-launcher__notice {
+  align-items: flex-start;
+  background: var(--ws-surface-sunken);
+  border: 1px solid var(--ws-border-strong, var(--ws-border-subtle));
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+}
+.knowledge-launcher__notice p {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-meta, 12px);
+  margin: 0;
+}
+
+.knowledge-launcher__connections {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+.knowledge-launcher__connections li {
+  align-items: center;
+  background: var(--ws-surface-sunken);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 10px 12px;
+}
+.knowledge-launcher__connections li > div {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.knowledge-launcher__connections strong {
+  color: var(--ws-text-primary);
+  font-size: var(--ws-type-reading-body, 13px);
+  overflow-wrap: anywhere;
+}
+.knowledge-launcher__connections small {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  overflow-wrap: anywhere;
+}
+
+.knowledge-settings {
+  border-top: 1px solid var(--ws-border-subtle);
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  min-width: 0;
+  padding-top: 12px;
+}
+
+.knowledge-settings__row {
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  padding: 10px 12px;
+}
+.knowledge-settings__row legend {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-label, 11px);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  padding: 0 4px;
+  text-transform: uppercase;
+}
+.knowledge-settings__row-actions,
+.knowledge-settings__add {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.knowledge-settings__review {
+  background: var(--ws-surface-sunken);
+  border: 1px solid var(--ws-border-subtle);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.knowledge-settings__review h4 {
+  font-size: var(--ws-type-reading-body, 13px);
+  margin: 0 0 6px;
+}
+.knowledge-settings__review ul {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.knowledge-settings__review li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.knowledge-settings__review small,
+.knowledge-settings__review p {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-settings__consequence,
+.knowledge-settings__notice {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  margin: 0;
+}
+
+.knowledge-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}

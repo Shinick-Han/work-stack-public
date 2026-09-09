@@ -25,12 +25,12 @@ from workstack.agent_local_backend import create_local_backend
 from workstack.agent_transport import create_running_server_backend
 from workstack.store import Store
 from workstack.store_errors import StoreCorruptError
-from workstack.store_rosters import V5_DOCUMENT_NAMES
+from workstack.store_rosters import V6_DOCUMENT_NAMES
 
 
 CANONICAL_UID = "550e8400-e29b-41d4-a716-446655440000"
 OTHER_UID = "4d36e96e-e325-41ce-bfc1-08002be10318"
-LIVE_FIXTURE_SHA256 = "f85678576139aa2f67a6a0f2ec1f44f41d732a56e623b7ab32e55305be693421"
+LIVE_FIXTURE_SHA256 = "28540cac90d879ff0821d13752da0ecb80b8e3eaf984224c72c0c78b79061444"
 
 
 def load_manifest() -> dict:
@@ -115,14 +115,16 @@ class ManifestRegistrationTest(unittest.TestCase):
         self.assertTrue(spec["all_constructor_fields_required"])
         storage = fields[2]
         self.assertTrue(storage["required"])
-        self.assertEqual(storage["type"], "Literal['v3','v5']")
+        self.assertEqual(storage["type"], "Literal['v3','v5','v6']")
         hints = typing.get_type_hints(AuthorityAdmission)
-        self.assertEqual(set(typing.get_args(hints["storage_format"])), {"v3", "v5"})
+        self.assertEqual(
+            set(typing.get_args(hints["storage_format"])), {"v3", "v5", "v6"}
+        )
 
     def test_status_projection_and_fixture_digest_match_composed_product(self):
         self.assertEqual(
             self.manifest["limits"]["storage_format_values"],
-            ["unknown", "v3", "v4", "v5"],
+            ["unknown", "v3", "v4", "v5", "v6"],
         )
         keys = self.manifest["digest_recipes"]["contract_fixture_projection"]
         projection = {key: self.manifest[key] for key in keys}
@@ -134,7 +136,10 @@ class ManifestRegistrationTest(unittest.TestCase):
         self.assertEqual(hashlib.sha256(live).hexdigest(), digest)
         self.assertEqual(live, canonical)
         decoded = json.loads(live)
-        self.assertEqual(decoded["limits"]["storage_format_values"], ["unknown", "v3", "v4", "v5"])
+        self.assertEqual(
+            decoded["limits"]["storage_format_values"],
+            ["unknown", "v3", "v4", "v5", "v6"],
+        )
         self.assertIn("v5", json.dumps(decoded["limits"], separators=(",", ":")))
 
     def test_v3_only_runtime_wording_and_g21_g30_assertions(self):
@@ -259,26 +264,26 @@ class RealAuthorityPreflightTest(unittest.TestCase):
 
 
 class RealComposedCoreAndStatusTest(unittest.TestCase):
-    def test_real_store_validator_accepts_initialized_v5_and_refuses_roster_mismatch(self):
+    def test_real_store_validator_accepts_the_initialized_store_and_refuses_roster_mismatch(self):
         with tempfile.TemporaryDirectory(prefix="p0-oracle-store-") as temporary:
-            store = Store(Path(temporary) / "v5-store")
+            store = Store(Path(temporary) / "current-store")
             readiness = store.initialize()
-            values = {name: copy.deepcopy(store.load(name)) for name in V5_DOCUMENT_NAMES}
-            accepted = Store.validate_document_values(values, schema_version=5)
-            self.assertEqual(accepted.schema_version, 5)
+            values = {name: copy.deepcopy(store.load(name)) for name in V6_DOCUMENT_NAMES}
+            accepted = Store.validate_document_values(values, schema_version=6)
+            self.assertEqual(accepted.schema_version, 6)
             self.assertEqual(accepted.workspace_uid, readiness.workspace_uid)
             with self.assertRaises(StoreCorruptError):
                 Store.validate_document_values(values, schema_version=3)
             with self.assertRaises(StoreCorruptError):
-                Store.validate_document_values({"workspace.json": values["workspace.json"]}, schema_version=5)
+                Store.validate_document_values({"workspace.json": values["workspace.json"]}, schema_version=6)
 
-    def test_local_status_emits_exact_admitted_v5_label(self):
+    def test_local_status_emits_the_exact_admitted_current_label(self):
         with tempfile.TemporaryDirectory(prefix="p0-oracle-local-") as temporary:
             root = Path(temporary) / "authority"
             store = Store(root)
             readiness = store.initialize()
             admission = _admit(root, readiness.workspace_uid)
-            self.assertEqual(admission.storage_format, "v5")
+            self.assertEqual(admission.storage_format, "v6")
 
             def factory(*, root: Path) -> Store:
                 self.assertEqual(root, admission.data_dir)
@@ -291,7 +296,7 @@ class RealComposedCoreAndStatusTest(unittest.TestCase):
                     expected_workspace_uid=readiness.workspace_uid,
                 )
             )
-            self.assertEqual(status["storage_format"], "v5")
+            self.assertEqual(status["storage_format"], "v6")
             self.assertTrue(status["capability_supported"])
 
     def test_running_status_emits_v5_and_never_falls_back_to_store(self):
@@ -340,7 +345,7 @@ class RealComposedCoreAndStatusTest(unittest.TestCase):
                 ["/api/v1/session", "/api/v1/storage", "/api/v1/sync/status"],
             )
 
-    def test_status_renderer_accepts_v5_and_rejects_v6(self):
+    def test_status_renderer_accepts_current_formats_and_rejects_unknown_ones(self):
         data = {
             "actual_workspace_uid": CANONICAL_UID,
             "capability_reason": None,
@@ -369,7 +374,12 @@ class RealComposedCoreAndStatusTest(unittest.TestCase):
         )
         rendered = render_outcome(outcome=outcome)
         self.assertEqual(json.loads(rendered)["data"]["storage_format"], "v5")
-        rejected = dict(data, storage_format="v6")
+        accepted = dict(data, storage_format="v6")
+        rendered_v6 = render_outcome(
+            outcome=AgentOutcome(**{**outcome.__dict__, "data": accepted})
+        )
+        self.assertEqual(json.loads(rendered_v6)["data"]["storage_format"], "v6")
+        rejected = dict(data, storage_format="v7")
         with self.assertRaises(ValueError):
             render_outcome(outcome=AgentOutcome(**{**outcome.__dict__, "data": rejected}))
 

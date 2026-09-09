@@ -36,6 +36,15 @@ export interface ReferenceHandoffState {
   pending: 'list' | 'prepare' | 'copy' | null
   prepared: PreparedReferenceHandoff | null
   references: KnowledgeSavedReference[]
+  /**
+   * Whether the linked-reference list is settled, which is a separate fact from `error`.
+   * It is true once a list succeeded, and also on a client with no knowledge host, where
+   * local document selection is simply unavailable. It stays false while a host-present
+   * list attempt has failed and has not been reloaded successfully, so a list failure can
+   * never be answered with a brief prepared from an empty selection. It is never a claim
+   * that the Task has no saved references.
+   */
+  referencesKnown: boolean
 }
 
 /**
@@ -45,6 +54,19 @@ export interface ReferenceHandoffState {
  */
 export interface ReferenceHandoffSeed {
   references: readonly KnowledgeSavedReference[]
+  /**
+   * Whether the seeding panel actually settled that list. False while its own host
+   * request failed, which keeps preparation from treating an unread list as an empty one.
+   */
+  listed: boolean
+  /**
+   * Whether that settled list came from a list the host actually enumerated. False on a
+   * client with no knowledge host, where nothing was ever listed: the list is settled —
+   * `listed` stays true, so an explicit Capture-only preparation is still available — but
+   * an empty result there is the absence of local document access, never evidence that
+   * the Task has no saved references. Presentation only; it gates no preparation.
+   */
+  enumerated: boolean
   /** Changes when the seeded records change, which restarts the selection session. */
   signature: string
   reload: () => void
@@ -67,6 +89,7 @@ const emptyState = (): ReferenceHandoffState => ({
   pending: null,
   prepared: null,
   references: [],
+  referencesKnown: false,
 })
 
 /**
@@ -87,6 +110,34 @@ function withoutPreparedWork(current: ReferenceHandoffState): ReferenceHandoffSt
   }
 }
 
+/**
+ * A seeded list settles and unsettles without changing the session identity: an empty list
+ * that failed and an empty list that succeeded sign identically, so `handoffSessionKey`
+ * cannot carry this fact. Mirroring it here keeps a successful reload from staying locked
+ * out, and keeps a later failure from leaving the stale permission behind.
+ *
+ * Losing the fact also retires a brief prepared from an empty selection: that brief stood
+ * on the list having been settled, and an unread list is not an empty one. A vault
+ * selection stands on its own reads and is left alone.
+ *
+ * `retired` says the caller has already stopped Capture-only work that has no payload on
+ * screen yet — a preparation still in flight. That work leaves `prepared` null, so the
+ * pending state has to be cleared from here or the panel would stay busy over a flight
+ * whose result is now refused.
+ */
+function applySeedListed(
+  current: ReferenceHandoffState,
+  listed: boolean,
+  retired: boolean,
+): ReferenceHandoffState {
+  if (current.referencesKnown === listed && !retired) return current
+  if (listed) return { ...current, referencesKnown: true }
+  if (!retired && current.prepared?.sources !== 'capture-only') {
+    return { ...current, referencesKnown: false }
+  }
+  return { ...withoutPreparedWork(current), referencesKnown: false }
+}
+
 function failMessage(error: unknown) {
   if (error instanceof ReferenceHandoffError) return error.message
   return knowledgeErrorMessage(error)
@@ -101,6 +152,7 @@ async function liveTask(taskId: string) {
     title: detail.task.title,
     detail: detail.task.detail,
     status: detail.task.status,
+    context: detail.context,
   }
 }
 
@@ -147,6 +199,7 @@ async function listCurrentReferences(binding: KnowledgeBinding, signal: AbortSig
 
 function useHandoffFlight(setState: SetHandoffState) {
   const flight = useRef(0)
+  const captureOnlyFlight = useRef(0)
   const abortRef = useRef<AbortController | null>(null)
   const still = (token: number) => token === flight.current
   const stop = () => {
@@ -169,7 +222,15 @@ function useHandoffFlight(setState: SetHandoffState) {
     }))
     return { signal: controller.signal, token }
   }
-  return { abortRef, begin, still, stop }
+  /** Records that the flight just begun is preparing a Capture-only brief. */
+  const markCaptureOnly = (token: number) => { captureOnlyFlight.current = token }
+  /**
+   * True while such a preparation is still the live flight, so a fence can reach work that
+   * has not produced a payload yet. Tokens start at 1, so the initial 0 never matches, and
+   * any later `begin` or `stop` retires the mark without needing to clear it.
+   */
+  const captureOnlyLive = () => captureOnlyFlight.current > 0 && still(captureOnlyFlight.current)
+  return { abortRef, begin, captureOnlyLive, markCaptureOnly, still, stop }
 }
 
 type HandoffFlight = ReturnType<typeof useHandoffFlight>
@@ -208,7 +269,10 @@ function loadReferenceList(
   setState: SetHandoffState,
 ) {
   if (!knowledgeHostAvailable()) {
-    setState({ ...emptyState(), error: HOST_UNAVAILABLE })
+    // No local document selection on this client. That is settled, not a pending failure,
+    // so an explicit Capture-only preparation stays available — without ever implying the
+    // Task has no saved references.
+    setState({ ...emptyState(), error: HOST_UNAVAILABLE, referencesKnown: true })
     return
   }
   const { signal, token } = flight.begin('list')
@@ -216,7 +280,7 @@ function loadReferenceList(
     (listed) => {
       if (!flight.still(token)) return
       referencesRef.current = listed.references
-      setState({ ...emptyState(), references: listed.references })
+      setState({ ...emptyState(), references: listed.references, referencesKnown: true })
     },
     (error) => {
       if (!flight.still(token) || isKnowledgeCancelled(error)) return
@@ -231,6 +295,7 @@ interface PrepareInput {
   owner: HandoffOwner
   progress: ResumeProgressFacts
   references: readonly KnowledgeSavedReference[]
+  referencesKnown: boolean
   selectedIds: readonly string[]
   setState: SetHandoffState
   vaults: readonly KnowledgeVault[]
@@ -238,7 +303,14 @@ interface PrepareInput {
 
 function startPrepare(input: PrepareInput) {
   const { binding, flight, owner, setState } = input
+  // The action carries the same guard as the button: an unsettled reference list may not
+  // be prepared as if it were an empty selection, whatever the disabled attribute says.
+  if (input.selectedIds.length === 0 && !input.referencesKnown) return
   const { signal, token } = flight.begin('prepare')
+  // An empty selection prepares the Capture-only brief, which rests on the settled-list
+  // fact. Losing that fact has to be able to find this flight before it resolves, so the
+  // flight is marked now rather than inferred from a payload that does not exist yet.
+  if (input.selectedIds.length === 0) flight.markCaptureOnly(token)
   const tokenOwner = owner.assign()
   owner.forgetPrepared()
   void prepareReferenceHandoff({
@@ -343,6 +415,8 @@ function downloadPrepared(
   const frozen = owner.ownerNow()
   const payload = owner.preparedRef.current
   if (!payload || payload !== prepared) return
+  // A Capture-only brief has no envelope to download; there is no JSON form of it.
+  if (payload.sources !== 'vault-selection') return
   if (owner.preparedOwnerRef.current !== frozen) return
   if (!allChangedAcknowledged(payload.changedIds, acknowledged)) return
   if (resumeProgressChanged(payload.progressKey, progress)) return
@@ -362,7 +436,8 @@ function exportAvailability(state: ReferenceHandoffState, progress: ResumeProgre
     && allChangedAcknowledged(state.prepared?.changedIds ?? [], state.acknowledged)
   return {
     briefStale: stale,
-    canExport: Boolean(state.prepared) && allowed,
+    // The JSON envelope exists only for a vault selection, so the JSON exports do too.
+    canExport: state.prepared?.sources === 'vault-selection' && allowed,
     canExportBrief: Boolean(state.prepared?.briefMarkdown) && allowed,
   }
 }
@@ -370,6 +445,7 @@ function exportAvailability(state: ReferenceHandoffState, progress: ResumeProgre
 interface HandoffInputs {
   acknowledgedRef: MutableRefObject<readonly string[]>
   progressRef: MutableRefObject<ResumeProgressFacts>
+  referencesKnownRef: MutableRefObject<boolean>
   referencesRef: MutableRefObject<KnowledgeSavedReference[]>
   seedRef: MutableRefObject<ReferenceHandoffSeed | null>
   selectedRef: MutableRefObject<string[]>
@@ -386,9 +462,11 @@ function useHandoffInputs(
   vaults: readonly KnowledgeVault[],
   selectedIds: string[],
   acknowledged: string[],
+  referencesKnown: boolean,
 ): HandoffInputs {
   const acknowledgedRef = useRef<readonly string[]>(acknowledged)
   const progressRef = useRef<ResumeProgressFacts>(progress)
+  const referencesKnownRef = useRef<boolean>(referencesKnown)
   const referencesRef = useRef<KnowledgeSavedReference[]>([])
   const seedRef = useRef<ReferenceHandoffSeed | null>(seed)
   const selectedRef = useRef<string[]>(selectedIds)
@@ -396,9 +474,46 @@ function useHandoffInputs(
   useEffect(() => { selectedRef.current = selectedIds }, [selectedIds])
   useEffect(() => { acknowledgedRef.current = acknowledged }, [acknowledged])
   useEffect(() => { progressRef.current = progress })
+  useEffect(() => { referencesKnownRef.current = referencesKnown })
   useEffect(() => { vaultsRef.current = vaults })
   useEffect(() => { seedRef.current = seed })
-  return { acknowledgedRef, progressRef, referencesRef, seedRef, selectedRef, vaultsRef }
+  return {
+    acknowledgedRef,
+    progressRef,
+    referencesKnownRef,
+    referencesRef,
+    seedRef,
+    selectedRef,
+    vaultsRef,
+  }
+}
+
+/** Keeps the seeded list fact current between renders that share one session key. */
+function useSeedListedFact(
+  seed: ReferenceHandoffSeed | null,
+  prepared: PreparedReferenceHandoff | null,
+  flight: HandoffFlight,
+  owner: HandoffOwner,
+  setState: SetHandoffState,
+) {
+  const listed = seed?.listed ?? null
+  const preparedCaptureOnly = prepared?.sources === 'capture-only'
+  useEffect(() => {
+    if (listed === null) return
+    // Losing the settled-list fact revokes the Capture-only work resting on it. A
+    // preparation still in flight is that same work before it has a payload: retiring only
+    // what is already prepared would leave the old promise holding a live token and owner,
+    // and its late resolution would store — and offer for copying — a brief prepared after
+    // the list it rests on was lost. Stopping the flight also fences the same signature
+    // going true, false and true again before that first resolution arrives.
+    const retired = !listed && (preparedCaptureOnly || flight.captureOnlyLive())
+    if (retired) {
+      flight.stop()
+      owner.assign()
+      owner.forgetPrepared()
+    }
+    setState((current) => applySeedListed(current, listed, retired))
+  }, [listed, preparedCaptureOnly])
 }
 
 function handoffSessionKey(
@@ -441,7 +556,11 @@ function startSession(input: {
   const seeded = inputs.seedRef.current
   if (seeded) {
     inputs.referencesRef.current = [...seeded.references]
-    setState({ ...emptyState(), references: [...seeded.references] })
+    setState({
+      ...emptyState(),
+      references: [...seeded.references],
+      referencesKnown: seeded.listed,
+    })
     return
   }
   loadReferenceList(input.binding, flight, inputs.referencesRef, setState)
@@ -477,6 +596,7 @@ function handoffActions(input: {
       owner,
       progress: inputs.progressRef.current,
       references: inputs.referencesRef.current,
+      referencesKnown: inputs.referencesKnownRef.current,
       selectedIds: inputs.selectedRef.current,
       setState,
       vaults: inputs.vaultsRef.current,
@@ -495,7 +615,14 @@ export function useReferenceHandoff(
   const vaults = options.vaults ?? []
   const [state, setState] = useState(emptyState)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const inputs = useHandoffInputs(progress, seed, vaults, selectedIds, state.acknowledged)
+  const inputs = useHandoffInputs(
+    progress,
+    seed,
+    vaults,
+    selectedIds,
+    state.acknowledged,
+    state.referencesKnown,
+  )
   const binding = handoffBinding(workspaceUid, task)
   const sessionKey = handoffSessionKey(workspaceUid, task, open, seed)
   const flight = useHandoffFlight(setState)
@@ -505,6 +632,8 @@ export function useReferenceHandoff(
     startSession({ binding, flight, inputs, open, owner, setSelectedIds, setState })
     return () => { flight.abortRef.current?.abort() }
   }, [sessionKey])
+
+  useSeedListedFact(seed, state.prepared, flight, owner, setState)
 
   const discardWork = useCallback(() => {
     flight.stop()

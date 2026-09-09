@@ -35,6 +35,9 @@ SAFE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._/=:-]+$")
 OWNER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,31}$")
 PROVISION_INSTALL_COMMAND = "provision-install"
 SERVE_EXEC_PREFIX = "exec"
+KNOWLEDGE_DRIVERS_CONFIG_FLAG = "--knowledge-drivers-config"
+SERVE_ARGV_WITHOUT_DRIVERS = 19
+SERVE_ARGV_WITH_DRIVERS = 21
 
 FORBIDDEN_FRAGMENTS = (
     "&&",
@@ -164,8 +167,22 @@ def _joined_command(validated: Sequence[str]) -> str:
     return command
 
 
+def _knowledge_drivers_config_from_serve_argv(tokens: Sequence[str]) -> str | None:
+    if len(tokens) == SERVE_ARGV_WITHOUT_DRIVERS:
+        return None
+    if len(tokens) != SERVE_ARGV_WITH_DRIVERS or tokens[19] != KNOWLEDGE_DRIVERS_CONFIG_FLAG:
+        raise RemoteCommandError(
+            "REMOTE_PROTOCOL_INVALID",
+            "exec is admissible only as the complete serve argv",
+        )
+    return tokens[20]
+
+
 def _expected_serve_argv(tokens: Sequence[str]) -> list[str]:
-    if len(tokens) != 19 or tokens[0] != SERVE_EXEC_PREFIX:
+    if tokens[:1] != [SERVE_EXEC_PREFIX] or len(tokens) not in {
+        SERVE_ARGV_WITHOUT_DRIVERS,
+        SERVE_ARGV_WITH_DRIVERS,
+    }:
         raise RemoteCommandError(
             "REMOTE_PROTOCOL_INVALID",
             "exec is admissible only as the complete serve argv",
@@ -186,6 +203,7 @@ def _expected_serve_argv(tokens: Sequence[str]) -> list[str]:
         local_forward_port=local_forward_port,
         session_token=tokens[17],
         host=tokens[11],
+        knowledge_drivers_config=_knowledge_drivers_config_from_serve_argv(tokens),
     )
 
 
@@ -298,6 +316,13 @@ def probe_tokens(
     return tokens + ["--session-token", require_session_token(session_token)]
 
 
+def _optional_knowledge_drivers_tokens(value: object) -> list[str]:
+    if value is None:
+        return []
+    path = validated_posix_path(value, "knowledge_drivers_config")
+    return [KNOWLEDGE_DRIVERS_CONFIG_FLAG, path]
+
+
 def serve_tokens(
     *,
     remote_python: object,
@@ -307,6 +332,7 @@ def serve_tokens(
     local_forward_port: int,
     session_token: object,
     host: str = LOOPBACK_HOST,
+    knowledge_drivers_config: str | None = None,
 ) -> list[str]:
     python = require_remote_python(remote_python)
     app = validated_posix_path(remote_app_dir, "remote_app_dir")
@@ -332,6 +358,7 @@ def serve_tokens(
         "--session-token",
         token,
         "--exit-with-parent",
+        *_optional_knowledge_drivers_tokens(knowledge_drivers_config),
     ]
 
 
@@ -385,6 +412,7 @@ def join_serve_command(
     local_forward_port: int,
     session_token: object,
     host: str = LOOPBACK_HOST,
+    knowledge_drivers_config: str | None = None,
 ) -> str:
     tokens = serve_tokens(
         remote_python=remote_python,
@@ -394,6 +422,7 @@ def join_serve_command(
         local_forward_port=local_forward_port,
         session_token=session_token,
         host=host,
+        knowledge_drivers_config=knowledge_drivers_config,
     )
     scan_tokens_for_live_ssh(tokens)
     return join_exact_serve_tokens(tokens)

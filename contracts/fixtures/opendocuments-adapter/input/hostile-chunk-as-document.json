@@ -1,0 +1,38 @@
+{
+  "request": {
+    "request_id": "55555555-5555-4555-8555-555555555555",
+    "connection_id": "conn_opendocuments_pilot_1",
+    "query": "What is the handbook title?"
+  },
+  "chat": {
+    "queryId": "66666666-6666-4666-8666-666666666666",
+    "answer": "The handbook title is Pilot handbook.",
+    "sources": [
+      {
+        "chunkId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1_chunk_0",
+        "content": "Pilot handbook body",
+        "score": 0.9,
+        "documentId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1_chunk_0",
+        "chunkType": "semantic",
+        "headingHierarchy": ["Handbook"],
+        "sourcePath": "notion://11111111-2222-4333-8444-555555555555",
+        "sourceType": "@opendocuments/connector-notion"
+      },
+      {
+        "content": "Missing document identity must not become a Work Stack document.",
+        "score": 0.2,
+        "chunkType": "semantic",
+        "headingHierarchy": [],
+        "sourcePath": "notion://11111111-2222-4333-8444-555555555555",
+        "sourceType": "@opendocuments/connector-notion"
+      }
+    ],
+    "confidence": {
+      "score": 0.2,
+      "level": "low",
+      "reason": "Weak match -- results may not be accurate"
+    },
+    "route": "rag",
+    "profile": "balanced"
+  }
+}

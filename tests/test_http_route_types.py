@@ -107,6 +107,14 @@ class RouteTableTest(unittest.TestCase):
                 "_get_task",
                 "_get_captures",
                 "_get_mutation_notices",
+                # Appended, never inserted: every entry above keeps the exact
+                # position it shipped in, and the owner knowledge read cannot
+                # take a path any of them already answers.
+                "_get_knowledge_connections",
+                # Appended for the same reason: reading one Capture's saved
+                # source check answers its own exact path, which no entry above
+                # matches, so nothing shifted position to make room for it.
+                "_get_knowledge_capture_observation",
             ],
         )
 
@@ -137,6 +145,7 @@ class RouteTableTest(unittest.TestCase):
                 "checkpoint_transition",
                 "capture_ingest",
                 "capture_link",
+                "capture_unlink",
                 "capture_action_task",
                 "capture_task",
                 "capture_dismiss",
@@ -145,6 +154,29 @@ class RouteTableTest(unittest.TestCase):
                 "report_create",
                 "report_action",
                 "mutation_notice_undo",
+                # Appended, never inserted, for the same reason as the GET
+                # table: neither knowledge path is reachable by any route
+                # above it.
+                "knowledge_connection_policy",
+                "knowledge_request_issue",
+                # Appended, never inserted, for the same reason: the manual
+                # Capture import answers its own exact path and takes none that
+                # an entry above already answers.
+                "knowledge_capture_import",
+                # Appended, never inserted, for the same reason: the execution
+                # route answers its own exact path and takes none that an entry
+                # above already answers.
+                "knowledge_request_execute",
+                # Appended, never inserted: source verification answers its own
+                # exact path and takes none that an entry above already answers.
+                "knowledge_capture_verify",
+                # Appended, never inserted: recording a source check answers
+                # its own exact path, and the three `captures/` knowledge
+                # routes each match only their own, so none can shadow another.
+                "knowledge_capture_record_check",
+                # Appended, never inserted: Capture unlink Undo answers its own
+                # path and takes none that an entry above already answers.
+                "capture_undo_unlink",
             ],
         )
 

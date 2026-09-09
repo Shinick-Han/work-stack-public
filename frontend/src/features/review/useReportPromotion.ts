@@ -84,7 +84,15 @@ const UNSETTLED_MESSAGE =
   'The workspace did not answer this save, so the report may or may not have been saved there.'
   + ' Ask the same question again to settle it without saving the report twice.'
 
-const REFUSALS: Record<string, string> = {
+/**
+ * Every refusal sentence this save can put on screen.
+ *
+ * The table has a null prototype on purpose: on an ordinary object literal a workspace
+ * code of `constructor`, `toString` or `__proto__` resolves through `Object.prototype`,
+ * so the lookup hands back an inherited function or the prototype itself instead of the
+ * one fallback sentence. `promotionRefusalMessage` additionally tests own properties only.
+ */
+const REFUSALS: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
   idempotency_conflict:
     'This save could not be matched to the request that was sent, so nothing new was saved.'
     + ' Close the editor and open it again, then save from there.',
@@ -118,11 +126,16 @@ const REFUSALS: Record<string, string> = {
     'This workspace is not in sync, so nothing was saved. Bring it back in sync, then save again.',
   workspace_mismatch:
     'This report belongs to a different workspace than the one open here, so nothing was saved.',
-}
+})
 
 /** What the workspace refused, and what the reader can still do about it. */
 export function promotionRefusalMessage(code: string): string {
-  const detail = REFUSALS[code] ?? 'This report could not be saved to the workspace, so nothing was saved.'
+  const authored = Object.hasOwn(REFUSALS, code) ? REFUSALS[code] : undefined
+  // Whatever a lookup produced, only one of this module's own literal sentences
+  // reaches the reader, and it is always a string.
+  const detail = typeof authored === 'string'
+    ? authored
+    : 'This report could not be saved to the workspace, so nothing was saved.'
   return detail + ' ' + FALLBACK_ADVICE
 }
 

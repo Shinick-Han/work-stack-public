@@ -8,13 +8,17 @@ import http.client
 import json
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import quote
 
 from . import agent_apply_admission, agent_runtime
-from . import checkpoint_state_cli, cli_capabilities, cli_routing, cli_writer
+from . import checkpoint_state_cli, cli_capabilities, cli_output, cli_routing, cli_writer
+from . import cli_writer_reports
+from . import cli_storage_receipts as receipts
 from .cli_parser_root import parser
-from .server import serve
+from .knowledge_driver_registry import load_driver_registry
+from .server import KnowledgeDriverBinding, serve
 from .service import DomainError, WorkStack
 from .maintenance import backup_store, initialize_store, relocate_store, restore_store, verify_backup
 from .snapshot_export import write_snapshot_file
@@ -48,6 +52,26 @@ def emit(value: object) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
+def _checkpoint_facts_api():
+    from .checkpoint_facts import (
+        project_checkpoint_facts,
+        render_checkpoint_facts,
+        validate_checkpoint_request,
+    )
+    return validate_checkpoint_request, project_checkpoint_facts, render_checkpoint_facts
+
+
+def emit_checkpoint_facts(audit: object, arguments: argparse.Namespace) -> None:
+    _validate, project, render = _checkpoint_facts_api()
+    del _validate
+    facts = project(audit, workspace_uid=arguments.workspace_uid, task_id=arguments.task)
+    print(render(facts, format=arguments.format), end="")
+
+
+def _checkpoint_facts_emitter(arguments: argparse.Namespace):
+    return lambda audit: emit_checkpoint_facts(audit, arguments)
+
+
 def forward_checkpoint_state(
     store: Store, raw: bytes, checkpoint_id: str, idempotency_key: str
 ) -> int:
@@ -69,6 +93,28 @@ def forward_checkpoint_state(
             checkpoint_id,
             body,
             idempotency_key,
+            coordinates_reader=_server_coordinates,
+            request_json=_request_json,
+        )
+    )
+    return 0
+
+
+def forward_report_create(store: Store, date: str) -> int:
+    """One explicit invocation creates one daily-v1 draft through a running owner.
+
+    There is no exclusive-local form: absent or unusable owner metadata refuses
+    here rather than initializing, repairing, or writing reports.json locally.
+    """
+
+    owner_state = cli_writer.owner_metadata_state(store)
+    if owner_state == cli_writer.OWNER_ABSENT:
+        raise OSError("Work Stack server is not running for this data directory")
+    emit(
+        cli_writer_reports.forward_report_create(
+            store,
+            owner_state,
+            date,
             coordinates_reader=_server_coordinates,
             request_json=_request_json,
         )
@@ -304,190 +350,86 @@ def apply_agent_update(
     return 0
 
 
-def _backup_payload(artifact: object) -> dict[str, object]:
-    return {
-        "path": str(artifact.path),
-        "workspace_id": artifact.workspace_id,
-        "created_at": artifact.created_at,
-        "digest": artifact.digest,
-        "file_count": artifact.file_count,
-    }
-
-
 def _run_maintenance(arguments: argparse.Namespace, store: Store) -> None:
     if arguments.action == "backup":
-        emit(_backup_payload(backup_store(store.root, arguments.out)))
+        emit(receipts.backup_receipt(backup_store(store.root, arguments.out)))
         return
     if arguments.action == "verify":
-        emit(_backup_payload(verify_backup(arguments.archive)))
+        emit(receipts.backup_receipt(verify_backup(arguments.archive)))
         return
     if arguments.action == "restore":
-        receipt = restore_store(
+        emit(receipts.restore_receipt(restore_store(
             arguments.archive,
             arguments.to,
             replace=arguments.replace,
             safety_backup_dir=arguments.safety_backups,
-        )
-        emit({
-            "destination": str(receipt.destination),
-            "workspace_id": receipt.workspace_id,
-            "backup_digest": receipt.backup_digest,
-            "safety_backup": str(receipt.safety_backup) if receipt.safety_backup else None,
-        })
+        )))
         return
     if arguments.action == "initialize":
-        receipt = initialize_store(store.root)
-        emit({
-            "destination": str(receipt.destination),
-            "workspace_id": receipt.workspace_id,
-            "store_schema_version": receipt.store_schema_version,
-        })
+        emit(receipts.initialize_receipt(initialize_store(store.root)))
         return
-    receipt = relocate_store(store.root, arguments.to)
-    emit({
-        "destination": str(receipt.destination),
-        "workspace_id": receipt.workspace_id,
-        "backup_digest": receipt.backup_digest,
-        "source_preserved": True,
-    })
-
-
-def _migration_paths_payload(value: object) -> dict[str, object]:
-    paths = value.paths
-    return {
-        "source_path": str(paths.source_root),
-        "candidate_path": str(paths.candidate_root),
-        "backup_path": str(paths.backup_path),
-    }
+    emit(receipts.relocate_receipt(relocate_store(store.root, arguments.to)))
 
 
 def _run_storage_migration(arguments: argparse.Namespace) -> int:
     action = arguments.migration_action
     if action == "plan":
-        plan = plan_v3_migration(
+        emit(receipts.migration_plan_receipt(plan_v3_migration(
             arguments.source,
             candidate_override=arguments.candidate,
             backup_override=arguments.backup,
-        )
-        emit({
-            "status": "planned",
-            **_migration_paths_payload(plan),
-            "source_digest": plan.frozen.aggregate_digest,
-            "source_file_count": len(plan.frozen.artifacts),
-            "activated": False,
-        })
+        )))
         return 0
     if action == "preview":
-        preview = preview_v3_migration(
+        emit(receipts.migration_preview_receipt(preview_v3_migration(
             arguments.source,
             candidate_created_at=arguments.candidate_created_at,
             candidate_override=arguments.candidate,
             backup_override=arguments.backup,
-        )
-        emit({
-            "status": "previewed",
-            **_migration_paths_payload(preview),
-            "receipt_path": str(preview.receipt_path),
-            "source_digest": preview.frozen.aggregate_digest,
-            "source_semantic_digest": preview.conversion.source_snapshot_digest,
-            "conversion_digest": preview.conversion.conversion_digest,
-            "record_count": sum(len(items) for items in preview.conversion.records.values()),
-            "stream_event_count": sum(len(items) for items in preview.conversion.streams.values()),
-            "activated": False,
-        })
+        )))
         return 0
     if action == "execute":
-        execution = execute_v3_migration(
+        emit(receipts.migration_execute_receipt(execute_v3_migration(
             arguments.source,
             candidate_created_at=arguments.candidate_created_at,
             candidate_override=arguments.candidate,
             backup_override=arguments.backup,
             expected_source_digest=arguments.expected_source_digest,
             expected_conversion_digest=arguments.expected_conversion_digest,
-        )
-        emit({
-            "status": "verified_candidate",
-            **_migration_paths_payload(execution.preview),
-            "receipt_path": str(execution.receipt_path),
-            "source_digest": execution.preview.frozen.aggregate_digest,
-            "conversion_digest": execution.preview.conversion.conversion_digest,
-            "candidate_digest": execution.candidate_manifest.digest,
-            "backup_digest": execution.backup.archive_digest,
-            "source_unchanged": True,
-            "activated": False,
-        })
+        )))
         return 0
     if action == "resume":
-        execution = resume_v3_migration(
+        emit(receipts.migration_resume_receipt(resume_v3_migration(
             arguments.source,
             candidate_created_at=arguments.candidate_created_at,
             candidate_path=arguments.candidate,
             backup_path=arguments.backup,
             expected_source_digest=arguments.expected_source_digest,
             expected_conversion_digest=arguments.expected_conversion_digest,
-        )
-        emit({
-            "status": "verified_candidate",
-            **_migration_paths_payload(execution.preview),
-            "receipt_path": str(execution.receipt_path),
-            "candidate_digest": execution.candidate_manifest.digest,
-            "backup_digest": execution.backup.archive_digest,
-            "resumed": True,
-            "activated": False,
-        })
+        )))
         return 0
     if action == "verify":
-        receipt = verify_v3_migration_artifacts(
+        emit(receipts.migration_verify_receipt(verify_v3_migration_artifacts(
             arguments.source,
             candidate_root=arguments.candidate,
             backup_path=arguments.backup,
             receipt_path=arguments.receipt,
-        )
-        emit({
-            "status": "verified",
-            "migration_uid": receipt["migration_uid"],
-            "workspace_uid": receipt["workspace_uid"],
-            "source_digest": receipt["source"]["authority_digest"],
-            "candidate_digest": receipt["candidate"]["authority_digest"],
-            "activated": receipt["state"] == "activated",
-        })
+        )))
         return 0
-    receipt = load_migration_receipt(arguments.path)
-    emit(receipt)
+    emit(load_migration_receipt(arguments.path))
     return 0
-
-
-def _v4_backup_artifact_payload(status: str, artifact: object) -> dict[str, object]:
-    return {
-        "status": status,
-        "archive_path": str(artifact.path),
-        "backup_digest": artifact.digest,
-        "authority_digest": artifact.authority_digest,
-        "workspace_uid": artifact.workspace_uid,
-        "file_count": artifact.file_count,
-        "activated": False,
-    }
 
 
 def _run_v4_backup(arguments: argparse.Namespace) -> int:
     if arguments.v4_backup_action == "create":
         artifact = write_v4_backup(arguments.source, arguments.out)
-        emit(_v4_backup_artifact_payload("backed_up", artifact))
+        emit(receipts.v4_backup_receipt("backed_up", artifact))
         return 0
     if arguments.v4_backup_action == "verify":
         artifact = verify_v4_backup(arguments.archive)
-        emit(_v4_backup_artifact_payload("verified", artifact))
+        emit(receipts.v4_backup_receipt("verified", artifact))
         return 0
-    receipt = restore_v4_backup(arguments.archive, arguments.to)
-    emit({
-        "status": "restored",
-        "destination": str(receipt.destination),
-        "backup_digest": receipt.backup_digest,
-        "authority_digest": receipt.authority_digest,
-        "workspace_uid": receipt.workspace_uid,
-        "file_count": receipt.file_count,
-        "activated": False,
-    })
+    emit(receipts.v4_restore_receipt(restore_v4_backup(arguments.archive, arguments.to)))
     return 0
 
 
@@ -496,37 +438,16 @@ def _run_storage(arguments: argparse.Namespace) -> int:
         try:
             return _run_v4_backup(arguments)
         except (V4BackupError, ValueError, OSError) as error:
-            emit({
-                "status": "refused",
-                "code": getattr(error, "code", "V4_BACKUP_REFUSED"),
-                "activated": False,
-            })
+            emit(receipts.refusal_receipt(error, "V4_BACKUP_REFUSED", activated=False))
             return 2
     if arguments.action == "migration":
         try:
             return _run_storage_migration(arguments)
         except (StorageMigrationError, ValueError, OSError) as error:
-            emit({
-                "status": "refused",
-                "code": getattr(error, "code", "STORAGE_MIGRATION_REFUSED"),
-            })
+            emit(receipts.refusal_receipt(error, "STORAGE_MIGRATION_REFUSED"))
             return 2
     report = validate_storage_path(arguments.path)
-    emit({
-        "status": "valid" if report.valid else "invalid",
-        "format_version": report.format_version,
-        "workspace_uid": report.workspace_uid,
-        "record_count": report.record_count,
-        "issues": [
-            {
-                "code": issue.code,
-                "artifact": issue.artifact,
-                "instance_path": issue.instance_path,
-                "keyword": issue.keyword,
-            }
-            for issue in report.issues
-        ],
-    })
+    emit(receipts.validation_receipt(report))
     return 0 if report.valid else 2
 
 
@@ -599,6 +520,9 @@ def _run_worklog(arguments: argparse.Namespace, stack: WorkStack) -> None:
             arguments.blocker,
             arguments.date,
         )
+    elif arguments.action == "latest-checkpoint":
+        emit_checkpoint_facts(stack.list_checkpoint_audit(), arguments)
+        return
     else:
         result = stack.list_worklog(arguments.date)
     emit(result)
@@ -636,7 +560,19 @@ def _run_snapshot(arguments: argparse.Namespace, stack: WorkStack) -> None:
     })
 
 
-def _run_graph(arguments: argparse.Namespace, stack: WorkStack) -> None:
+def _run_graph(
+    arguments: argparse.Namespace,
+    stack: WorkStack,
+    *,
+    knowledge_drivers: Mapping[str, KnowledgeDriverBinding] | None = None,
+) -> None:
+    """Export one graph, or serve one owner with the pinned drivers it was given.
+
+    ``knowledge_drivers`` is ``None`` for every caller that did not name a
+    registry file, and that call is the pre-existing one, argument for
+    argument.
+    """
+
     if arguments.action == "export":
         output = Path(arguments.out).resolve()
         output.write_text(
@@ -650,6 +586,15 @@ def _run_graph(arguments: argparse.Namespace, stack: WorkStack) -> None:
     if getattr(arguments, "exit_with_parent", False):
         _bind_linux_process_lifetime_to_parent()
     public_port = getattr(arguments, "public_port", None)
+    if knowledge_drivers is not None:
+        serve(
+            stack,
+            arguments.host,
+            arguments.port,
+            public_port=public_port,
+            knowledge_drivers=knowledge_drivers,
+        )
+        return
     if public_port is None:
         serve(stack, arguments.host, arguments.port)
         return
@@ -736,8 +681,26 @@ def _dispatch_agent_envelope(arguments: argparse.Namespace) -> int:
 
 
 def _dispatch_process_owner(arguments: argparse.Namespace) -> int:
-    store = _store_from_args(arguments)
-    STACK_COMMANDS["graph"](arguments, WorkStack(store, initialize=True))
+    """Admit the operator's driver registry before this process takes a store.
+
+    The registry is read here rather than in ``_run_graph`` because the Store,
+    its lease, the socket and ``--seed-demo`` all happen after this line: a
+    malformed configuration refuses the start, not a later request.
+
+    With no registry the dispatch is the pre-existing one: the handler that
+    ``STACK_COMMANDS["graph"]`` currently names, called with exactly its two
+    arguments, so replacing that mapping entry still redirects an ordinary
+    ``graph serve``.
+    """
+
+    drivers = load_driver_registry(
+        getattr(arguments, "knowledge_drivers_config", None)
+    )
+    stack = WorkStack(_store_from_args(arguments), initialize=True)
+    if drivers is None:
+        STACK_COMMANDS["graph"](arguments, stack)
+        return 0
+    _run_graph(arguments, stack, knowledge_drivers=drivers)
     return 0
 
 
@@ -750,10 +713,30 @@ def _dispatch_owner_required(arguments: argparse.Namespace) -> int:
             arguments.checkpoint,
             arguments.idempotency_key,
         )
+    if arguments.domain == "report":
+        return forward_report_create(store, arguments.date)
     return forward_capture(
         store,
         sys.stdin.buffer.read(64 * 1024 + 1),
         arguments.idempotency_key,
+    )
+
+
+def _dispatch_admitted(
+    arguments: argparse.Namespace, capability: cli_capabilities.CliCapability
+) -> int:
+    emitter = emit
+    if capability.command_key == cli_capabilities.LATEST_CHECKPOINT_KEY:
+        validate, _project, _render = _checkpoint_facts_api()
+        validate(workspace_uid=arguments.workspace_uid, task_id=arguments.task)
+        emitter = _checkpoint_facts_emitter(arguments)
+    return cli_routing.dispatch_ordinary(
+        arguments,
+        capability,
+        run_local=_execute_stack,
+        owner_writer_for=_owner_forwarded_write,
+        owner_reader_for=_owner_forwarded_read,
+        emit=emitter,
     )
 
 
@@ -777,18 +760,23 @@ def _dispatch_parsed(
             apply=apply_agent_update,
         )
     if family == cli_capabilities.FAMILY_ADMITTED:
-        return cli_routing.dispatch_ordinary(
-            arguments,
-            capability,
-            run_local=_execute_stack,
-            owner_writer_for=_owner_forwarded_write,
-            owner_reader_for=_owner_forwarded_read,
-            emit=emit,
-        )
+        return _dispatch_admitted(arguments, capability)
     raise OSError("unsupported Work Stack command")
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one command line with UTF-8 stdout/stderr on every console code page.
+
+    The encoding boundary wraps argument parsing too, so argparse's own usage
+    and refusal messages survive a non-ASCII argument on a cp949 console
+    instead of failing inside its own error path.
+    """
+
+    with cli_output.utf8_streams():
+        return _run(argv)
+
+
+def _run(argv: list[str] | None) -> int:
     arguments = parser().parse_args(argv)
     try:
         capability = cli_capabilities.require_capability(

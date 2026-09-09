@@ -18,6 +18,7 @@ class CapabilityRegistryError(ValueError):
 AGENT_APPLY_KEY = "agent.apply"
 AGENT_ENVELOPE_KEYS = frozenset({"agent.status", "agent.context", "agent.checkpoint"})
 CHECKPOINT_STATE_KEY = "worklog.checkpoint-state"
+LATEST_CHECKPOINT_KEY = "worklog.latest-checkpoint"
 
 SKILL_ADVERTISED_KEYS = frozenset({
     "backlog.add",
@@ -35,6 +36,7 @@ SKILL_ADVERTISED_KEYS = frozenset({
     "worklog.checkin",
     "worklog.add",
     "worklog.list",
+    "worklog.latest-checkpoint",
     "weekly",
     "snapshot.preview",
     "note",
@@ -56,6 +58,7 @@ ENTITY_KINDS = frozenset({
     "weekly",
     "note",
     "capture",
+    "report",
     "workspace",
     "snapshot",
     "storage",
@@ -80,10 +83,12 @@ ONLINE_ROUTES = frozenset({
     "owner_get:/api/v1/cli/okr",
     "owner_get:/api/v1/cli/okr/rollup",
     "owner_get:/api/v1/cli/worklog",
+    "owner_get:/api/v1/review/checkpoints",
     "owner_get:/api/v1/cli/weekly",
     "owner_required_post:/api/v1/review/checkpoints/{id}/transitions",
     "owner_post:/api/v1/notes",
     "owner_required_post:/api/v1/captures",
+    "owner_required_post:/api/v1/reports",
     "agent_apply:/api/v1/tasks/{id}",
     "agent_runtime:status",
     "agent_runtime:context",
@@ -396,6 +401,7 @@ CAPABILITY_ROWS: tuple[tuple[object, ...], ...] = (
     ("worklog.add", "worklog", "add", False, False, "owner_post:/api/v1/cli/worklog/add", "stack:worklog", "sync_hint", False, False),
     ("worklog.checkpoint-state", "checkpoint", "checkpoint-state", True, True, "owner_required_post:/api/v1/review/checkpoints/{id}/transitions", "none", "checkpoint.transition", False, False),
     ("worklog.list", "worklog", "list", False, False, "owner_get:/api/v1/cli/worklog", "stack:worklog", "none", False, False),
+    ("worklog.latest-checkpoint", "checkpoint", "latest-checkpoint", False, False, "owner_get:/api/v1/review/checkpoints", "stack:worklog", "none", False, False),
     ("weekly", "weekly", "weekly", False, False, "owner_get:/api/v1/cli/weekly", "stack:weekly", "none", False, False),
     ("note", "note", "note", False, True, "owner_post:/api/v1/notes", "stack:note", "sync_hint", False, False),
     ("capture.ingest", "capture", "ingest", False, True, "owner_required_post:/api/v1/captures", "none", "sync_hint", False, False),
@@ -422,6 +428,7 @@ CAPABILITY_ROWS: tuple[tuple[object, ...], ...] = (
     ("maintenance.initialize", "maintenance", "initialize", False, False, "path_tool:maintenance", "path_tool:maintenance", "none", False, False),
     ("graph.export", "graph", "export", False, False, "local_file:graph.export", "stack:graph", "none", False, False),
     ("graph.serve", "graph", "serve", False, False, "process_owner:graph.serve", "process_owner:serve", "none", False, False),
+    ("report.create", "report", "create", False, True, "owner_required_post:/api/v1/reports", "none", "sync_hint", False, False),
 )
 
 EXCLUSION_ROWS: tuple[tuple[object, ...], ...] = (
@@ -435,6 +442,8 @@ EXCLUSION_ROWS: tuple[tuple[object, ...], ...] = (
     ("POST /api/v1/tasks/{id}/deletion-preview", "http_post", "GUI permanent-deletion preview; no argparse leaf"),
     ("POST /api/v1/review/checkin", "http_post", "GUI review checkin; CLI uses POST /api/v1/cli/worklog/checkin"),
     ("POST /api/v1/captures/{id}/link", "http_post", "GUI capture link; no argparse leaf"),
+    ("POST /api/v1/captures/{id}/unlink", "http_post", "GUI capture unlink; no argparse leaf"),
+    ("POST /api/v1/captures/{id}/undo-unlink", "http_post", "GUI capture unlink undo; no argparse leaf"),
     ("POST /api/v1/captures/{id}/actions/{id}/task", "http_post", "GUI capture action conversion; no argparse leaf"),
     ("POST /api/v1/captures/{id}/task", "http_post", "GUI capture-to-task conversion; no argparse leaf"),
     ("POST /api/v1/captures/{id}/dismiss", "http_post", "GUI capture dismiss; no argparse leaf"),
@@ -449,10 +458,15 @@ EXCLUSION_ROWS: tuple[tuple[object, ...], ...] = (
     ("GET /api/v1/storage", "http_get", "live-owner identity; CLI storage.validate inspects a path"),
     ("GET /api/v1/workspace", "http_get", "GUI workspace projection; CLI uses GET /api/v1/cli/backlog and /api/v1/cli/okr"),
     ("GET /api/v1/search", "http_get", "CLI has no search command"),
-    ("GET /api/v1/review/checkpoints", "http_get", "checkpoint audit GET; CLI has no audit list command"),
     ("GET /api/v1/review", "http_get", "GUI review projection; CLI uses GET /api/v1/cli/worklog and /api/v1/cli/weekly"),
-    ("GET /api/v1/reports/daily-preview", "http_get", "GUI report preview; no registered CLI equivalent"),
+    ("GET /api/v1/reports/daily-preview", "http_get", "GUI report preview; CLI report.create uses it as a prepare GET, not a registered leaf"),
     ("GET /api/v1/reports/weekly-preview", "http_get", "GUI weekly report preview; no registered CLI equivalent"),
+    ("GET /api/v1/reports", "http_get", "GUI report list; no argparse leaf"),
+    ("GET /api/v1/reports/{id}", "http_get", "GUI report read; no argparse leaf"),
+    ("POST /api/v1/reports/{id}/revisions", "http_post", "GUI report revise; no argparse leaf"),
+    ("POST /api/v1/reports/{id}/finalize", "http_post", "GUI report finalize; no argparse leaf"),
+    ("POST /api/v1/reports/{id}/archive", "http_post", "GUI report archive; no argparse leaf"),
+    ("POST /api/v1/reports/{id}/restore", "http_post", "GUI report restore; no argparse leaf"),
     ("GET /api/v1/work-sessions", "http_get", "CLI has no work-session list command"),
     ("GET /api/v1/objectives/{id}", "http_get", "GUI objective projection; CLI uses GET /api/v1/cli/okr and /api/v1/cli/okr/rollup"),
     ("GET /api/v1/tasks/{id}/snapshot", "http_get", "CLI snapshot.preview remains exclusive-local"),
@@ -470,6 +484,7 @@ EXCLUSION_ROWS: tuple[tuple[object, ...], ...] = (
     ("okr.link", "skill", "parser mutation; omitted from root Skill examples"),
     ("worklog.checkpoint-state", "skill", "owner-only transition CLI; distinct from agent checkpoint and not in Skills"),
     ("capture.ingest", "skill", "capture ingest is parser-complete but not Skill-advertised"),
+    ("report.create", "skill", "owner-only daily report draft CLI; omitted from Skills"),
     ("snapshot.export", "skill", "local disclosure export; omitted from Skills"),
     ("storage.validate", "skill", "path tool; agents must not treat storage inspect as a Skill command"),
     ("storage.migration.plan", "skill", "agent Skill forbids migrate; parser path tool remains registered"),

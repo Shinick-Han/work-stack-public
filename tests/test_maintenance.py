@@ -39,7 +39,7 @@ class MaintenanceTest(unittest.TestCase):
         verified = verify_backup(artifact.path)
         self.assertEqual(verified.workspace_id, artifact.workspace_id)
         self.assertEqual(verified.digest, artifact.digest)
-        self.assertEqual(verified.file_count, 10)
+        self.assertEqual(verified.file_count, 11)
 
         destination = self.root / "restored"
         receipt = restore_store(artifact.path, destination)

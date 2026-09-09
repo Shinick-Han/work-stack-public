@@ -1,0 +1,52 @@
+{
+  "request": {
+    "request_id": "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1",
+    "connection_id": "conn_opendocuments_pilot_1",
+    "query": "What does the web say about the checklist?"
+  },
+  "chat": {
+    "queryId": "a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2",
+    "answer": "Web results were merged into the sources array.",
+    "sources": [
+      {
+        "chunkId": "web_0",
+        "content": "Synthetic web-search hit merged by the RAG engine.",
+        "score": 0.99,
+        "documentId": "web-search",
+        "chunkType": "web",
+        "headingHierarchy": [],
+        "sourcePath": "https://blog.example.test/post",
+        "sourceType": "web"
+      },
+      {
+        "chunkId": "web_1",
+        "content": "Another web hit that borrowed a workspace-shaped document id.",
+        "score": 0.9,
+        "documentId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+        "chunkType": "web",
+        "headingHierarchy": [],
+        "sourcePath": "https://blog.example.test/other",
+        "sourceType": "web"
+      },
+      {
+        "chunkId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1_chunk_0",
+        "content": "The genuine indexed workspace hit.",
+        "score": 0.8,
+        "documentId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1",
+        "chunkType": "semantic",
+        "headingHierarchy": [
+          "Handbook"
+        ],
+        "sourcePath": "notion://11111111-2222-4333-8444-555555555555",
+        "sourceType": "@opendocuments/connector-notion"
+      }
+    ],
+    "confidence": {
+      "score": 0.6,
+      "level": "medium",
+      "reason": "Partial match found"
+    },
+    "route": "rag",
+    "profile": "precise"
+  }
+}

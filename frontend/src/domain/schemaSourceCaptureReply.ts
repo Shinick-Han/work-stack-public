@@ -1,10 +1,17 @@
 import { z } from 'zod'
 import {
+  KNOWLEDGE_IMPORT_ADAPTER,
+  KNOWLEDGE_IMPORT_PROVIDER,
+  KNOWLEDGE_IMPORT_RESOURCE_TYPE,
+  captureRetrievalProjectionSchema,
+} from './schemaKnowledgeCapture'
+import {
   CAPTURE_STATUSES,
   MICROSOFT_PROVIDERS,
   REPLY_OUTCOMES,
   REPLY_STATES,
   TASK_PRIORITIES,
+  type Capture,
   type CapturePacket,
   type OobRequest,
   type ReplyCommand,
@@ -168,33 +175,81 @@ export const capturePacketSchema: z.ZodType<CapturePacket> = z
     }
   })
 
-export const captureSchema = z
+const storedNormalizedSchema = z
   .object({
-    schema_version: z.literal('1.0'),
-    source_key: sha256,
-    source: sourceSchema,
-    normalized: z
-      .object({
-        summary: z.string().max(2000),
-        context: z.string().max(4000),
-        action_items: z.array(captureActionSchema).max(20),
-        tags: z.array(z.string()),
-      })
-      .strict(),
-    task_hints: z.array(z.string()),
-    provenance: z.discriminatedUnion('capture_mode', [
-      manualProvenanceSchema,
-      verifiedProvenanceSchema,
-    ]),
-    id: z.string(),
-    status: z.enum(CAPTURE_STATUSES),
-    linked_task_ids: z.array(z.string()).default([]),
-    converted_task_ids: z.array(z.string()).default([]),
-    revision: z.number().int().nonnegative().default(0),
-    created_at: z.string(),
-    updated_at: z.string(),
+    summary: z.string().max(2000),
+    context: z.string().max(4000),
+    action_items: z.array(captureActionSchema).max(20),
+    tags: z.array(z.string()),
   })
   .strict()
+
+const captureRecordFields = {
+  source_key: sha256,
+  source: sourceSchema,
+  normalized: storedNormalizedSchema,
+  task_hints: z.array(z.string()),
+  provenance: z.discriminatedUnion('capture_mode', [
+    manualProvenanceSchema,
+    verifiedProvenanceSchema,
+  ]),
+  id: z.string(),
+  status: z.enum(CAPTURE_STATUSES),
+  linked_task_ids: z.array(z.string()).default([]),
+  converted_task_ids: z.array(z.string()).default([]),
+  revision: z.number().int().nonnegative().default(0),
+  created_at: z.string(),
+  updated_at: z.string(),
+}
+
+const knowledgeImportListedSourceSchema = z.object({
+  provider: z.literal(KNOWLEDGE_IMPORT_PROVIDER),
+  resource_type: z.literal(KNOWLEDGE_IMPORT_RESOURCE_TYPE),
+  connection_ref: safeSourceLocator,
+  container_ref: safeSourceLocator,
+  object_ref: safeSourceLocator,
+  version_ref: safeSourceLocator,
+  display_title: z.string().min(1),
+  web_url: z.null(),
+  retrieved_at: z.string().min(1),
+  fingerprint: sha256,
+}).strict()
+
+const knowledgeImportProvenanceSchema = z.object({
+  capture_mode: z.literal('manual'),
+  adapter: z.literal(KNOWLEDGE_IMPORT_ADAPTER),
+  adapter_version: z.string().min(1),
+  redaction_policy_version: z.string().min(1),
+  raw_retained: z.literal(false),
+  created_at: z.string().min(1),
+}).strict()
+
+const captureV10Schema = z.object({
+  schema_version: z.literal('1.0'),
+  ...captureRecordFields,
+}).strict()
+
+const captureV11Schema = z.object({
+  schema_version: z.literal('1.1'),
+  source_key: sha256,
+  source: knowledgeImportListedSourceSchema,
+  normalized: storedNormalizedSchema,
+  task_hints: z.array(z.string()),
+  provenance: knowledgeImportProvenanceSchema,
+  id: z.string(),
+  status: z.enum(CAPTURE_STATUSES),
+  linked_task_ids: z.array(z.string()).default([]),
+  converted_task_ids: z.array(z.string()).default([]),
+  revision: z.number().int().nonnegative().default(0),
+  created_at: z.string(),
+  updated_at: z.string(),
+  retrieval: captureRetrievalProjectionSchema,
+}).strict()
+
+export const captureSchema: z.ZodType<Capture> = z.discriminatedUnion('schema_version', [
+  captureV10Schema,
+  captureV11Schema,
+])
 
 export const oobRequestSchema: z.ZodType<OobRequest> = z
   .object({

@@ -636,6 +636,164 @@ test('search unconfigured, empty, and stale query or vault replies stay actionab
 })
 
 
+test('a short document clipped from the default end line can still be linked', async () => {
+  const user = userEvent.setup()
+  mockAvailableHost({
+    status: { vaults: [vault], local_only: true },
+    'list-references': () => ({ binding: {}, references: [], local_only: true }),
+    'read-reference': (payload) => ({
+      binding: payload.binding,
+      reference: readResult({
+        document_path: String(payload.document_path),
+        excerpt: 'Short note body.',
+        start_line: payload.start_line as number,
+        end_line: Math.min(payload.end_line as number, 8),
+      }),
+    }),
+    'pin-reference': (payload) => ({
+      binding: payload.binding,
+      local_only: true,
+      reference: {
+        reference_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        vault_id: payload.vault_id,
+        document_path: payload.document_path,
+        start_line: payload.start_line,
+        end_line: payload.end_line,
+        source_sha256: payload.expected_sha256,
+        reason: payload.reason,
+      },
+    }),
+  })
+  render(<TaskKnowledgePanel task={task} workspaceUid={workspace.workspace.id} />)
+  await screen.findByLabelText('Document relative path')
+  await user.type(screen.getByLabelText('Document relative path'), 'projects/review.md')
+  await user.click(screen.getByRole('button', { name: 'Preview' }))
+  expect(await screen.findByText('Short note body.')).toBeInTheDocument()
+  await user.type(screen.getByLabelText('Link reason'), 'Keep the short note with this Task.')
+  expect(screen.getByRole('button', { name: 'Link' })).toBeEnabled()
+  await user.type(screen.getByLabelText('End line'), '20')
+  expect(screen.getByRole('button', { name: 'Link' })).toBeDisabled()
+  await user.clear(screen.getByLabelText('End line'))
+  expect(screen.getByRole('button', { name: 'Link' })).toBeEnabled()
+  await user.click(screen.getByRole('button', { name: 'Link' }))
+  await waitFor(() => expect(requestKnowledge).toHaveBeenCalledWith(
+    'pin-reference',
+    expect.objectContaining({
+      document_path: 'projects/review.md',
+      start_line: 1,
+      end_line: 8,
+    }),
+    expect.any(Number),
+    expect.any(AbortSignal),
+  ))
+})
+
+test('a late preview does not land after the Task changes', async () => {
+  const preview = deferred<{ binding: object; reference: ReturnType<typeof readResult> }>()
+  mockAvailableHost({
+    status: { vaults: [vault], local_only: true },
+    'list-references': () => ({ binding: {}, references: [], local_only: true }),
+    'read-reference': () => preview.promise,
+  })
+  function Harness() {
+    const [current, setCurrent] = useState(task)
+    return (
+      <div>
+        <button type="button" onClick={() => setCurrent({ ...task, id: 'T-0009', uid: '99999999-9999-4999-8999-999999999999', title: 'Other task' })}>
+          Switch task
+        </button>
+        <TaskKnowledgePanel task={current} workspaceUid={workspace.workspace.id} />
+      </div>
+    )
+  }
+  const user = userEvent.setup()
+  render(<Harness />)
+  await screen.findByLabelText('Document relative path')
+  await user.type(screen.getByLabelText('Document relative path'), 'projects/review.md')
+  await user.click(screen.getByRole('button', { name: 'Preview' }))
+  await user.click(screen.getByRole('button', { name: 'Switch task' }))
+  preview.resolve({
+    binding: {},
+    reference: readResult({
+      document_path: 'projects/review.md',
+      excerpt: 'LATE AFTER TASK SWITCH',
+      end_line: 8,
+      start_line: 1,
+    }),
+  })
+  await waitFor(() => expect(screen.queryByText('LATE AFTER TASK SWITCH')).not.toBeInTheDocument())
+  expect(screen.getByRole('button', { name: 'Link' })).toBeDisabled()
+})
+
+test('an explicit requested range is sent, and clipping still pins the effective span', async () => {
+  const user = userEvent.setup()
+  const pinPayloads: Array<Record<string, unknown>> = []
+  mockAvailableHost({
+    status: { vaults: [vault], local_only: true },
+    'list-references': () => ({ binding: {}, references: [], local_only: true }),
+    'read-reference': (payload) => ({
+      binding: payload.binding,
+      reference: readResult({
+        document_path: String(payload.document_path),
+        excerpt: `Lines ${payload.start_line}-${Math.min(payload.end_line as number, 8)}`,
+        start_line: payload.start_line as number,
+        end_line: Math.min(payload.end_line as number, 8),
+      }),
+    }),
+    'pin-reference': (payload) => {
+      pinPayloads.push(payload)
+      return {
+        binding: payload.binding,
+        local_only: true,
+        reference: {
+          reference_id: `${String(pinPayloads.length).padStart(8, 'b')}-bbbb-4bbb-8bbb-bbbbbbbbbbbb`,
+          vault_id: payload.vault_id,
+          document_path: payload.document_path,
+          start_line: payload.start_line,
+          end_line: payload.end_line,
+          source_sha256: payload.expected_sha256,
+          reason: payload.reason,
+        },
+      }
+    },
+  })
+  render(<TaskKnowledgePanel task={task} workspaceUid={workspace.workspace.id} />)
+  await screen.findByLabelText('Document relative path')
+  await user.type(screen.getByLabelText('Document relative path'), 'projects/review.md')
+  await user.type(screen.getByLabelText('Start line'), '2')
+  await user.type(screen.getByLabelText('End line'), '12')
+  await user.click(screen.getByRole('button', { name: 'Preview' }))
+  expect(await screen.findByText('Lines 2-8')).toBeInTheDocument()
+  await waitFor(() => expect(requestKnowledge).toHaveBeenCalledWith(
+    'read-reference',
+    expect.objectContaining({ start_line: 2, end_line: 12 }),
+    expect.any(Number),
+    expect.any(AbortSignal),
+  ))
+  await user.type(screen.getByLabelText('Link reason'), 'Keep this explicit span.')
+  await user.click(screen.getByRole('button', { name: 'Link' }))
+  await waitFor(() => expect(pinPayloads).toHaveLength(1))
+  expect(pinPayloads[0]).toEqual(expect.objectContaining({
+    start_line: 2,
+    end_line: 8,
+  }))
+
+  await user.clear(screen.getByLabelText('Start line'))
+  await user.clear(screen.getByLabelText('End line'))
+  await user.type(screen.getByLabelText('Start line'), '2')
+  await user.type(screen.getByLabelText('End line'), '6')
+  await user.type(screen.getByLabelText('Link reason'), 'Keep this explicit span.')
+  expect(screen.getByRole('button', { name: 'Link' })).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: 'Preview' }))
+  expect(await screen.findByText('Lines 2-6')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Link' }))
+  await waitFor(() => expect(pinPayloads).toHaveLength(2))
+  expect(pinPayloads[1]).toEqual(expect.objectContaining({
+    start_line: 2,
+    end_line: 6,
+  }))
+})
+
 test('the subview reads the binding once and returns to the Task on request', async () => {
   const onBack = vi.fn()
   const user = userEvent.setup()
@@ -728,4 +886,117 @@ test('a reason carrying the separators cannot forge another record into the list
   // Unequal lists must sign differently; equal ones must still sign identically, or the
   // selection session would restart on every render.
   expect(referenceListSignature([saved, second])).toBe(referenceListSignature([{ ...saved }, { ...second }]))
+})
+
+function pinnedFrom(payload: Record<string, unknown>, index: number) {
+  return {
+    binding: payload.binding,
+    local_only: true,
+    reference: {
+      reference_id: `${String(index).padStart(8, 'c')}-cccc-4ccc-8ccc-cccccccccccc`,
+      vault_id: payload.vault_id,
+      document_path: payload.document_path,
+      start_line: payload.start_line,
+      end_line: payload.end_line,
+      source_sha256: payload.expected_sha256,
+      reason: payload.reason,
+    },
+  }
+}
+
+function RevisionHarness() {
+  const [current, setCurrent] = useState(task)
+  return (
+    <div>
+      <button type="button" onClick={() => setCurrent((value) => ({ ...value, revision: value.revision + 1 }))}>
+        Bump revision
+      </button>
+      <TaskKnowledgePanel task={current} workspaceUid={workspace.workspace.id} />
+    </div>
+  )
+}
+
+test('a settled preview cannot link after a revision-only Task change', async () => {
+  const user = userEvent.setup()
+  const pinPayloads: Array<Record<string, unknown>> = []
+  const listedRevisions: number[] = []
+  mockAvailableHost({
+    status: { vaults: [vault], local_only: true },
+    'list-references': (payload) => {
+      listedRevisions.push(payload.binding.task_revision)
+      return { binding: {}, references: [], local_only: true }
+    },
+    'read-reference': (payload) => ({
+      binding: payload.binding,
+      reference: readResult({
+        document_path: String(payload.document_path),
+        excerpt: 'Evidence read under revision 2.',
+        start_line: payload.start_line as number,
+        end_line: Math.min(payload.end_line as number, 8),
+      }),
+    }),
+    'pin-reference': (payload) => {
+      pinPayloads.push(payload)
+      return pinnedFrom(payload, pinPayloads.length)
+    },
+  })
+  render(<RevisionHarness />)
+  await screen.findByLabelText('Document relative path')
+  await user.type(screen.getByLabelText('Document relative path'), 'projects/review.md')
+  await user.click(screen.getByRole('button', { name: 'Preview' }))
+  expect(await screen.findByText('Evidence read under revision 2.')).toBeInTheDocument()
+  await user.type(screen.getByLabelText('Link reason'), 'Keep the evidence with this Task.')
+  expect(screen.getByRole('button', { name: 'Link' })).toBeEnabled()
+
+  await user.click(screen.getByRole('button', { name: 'Bump revision' }))
+  await waitFor(() => expect(listedRevisions).toEqual([task.revision, task.revision + 1]))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Link' })).toBeDisabled())
+  expect(screen.queryByText('Evidence read under revision 2.')).not.toBeInTheDocument()
+  expect(pinPayloads).toEqual([])
+
+  await user.click(screen.getByRole('button', { name: 'Preview' }))
+  expect(await screen.findByText('Evidence read under revision 2.')).toBeInTheDocument()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Link' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: 'Link' }))
+  await waitFor(() => expect(pinPayloads).toHaveLength(1))
+  expect(pinPayloads[0]).toMatchObject({
+    binding: expect.objectContaining({ task_revision: task.revision + 1 }),
+    document_path: 'projects/review.md',
+    start_line: 1,
+    end_line: 8,
+    expected_sha256: sha,
+  })
+})
+
+test('a preview in flight across a revision-only Task change never lands', async () => {
+  const preview = deferred<{ binding: object; reference: ReturnType<typeof readResult> }>()
+  const pinPayloads: Array<Record<string, unknown>> = []
+  mockAvailableHost({
+    status: { vaults: [vault], local_only: true },
+    'list-references': () => ({ binding: {}, references: [], local_only: true }),
+    'read-reference': () => preview.promise,
+    'pin-reference': (payload) => {
+      pinPayloads.push(payload)
+      return pinnedFrom(payload, pinPayloads.length)
+    },
+  })
+  const user = userEvent.setup()
+  render(<RevisionHarness />)
+  await screen.findByLabelText('Document relative path')
+  await user.type(screen.getByLabelText('Document relative path'), 'projects/review.md')
+  await user.type(screen.getByLabelText('Link reason'), 'Keep the evidence with this Task.')
+  await user.click(screen.getByRole('button', { name: 'Preview' }))
+  await user.click(screen.getByRole('button', { name: 'Bump revision' }))
+  preview.resolve({
+    binding: {},
+    reference: readResult({
+      document_path: 'projects/review.md',
+      excerpt: 'LATE AFTER REVISION BUMP',
+      end_line: 8,
+      start_line: 1,
+    }),
+  })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Link' })).toBeDisabled())
+  expect(screen.queryByText('LATE AFTER REVISION BUMP')).not.toBeInTheDocument()
+  expect(pinPayloads).toEqual([])
 })

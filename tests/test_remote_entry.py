@@ -24,8 +24,39 @@ import remote_owner as OWNER  # noqa: E402
 
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 RUNTIME_SESSION_TOKEN = "r5pending-token-not-enforced-01"
+VALID_DRIVERS_CONFIG = "/u/agent/drivers.json"
 FIXTURE_HOST_IDENTITY = "b" * 64
 FIXTURE_BOOT_IDENTITY = "c" * 64
+
+
+def _serve_cli_argv(*extra: str) -> list[str]:
+    argv = [
+        "serve",
+        "--app-dir",
+        "/srv/workstack/app",
+        "--data-dir",
+        "/srv/workstack/ssot",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8765",
+        "--public-port",
+        "18765",
+        "--session-token",
+        RUNTIME_SESSION_TOKEN,
+        "--exit-with-parent",
+    ]
+    argv.extend(extra)
+    return argv
+
+
+def _prepared_serve(root: Path, *extra: str):
+    app, data = _write_probe_fixture(root)
+    (app / "run_work_stack.py").write_text("print(1)\n", encoding="utf-8")
+    parsed = ENTRY.parse_remote_entry_argv(_serve_cli_argv(*extra))
+    parsed.app_dir = str(app)
+    parsed.data_dir = str(data)
+    return parsed, app, data
 
 
 class FencedFixtureController:
@@ -221,6 +252,7 @@ class RemoteEntryTest(unittest.TestCase):
         self.assertEqual(parsed.command, "serve")
         self.assertTrue(parsed.exit_with_parent)
         self.assertEqual(parsed.session_token, RUNTIME_SESSION_TOKEN)
+        self.assertIsNone(parsed.knowledge_drivers_config)
         with tempfile.TemporaryDirectory() as directory:
             parsed.app_dir = directory
             with self.assertRaises(ENTRY.EntryError) as caught:
@@ -523,6 +555,206 @@ class RemoteEntryTest(unittest.TestCase):
             self.assertIn("could not exec the remote server", message)
             self.assertIn("replaced before cleanup", message)
             self.assertEqual((data / OWNER.OWNER_FILENAME).read_bytes(), replacement["bytes"])
+
+    def test_parse_serve_accepts_optional_knowledge_drivers_config(self) -> None:
+        parsed = ENTRY.parse_remote_entry_argv(
+            _serve_cli_argv("--knowledge-drivers-config", VALID_DRIVERS_CONFIG)
+        )
+        self.assertEqual(parsed.knowledge_drivers_config, VALID_DRIVERS_CONFIG)
+        self.assertEqual(parsed.session_token, RUNTIME_SESSION_TOKEN)
+        self.assertTrue(parsed.exit_with_parent)
+
+    def test_invalid_knowledge_drivers_config_fails_before_receipt_or_exec(self) -> None:
+        cases = (
+            ("relative", "u/agent/drivers.json"),
+            ("root", "/"),
+            ("dotdot", "/u/../agent/drivers.json"),
+            ("dot-segment", "/u/agent/./drivers.json"),
+            ("control", "/u/agent/drivers.json\n"),
+            ("unsafe", "/u/agent/drivers.json;rm"),
+        )
+        OWNER.set_process_controller(FencedFixtureController())
+        for label, path in cases:
+            with self.subTest(path=label):
+                with tempfile.TemporaryDirectory() as directory:
+                    parsed, _app, data = _prepared_serve(
+                        Path(directory), "--knowledge-drivers-config", path
+                    )
+                    with mock.patch.object(ENTRY, "acquire_owner_receipt") as acquire:
+                        with mock.patch.object(ENTRY.os, "execv") as execv:
+                            with mock.patch.object(ENTRY, "build_probe_payload") as probe:
+                                with self.assertRaises(ENTRY.EntryError) as caught:
+                                    ENTRY.run_serve(parsed)
+                    message = str(caught.exception)
+                    self.assertIn("REMOTE_PROTOCOL_INVALID", message)
+                    self.assertNotIn(RUNTIME_SESSION_TOKEN, message)
+                    if "\n" not in path:
+                        self.assertNotIn(path, message)
+                    probe.assert_not_called()
+                    acquire.assert_not_called()
+                    execv.assert_not_called()
+                    self.assertFalse((data / OWNER.OWNER_FILENAME).exists())
+
+    def test_invalid_config_main_is_closed_without_echoing_path_or_token(self) -> None:
+        stderr = StringIO()
+        with mock.patch.object(ENTRY.sys, "stderr", stderr):
+            code = ENTRY.main(
+                _serve_cli_argv("--knowledge-drivers-config", "/u/../secret.json")
+            )
+        text = stderr.getvalue()
+        self.assertEqual(code, 2)
+        self.assertIn("REMOTE_PROTOCOL_INVALID", text)
+        self.assertNotIn("/u/../secret.json", text)
+        self.assertNotIn("secret.json", text)
+        self.assertNotIn(RUNTIME_SESSION_TOKEN, text)
+        self.assertNotIn("Traceback", text)
+
+    def test_valid_knowledge_drivers_config_is_appended_to_execv_without_token(
+        self,
+    ) -> None:
+        parsed = ENTRY.parse_remote_entry_argv(
+            _serve_cli_argv("--knowledge-drivers-config", VALID_DRIVERS_CONFIG)
+        )
+        OWNER.set_process_controller(FencedFixtureController())
+        with tempfile.TemporaryDirectory() as directory:
+            app, data = _write_probe_fixture(Path(directory))
+            (app / "run_work_stack.py").write_text("print(1)\n", encoding="utf-8")
+            parsed.app_dir = str(app)
+            parsed.data_dir = str(data)
+            with mock.patch.object(ENTRY.os, "execv") as execv:
+                ENTRY.run_serve(parsed)
+            forwarded = execv.call_args.args[1]
+            owner = (data / ENTRY.OWNER_FILENAME).read_text(encoding="utf-8")
+        self.assertEqual(
+            forwarded[-3:],
+            ["--exit-with-parent", "--knowledge-drivers-config", VALID_DRIVERS_CONFIG],
+        )
+        self.assertIn("--public-port", forwarded)
+        self.assertNotIn("--session-token", forwarded)
+        self.assertNotIn(RUNTIME_SESSION_TOKEN, forwarded)
+        self.assertNotIn(RUNTIME_SESSION_TOKEN, owner)
+        self.assertEqual(forwarded.count("--knowledge-drivers-config"), 1)
+
+    def test_omitted_config_execv_has_no_knowledge_drivers_flag(self) -> None:
+        OWNER.set_process_controller(FencedFixtureController())
+        with tempfile.TemporaryDirectory() as directory:
+            parsed, _app, _data = _prepared_serve(Path(directory))
+            with mock.patch.object(ENTRY.os, "execv") as execv:
+                ENTRY.run_serve(parsed)
+            forwarded = execv.call_args.args[1]
+        self.assertNotIn("--knowledge-drivers-config", forwarded)
+        self.assertNotIn(VALID_DRIVERS_CONFIG, forwarded)
+        self.assertNotIn("--session-token", forwarded)
+        self.assertEqual(forwarded[-1], "--exit-with-parent")
+
+    def test_failed_exec_with_config_removes_only_the_exact_published_receipt(self) -> None:
+        parsed = ENTRY.parse_remote_entry_argv(
+            _serve_cli_argv("--knowledge-drivers-config", VALID_DRIVERS_CONFIG)
+        )
+        OWNER.set_process_controller(FencedFixtureController())
+        with tempfile.TemporaryDirectory() as directory:
+            app, data = _write_probe_fixture(Path(directory))
+            (app / "run_work_stack.py").write_text("print(1)\n", encoding="utf-8")
+            parsed.app_dir = str(app)
+            parsed.data_dir = str(data)
+            with mock.patch.object(
+                ENTRY.os, "execv", side_effect=OSError("deterministic exec failure")
+            ):
+                with self.assertRaises(ENTRY.EntryError) as caught:
+                    ENTRY.run_serve(parsed)
+            message = str(caught.exception)
+            self.assertIn("REMOTE_PROTOCOL_INVALID", message)
+            self.assertIn("could not exec the remote server", message)
+            self.assertNotIn("cleanup is uncertain", message)
+            self.assertNotIn(VALID_DRIVERS_CONFIG, message)
+            self.assertNotIn(RUNTIME_SESSION_TOKEN, message)
+            self.assertFalse((data / OWNER.OWNER_FILENAME).exists())
+
+    def test_failed_exec_with_config_does_not_remove_a_replaced_receipt(self) -> None:
+        parsed = ENTRY.parse_remote_entry_argv(
+            _serve_cli_argv("--knowledge-drivers-config", VALID_DRIVERS_CONFIG)
+        )
+        OWNER.set_process_controller(FencedFixtureController())
+        with tempfile.TemporaryDirectory() as directory:
+            app, data = _write_probe_fixture(Path(directory))
+            (app / "run_work_stack.py").write_text("print(1)\n", encoding="utf-8")
+            parsed.app_dir = str(app)
+            parsed.data_dir = str(data)
+            replacement = {"bytes": b""}
+
+            def fail_after_replace(*_args: object) -> None:
+                path = data / OWNER.OWNER_FILENAME
+                payload = json.loads(path.read_bytes().decode("utf-8"))
+                payload["pid"] = 5151
+                payload["start_identity"] = "start-9"
+                replacement["bytes"] = (
+                    json.dumps(payload, separators=(",", ":")) + "\n"
+                ).encode("utf-8")
+                path.write_bytes(replacement["bytes"])
+                raise OSError("deterministic exec failure")
+
+            with mock.patch.object(ENTRY.os, "execv", fail_after_replace):
+                with self.assertRaises(ENTRY.EntryError) as caught:
+                    ENTRY.run_serve(parsed)
+            message = str(caught.exception)
+            self.assertIn("replaced before cleanup", message)
+            self.assertNotIn(VALID_DRIVERS_CONFIG, message)
+            self.assertEqual((data / OWNER.OWNER_FILENAME).read_bytes(), replacement["bytes"])
+
+    def test_isolated_invalid_config_does_not_exec_lookalike_or_write_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root / "outside"
+            fixture = root / "fixture"
+            outside.mkdir()
+            markers = _write_adversarial_import_tree(outside)
+            app, data = _write_probe_fixture(fixture)
+            (app / "run_work_stack.py").write_text("print(1)\n", encoding="utf-8")
+            result = _run_isolated_entry(
+                outside,
+                [
+                    "serve",
+                    "--app-dir",
+                    str(app),
+                    "--data-dir",
+                    str(data),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8765",
+                    "--public-port",
+                    "18765",
+                    "--session-token",
+                    RUNTIME_SESSION_TOKEN,
+                    "--exit-with-parent",
+                    "--knowledge-drivers-config",
+                    "../drivers.json",
+                ],
+                pythonpath=outside,
+            )
+            stderr = result.stderr.decode("utf-8", "replace")
+            self.assertEqual(result.returncode, 2, stderr)
+            self.assertIn("REMOTE_PROTOCOL_INVALID", stderr)
+            self.assertNotIn("../drivers.json", stderr)
+            self.assertNotIn(RUNTIME_SESSION_TOKEN, stderr)
+            self.assertNotIn("Traceback", stderr)
+            self.assertFalse((data / OWNER.OWNER_FILENAME).exists())
+            for marker in markers.values():
+                self.assertFalse(marker.exists(), marker)
+
+    def test_remote_entry_source_does_not_import_core_loader(self) -> None:
+        import ast
+
+        tree = ast.parse((SHELL / "remote_entry.py").read_text(encoding="utf-8"))
+        imported: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.extend(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.append(node.module.split(".", 1)[0])
+        self.assertNotIn("workstack", imported)
+        self.assertNotIn("knowledge_driver_registry", imported)
+        self.assertNotIn("knowledge_driver_launcher", imported)
 
 
 if __name__ == "__main__":

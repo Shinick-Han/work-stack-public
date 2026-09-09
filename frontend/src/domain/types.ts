@@ -240,7 +240,62 @@ export interface CapturePacket {
   provenance: CaptureProvenance
 }
 
-export interface Capture extends CapturePacket {
+export const RETRIEVAL_SOURCE_TYPES = ['notion.page', 'nas.file', 'knowledge.answer'] as const
+export const RETRIEVAL_ANSWER_SCOPES = ['single_source', 'synthesized'] as const
+export const RETRIEVAL_CONFIDENCE_LEVELS = ['low', 'medium', 'high'] as const
+export const RETRIEVAL_VERSION_STATES = [
+  'unreported',
+  'reported_unverified',
+  'verified_current',
+  'verified_stale',
+] as const
+export const RETRIEVAL_ORIGIN_STATES = ['synthesized', 'reported_unverified', 'verified'] as const
+
+export type RetrievalSourceType = (typeof RETRIEVAL_SOURCE_TYPES)[number]
+export type RetrievalAnswerScope = (typeof RETRIEVAL_ANSWER_SCOPES)[number]
+export type RetrievalConfidenceLevel = (typeof RETRIEVAL_CONFIDENCE_LEVELS)[number]
+export type RetrievalVersionState = (typeof RETRIEVAL_VERSION_STATES)[number]
+export type RetrievalOriginState = (typeof RETRIEVAL_ORIGIN_STATES)[number]
+
+/** Trusted origin pair. Present only when the host attested it; never copied from the wire. */
+export interface CaptureRetrievalOrigin {
+  document_ref: string
+  source_type: RetrievalSourceType
+}
+
+/**
+ * Derived retrieval projection returned on Capture 1.1 list/detail reads.
+ * Distinct from stored wire and from the import envelope: evidence uses
+ * `reported_source_type`, and origin / version_state / capture_source_type
+ * are re-derived by the host.
+ */
+export interface CaptureRetrievalEvidence {
+  reported_source_type: RetrievalSourceType
+  title: string
+  document_ref: string
+  chunk_ref: string | null
+  reported_source_version: string | null
+  version_state: RetrievalVersionState
+  indexed_digest: string | null
+  web_url: null
+}
+
+export interface CaptureRetrievalProjection {
+  schema: 'workstack.capture-retrieval.v1.1'
+  capture_schema_version: '1.1'
+  request_id: string
+  query_id: string
+  answer_scope: RetrievalAnswerScope
+  confidence: { level: RetrievalConfidenceLevel; score: number }
+  evidence: CaptureRetrievalEvidence[]
+  truncated: boolean
+  reported_origin: CaptureRetrievalOrigin | null
+  origin: CaptureRetrievalOrigin | null
+  origin_state: RetrievalOriginState
+  capture_source_type: RetrievalSourceType
+}
+
+interface CaptureRecordFields {
   id: string
   status: CaptureStatus
   linked_task_ids: string[]
@@ -249,6 +304,28 @@ export interface Capture extends CapturePacket {
   created_at: string
   updated_at: string
 }
+
+/** Stored Capture Packet v1.0 read. Generic ingest stays 1.0-only. */
+export interface CaptureV10 extends CapturePacket, CaptureRecordFields {
+  schema_version: '1.0'
+  retrieval?: undefined
+}
+
+/**
+ * Stored Capture 1.1 read. Written only by knowledge import: manual provider,
+ * knowledge.answer, null URL, and workstack.knowledge-import provenance.
+ */
+export interface CaptureV11 extends CaptureRecordFields {
+  schema_version: '1.1'
+  source_key: string
+  source: CaptureSource
+  normalized: CaptureNormalized
+  task_hints: string[]
+  provenance: CaptureProvenance
+  retrieval: CaptureRetrievalProjection
+}
+
+export type Capture = CaptureV10 | CaptureV11
 
 export interface OobRequest {
   request_id: string

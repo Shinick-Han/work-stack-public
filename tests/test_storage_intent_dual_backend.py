@@ -16,11 +16,16 @@ from workstack.mutation_receipts import unkeyed_status_key
 from workstack.service import WorkSessionConflictError, WorkStack
 from workstack.store import Store
 from workstack.store_document_validation import REPORTS_DEFAULT
+from workstack.knowledge_ledger_document import (
+    KNOWLEDGE_DEFAULT,
+    KNOWLEDGE_DOCUMENT_NAME,
+)
 from workstack.store_rosters import (
     REPORTS_DOCUMENT_NAME,
     V3_DOCUMENT_NAMES,
     V3_DOCUMENT_ORDER,
     V5_DOCUMENT_NAMES,
+    V6_DOCUMENT_NAMES,
 )
 from workstack.storage.canonical import canonical_json_bytes
 from workstack.storage.intent_contract import IntentContractError
@@ -185,11 +190,19 @@ class StorageIntentDualBackendTest(unittest.TestCase):
         this dual-backend scenario neither backend writes a report, so the
         legacy store still holds the empty current default. A report appearing
         here would fail this assertion instead of slipping past a roster that
-        no longer mentions it.
+        no longer mentions it. Schema 6 then added exactly knowledge.json, and
+        the same rule applies to it: neither backend issues a knowledge
+        request, so the empty owner ledger is what the legacy store must hold.
         """
         self.assertEqual(V5_DOCUMENT_NAMES - V3_DOCUMENT_NAMES, {REPORTS_DOCUMENT_NAME})
         self.assertEqual(
+            V6_DOCUMENT_NAMES - V5_DOCUMENT_NAMES, {KNOWLEDGE_DOCUMENT_NAME}
+        )
+        self.assertEqual(
             REPORTS_DEFAULT, self.v3.store.load(REPORTS_DOCUMENT_NAME)
+        )
+        self.assertEqual(
+            KNOWLEDGE_DEFAULT, self.v3.store.load(KNOWLEDGE_DOCUMENT_NAME)
         )
 
     def _assert_shared_projection_parity(self, snapshot: dict) -> None:
@@ -242,15 +255,16 @@ class StorageIntentDualBackendTest(unittest.TestCase):
         records both versions have to be identical, is stricter than leaving
         the document unobserved: a drifted identity or planning-status record
         still fails here, and a released default that silently stopped being
-        schema 5 fails too.
+        the current collection schema fails too.
         """
         legacy = self.v3.store.load("store-meta.json")
         self.assertEqual(legacy["version"], projected["version"])
         self.assertEqual(3, projected["store_schema_version"])
         self.assertEqual({"identity", "planning_status"}, set(projected["migrations"]))
-        self.assertEqual(5, legacy["store_schema_version"])
+        self.assertEqual(6, legacy["store_schema_version"])
         self.assertEqual(
-            {"identity", "planning_status", "reports"}, set(legacy["migrations"])
+            {"identity", "planning_status", "reports", "knowledge"},
+            set(legacy["migrations"]),
         )
         for name in sorted(projected["migrations"]):
             self.assertEqual(

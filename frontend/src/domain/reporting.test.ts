@@ -2,6 +2,8 @@ import { describe, expect, test } from 'vitest'
 import {
   dailyReportPreviewPayloadSchema,
   dailyReportPreviewResponseSchema,
+  MAX_DAILY_PREVIEW_CONTEXT_ITEMS,
+  MAX_DAILY_PREVIEW_CONTEXT_TITLE_CHARS,
   MAX_DAILY_PREVIEW_DAY_ENTRIES,
   MAX_DAILY_PREVIEW_MARKDOWN_CHARS,
 } from './reporting'
@@ -197,5 +199,159 @@ describe('daily report preview wire schema', () => {
         },
       },
     }))).toThrow()
+  })
+})
+
+const GENERATED_AT = '2026-09-06T01:02:03Z'
+
+function catalogPayload(
+  catalog: Record<string, unknown> | undefined,
+  taskIds: string[] = ['T-0001', 'T-0002'],
+) {
+  const base = payload().preview as Record<string, unknown>
+  const provenance = base.provenance as Record<string, unknown>
+  const body: Record<string, unknown> = {
+    ...payload(),
+    preview: {
+      ...base,
+      generated_at: GENERATED_AT,
+      absence: null,
+      provenance: { ...provenance, task_ids: taskIds },
+    },
+  }
+  if (catalog) body.context_catalog = catalog
+  return body
+}
+
+function catalogItem(overrides: Record<string, unknown> = {}) {
+  return {
+    capture_id: 'C-0001',
+    capture_revision: 1,
+    title: 'Synthetic context',
+    linked_task_ids: ['T-0001'],
+    status: 'linked',
+    ...overrides,
+  }
+}
+
+function readyCatalog(overrides: Record<string, unknown> = {}) {
+  return {
+    captured_at: GENERATED_AT,
+    items: [catalogItem()],
+    omitted_count: 0,
+    ...overrides,
+  }
+}
+
+describe('optional daily preview context catalogue', () => {
+  test('a pre-R44 response without the catalogue still decodes and carries no catalogue', () => {
+    const body = catalogPayload(undefined)
+    const parsed = dailyReportPreviewPayloadSchema.parse(body)
+    expect(parsed.context_catalog).toBeUndefined()
+    expect('context_catalog' in parsed).toBe(false)
+    expect(dailyReportPreviewResponseSchema({ date: DATE, workspace_uid: UID }).parse(body)).toEqual(body)
+  })
+
+  test('accepts the frozen wire shape, an empty day, and a truncated catalogue', () => {
+    expect(dailyReportPreviewPayloadSchema.parse(catalogPayload(readyCatalog())).context_catalog)
+      .toEqual(readyCatalog())
+    expect(dailyReportPreviewPayloadSchema.parse(
+      catalogPayload(readyCatalog({ items: [] })),
+    ).context_catalog?.items).toEqual([])
+    const full = Array.from({ length: MAX_DAILY_PREVIEW_CONTEXT_ITEMS }, (_unused, index) => catalogItem({
+      capture_id: `C-${String(index + 1).padStart(4, '0')}`,
+    }))
+    const truncated = dailyReportPreviewPayloadSchema.parse(
+      catalogPayload(readyCatalog({ items: full, omitted_count: 7 })),
+    ).context_catalog
+    expect(truncated?.items).toHaveLength(MAX_DAILY_PREVIEW_CONTEXT_ITEMS)
+    expect(truncated?.omitted_count).toBe(7)
+  })
+
+  test('accepts a dismissed capture that still holds an explicit link', () => {
+    const parsed = dailyReportPreviewPayloadSchema.parse(catalogPayload(readyCatalog({
+      items: [catalogItem({ status: 'dismissed' })],
+    })))
+    expect(parsed.context_catalog?.items[0].status).toBe('dismissed')
+  })
+
+  test('refuses unknown fields rather than laundering them away', () => {
+    expect(() => dailyReportPreviewPayloadSchema.parse(
+      catalogPayload(readyCatalog({ source_url: 'https://example.invalid/doc' })),
+    )).toThrow()
+    expect(() => dailyReportPreviewPayloadSchema.parse(catalogPayload(readyCatalog({
+      items: [catalogItem({ excerpt: 'raw body text' })],
+    })))).toThrow()
+  })
+
+  test('refuses invented ids, empty or oversized titles, and unknown statuses', () => {
+    for (const broken of [
+      { capture_id: 'CAP-1' },
+      { capture_id: 'C-1' },
+      { capture_revision: -1 },
+      { title: '' },
+      { title: 't'.repeat(MAX_DAILY_PREVIEW_CONTEXT_TITLE_CHARS + 1) },
+      { status: 'verified' },
+      { linked_task_ids: [] },
+      { linked_task_ids: ['task-1'] },
+    ]) {
+      expect(() => dailyReportPreviewPayloadSchema.parse(catalogPayload(readyCatalog({
+        items: [catalogItem(broken)],
+      })))).toThrow()
+    }
+  })
+
+  test('refuses a catalogue captured at a different moment than the preview', () => {
+    expect(() => dailyReportPreviewPayloadSchema.parse(
+      catalogPayload(readyCatalog({ captured_at: '2026-09-06T01:02:04Z' })),
+    )).toThrow()
+  })
+
+  test('refuses task ids the preview provenance never claimed', () => {
+    expect(() => dailyReportPreviewPayloadSchema.parse(catalogPayload(readyCatalog({
+      items: [catalogItem({ linked_task_ids: ['T-0009'] })],
+    })))).toThrow()
+    expect(() => dailyReportPreviewPayloadSchema.parse(
+      catalogPayload(readyCatalog(), []),
+    )).toThrow()
+  })
+
+  test('refuses unordered, duplicated, or over-bounded rows', () => {
+    const out_of_order = [catalogItem({ capture_id: 'C-0002' }), catalogItem({ capture_id: 'C-0001' })]
+    const duplicated = [catalogItem(), catalogItem()]
+    const tooMany = Array.from({ length: MAX_DAILY_PREVIEW_CONTEXT_ITEMS + 1 }, (_unused, index) => catalogItem({
+      capture_id: `C-${String(index + 1).padStart(4, '0')}`,
+    }))
+    for (const items of [out_of_order, duplicated, tooMany]) {
+      expect(() => dailyReportPreviewPayloadSchema.parse(catalogPayload(readyCatalog({ items })))).toThrow()
+    }
+    expect(() => dailyReportPreviewPayloadSchema.parse(catalogPayload(readyCatalog({
+      items: [catalogItem({ linked_task_ids: ['T-0002', 'T-0001'] })],
+    })))).toThrow()
+    expect(() => dailyReportPreviewPayloadSchema.parse(catalogPayload(readyCatalog({
+      items: [catalogItem({ linked_task_ids: ['T-0001', 'T-0001'] })],
+    })))).toThrow()
+  })
+
+  test('natural capture order is numeric, not lexicographic', () => {
+    const natural = [catalogItem({ capture_id: 'C-0009' }), catalogItem({ capture_id: 'C-00010' })]
+    expect(dailyReportPreviewPayloadSchema.parse(
+      catalogPayload(readyCatalog({ items: natural })),
+    ).context_catalog?.items.map((item) => item.capture_id)).toEqual(['C-0009', 'C-00010'])
+    expect(() => dailyReportPreviewPayloadSchema.parse(catalogPayload(readyCatalog({
+      items: [...natural].reverse(),
+    })))).toThrow()
+  })
+
+  test('refuses an omitted_count that no bounded truncation could produce', () => {
+    expect(() => dailyReportPreviewPayloadSchema.parse(
+      catalogPayload(readyCatalog({ omitted_count: 3 })),
+    )).toThrow()
+    expect(() => dailyReportPreviewPayloadSchema.parse(
+      catalogPayload(readyCatalog({ items: [], omitted_count: 1 })),
+    )).toThrow()
+    expect(() => dailyReportPreviewPayloadSchema.parse(
+      catalogPayload(readyCatalog({ omitted_count: 1.5 })),
+    )).toThrow()
   })
 })

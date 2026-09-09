@@ -1,0 +1,39 @@
+/* Scoped to the connected-search panel on an issued receipt. Tokens match the
+   request receipt; this file does not restyle dialog chrome. */
+
+.knowledge-execution {
+  border: 1px solid var(--ws-border-default);
+  border-radius: 10px;
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+  min-width: 0;
+  padding: 11px 12px;
+  background: var(--ws-surface-soft);
+}
+
+.knowledge-execution__lede,
+.knowledge-execution__footnote,
+.knowledge-execution__pending {
+  color: var(--ws-text-muted);
+  font-size: var(--ws-type-reading-meta, 12px);
+  line-height: 1.55;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-execution__pending {
+  color: var(--ws-text-secondary);
+}
+
+.knowledge-execution__actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.knowledge-execution__actions .button { min-height: var(--ws-control-min-height, 34px); }
+
+.knowledge-execution .inline-error { margin: 0; }

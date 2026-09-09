@@ -337,19 +337,21 @@ def _write_v4_conversion(root: Path, conversion: Any) -> None:
 def _step_back_to_v3(bodies: dict[str, bytes]) -> dict[str, bytes]:
     """Return the historical v3 authority the nine held payloads already are.
 
-    Schema 5 widened the *roster* -- it added reports.json -- and left the nine
-    v3 payload shapes untouched, so the only document that still says something
-    a v3 store never said is the metadata record: it carries schema 5 and a
-    reports evidence entry that historical v3 has no field for. Stepping those
-    two facts back is the whole difference, and the result is judged genuine v3
-    by the released validators rather than merely labelled as such. Nothing
-    here loosens a product reader: the frozen v3 source roster still decides
-    which documents exist at all.
+    Schema 5 widened the *roster* -- it added reports.json -- and schema 6
+    widened it again with knowledge.json, and both left the nine v3 payload
+    shapes untouched. So the only document that still says something a v3 store
+    never said is the metadata record: it carries the current schema and the
+    evidence entries historical v3 has no field for. Stepping those facts back
+    is the whole difference, and the result is judged genuine v3 by the
+    released validators rather than merely labelled as such. Nothing here
+    loosens a product reader: the frozen v3 source roster still decides which
+    documents exist at all.
     """
 
     metadata = json.loads(bodies["store-meta.json"].decode("utf-8"))
     metadata["store_schema_version"] = 3
-    del metadata["migrations"]["reports"]
+    for name in ("reports", "knowledge"):
+        metadata["migrations"].pop(name, None)
     return {**bodies, "store-meta.json": _serialized_json_bytes(metadata)}
 
 

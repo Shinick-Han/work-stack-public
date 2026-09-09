@@ -367,3 +367,43 @@ test('keeps Microsoft navigation inside Source Inbox when the desktop host is av
   rendered.unmount()
   expect(postMessage).toHaveBeenLastCalledWith('workstack-source-host|hide')
 })
+
+test('offers the knowledge request from the Inbox heading whatever the Microsoft gates say', async () => {
+  // Nothing but `fetch` is stubbed: clicking the action reads the real owner route.
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url === '/api/v1/knowledge/connections') {
+      return new Response(JSON.stringify({ data: { connections: [], policy_revision: 0 } }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 200,
+      })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }))
+  render(
+    <InboxPage
+      captures={[capture]}
+      onCreateSourceTask={vi.fn()}
+      onConvert={vi.fn()}
+      onDismiss={vi.fn()}
+      onCopyMicrosoftRequest={vi.fn()}
+      onImportAgentResult={vi.fn()}
+      onImport={vi.fn()}
+      onLink={vi.fn()}
+      onSearchChange={vi.fn()}
+      onSelectCapture={vi.fn()}
+      search=""
+      selectedCaptureId={null}
+      workspace={workspace}
+    />,
+  )
+
+  // The Microsoft-gated actions are absent here; the knowledge action is not gated by them.
+  expect(screen.queryByRole('button', { name: 'Copy Microsoft 365 request' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Import packet' })).toBeInTheDocument()
+
+  await userEvent.click(screen.getByRole('button', { name: 'Search knowledge' }))
+  expect(await screen.findByText('No knowledge connection yet')).toBeInTheDocument()
+  // Workspace-only scope: the launcher reads the policy and nothing else.
+  expect(screen.queryByText('Task')).not.toBeInTheDocument()
+})

@@ -6,7 +6,8 @@ param(
     [Parameter(Mandatory = $true)][string]$StateRoot,
     [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$ParentProcessId,
     [Parameter(Mandatory = $true)][ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')][string]$TargetVersion,
-    [switch]$NoShortcut
+    [switch]$NoShortcut,
+    [ValidatePattern('^[0-9a-f]{32}$')][string]$LaunchId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -210,6 +211,16 @@ try {
     }
 
     Write-UpdateLog "Waiting for Work Stack process $ParentProcessId before applying $TargetVersion."
+    if ($LaunchId) {
+        $launchReady = Join-Path $updatesPath ".launch-$LaunchId.json"
+        $launchTemporary = "$launchReady.tmp-$PID"
+        $readyValue = @{
+            status = 'waiting-for-parent'; launch_id = $LaunchId
+            version = $TargetVersion; pid = $PID; parent_pid = $ParentProcessId
+        } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText($launchTemporary, $readyValue, [Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $launchTemporary -Destination $launchReady
+    }
     if (Get-Process -Id $ParentProcessId -ErrorAction SilentlyContinue) {
         Wait-Process -Id $ParentProcessId -Timeout 90
     }

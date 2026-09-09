@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 
-import { KnowledgeHostError } from './knowledgeErrors'
+import { KnowledgeHostError, knowledgeErrorMessage } from './knowledgeErrors'
 import {
   MAX_KNOWLEDGE_REQUEST_BYTES,
   MAX_KNOWLEDGE_RESPONSE_BYTES,
@@ -373,4 +373,36 @@ test('search-references rejects extra response keys and a late mismatched bindin
     },
   })
   await expect(pending).rejects.toMatchObject({ code: 'binding_mismatch' })
+})
+
+test('an inherited-name error code survives the wire schema and still renders a string message', async () => {
+  // The closed code shape is lowercase, so `constructor` and `__proto__` are admitted codes.
+  for (const code of ['constructor', '__proto__']) {
+    expect(knowledgeHostResponseSchema.safeParse({
+      type: 'workstack-knowledge-response', schema_version: 1, request_id: requestId,
+      operation: 'search-references', ok: false,
+      error: { code, message: 'The vault index is rebuilding.' },
+    }).success).toBe(true)
+  }
+  vi.spyOn(window.crypto, 'randomUUID').mockReturnValue(requestId)
+  const host = installHost()
+  const pending = requestKnowledge('search-references', {
+    binding,
+    vault_id: vault.vault_id,
+    query: 'quality gate',
+  }, 90_000)
+  host.receive(JSON.stringify({
+    type: 'workstack-knowledge-response',
+    schema_version: 1,
+    request_id: requestId,
+    operation: 'search-references',
+    ok: false,
+    error: { code: '__proto__', message: 'The vault index is rebuilding.' },
+  }))
+  const caught = await pending.then(() => null, (error: unknown) => error)
+  expect(caught).toBeInstanceOf(KnowledgeHostError)
+  expect(caught).toMatchObject({ code: '__proto__' })
+  const shown = knowledgeErrorMessage(caught)
+  expect(typeof shown).toBe('string')
+  expect(shown).toBe('The vault index is rebuilding.')
 })

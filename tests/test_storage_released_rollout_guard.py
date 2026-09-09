@@ -18,7 +18,7 @@ from workstack.storage.experimental_application import (
 )
 from workstack.service import WorkStack
 from workstack.store import DEFAULTS, Store
-from workstack.store_rosters import V3_DOCUMENT_NAMES, V5_DOCUMENT_NAMES
+from workstack.store_rosters import V3_DOCUMENT_NAMES, V6_DOCUMENT_NAMES
 from workstack.storage.domain_v4_composition import (
     V4DomainCompositionError,
     compose_experimental_v4_domain,
@@ -40,7 +40,7 @@ import v4_activation_binding as V4_ACTIVATION
 
 # The released default this build ships, written out rather than read from the
 # store, so a change to the default has to be made here on purpose.
-RELEASED_DEFAULT_SCHEMA_VERSION = 5
+RELEASED_DEFAULT_SCHEMA_VERSION = 6
 
 # The historical authority the explicit storage commands are aimed at. It is
 # the checked-in schema-3 fixture, not a store this build wrote: a current
@@ -108,17 +108,18 @@ class ReleasedStartupGuardTests(unittest.TestCase):
         self.assertFalse((data / "store.json").exists())
 
     def test_new_released_workspace_is_the_exact_current_collection_schema(self) -> None:
-        """A new released workspace is schema 5 collection storage, and only that.
+        """A new released workspace is the current collection storage, and only that.
 
-        The version is asserted as the literal 5 rather than read back from the
+        The version is asserted as a literal rather than read back from the
         store, so a default that moves has to move this guard with it. The
-        admission mode stays the released collection route: schema 5 widened
-        the roster within that family and did not make v4 released.
+        admission mode stays the released collection route: schema 5 and then
+        schema 6 each widened the roster within that family and neither made
+        v4 released.
         """
 
         data = self.root / "new"
         WorkStack(Store(data))
-        self.assertEqual(set(_authority_bytes(data)), set(V5_DOCUMENT_NAMES))
+        self.assertEqual(set(_authority_bytes(data)), set(V6_DOCUMENT_NAMES))
         self.assertFalse((data / "store.json").exists())
         self.assertEqual(
             json.loads((data / "store-meta.json").read_text(encoding="utf-8"))[
@@ -126,7 +127,7 @@ class ReleasedStartupGuardTests(unittest.TestCase):
             ],
             RELEASED_DEFAULT_SCHEMA_VERSION,
         )
-        self.assertEqual(5, RELEASED_DEFAULT_SCHEMA_VERSION)
+        self.assertEqual(6, RELEASED_DEFAULT_SCHEMA_VERSION)
         admission = admit_released_repository(data)
         self.assertEqual((admission.format_version, admission.mode), (3, "released-v3"))
 

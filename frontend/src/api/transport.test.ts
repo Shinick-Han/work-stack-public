@@ -2,7 +2,7 @@ import { expect, test, vi } from 'vitest'
 import { taskSchema } from '../domain/schemas'
 import { jsonResponse, task } from '../test/fixtures'
 import { z } from 'zod'
-import { ApiError, CommitUnknownError, getCsrfToken, mutateData, mutateIdempotent } from './transport'
+import { ApiError, CommitUnknownError, getCsrfToken, getData, mutateData, mutateIdempotent, type MutateReceipt, type ResponseReceipt } from './transport'
 
 test('refreshes a rotated CSRF token without changing the logical mutation request', async () => {
   let sessionRequests = 0
@@ -231,4 +231,120 @@ test('allowed DELETE retry reuses the byte-identical body, If-Match, and idempot
     'expired-csrf-token',
     'refreshed-csrf-token',
   ])
+})
+
+/**
+ * The opt-in strict success envelope. The shared envelope stays non-strict for every
+ * caller that does not ask; a caller that does gets the original payload.
+ */
+const STRICT_ENVELOPE = z.object({ data: z.object({ ok: z.boolean() }).strict() }).strict()
+
+function widenedEnvelopeFetch() {
+  return vi.fn((input: RequestInfo | URL) => String(input).endsWith('/api/v1/session')
+    ? jsonResponse({ data: { csrf_token: 'csrf-token-for-test' } })
+    : jsonResponse({ data: { ok: true }, extra: 'not-published' }))
+}
+
+test('an opt-in strict envelope refuses a top-level key the shared envelope would drop', async () => {
+  vi.stubGlobal('fetch', widenedEnvelopeFetch())
+  await getCsrfToken(true)
+
+  await expect(mutateData(
+    '/api/v1/knowledge/captures/verify',
+    'POST',
+    { probe: true },
+    okSchema,
+    undefined,
+    false,
+    { strictEnvelope: STRICT_ENVELOPE },
+  )).rejects.toBeInstanceOf(z.ZodError)
+})
+
+test('omitting the option leaves the existing non-strict envelope behaviour unchanged', async () => {
+  const fetchMock = widenedEnvelopeFetch()
+  vi.stubGlobal('fetch', fetchMock)
+  await getCsrfToken(true)
+
+  // Byte-identical response, no option: the unknown top-level key is still dropped and
+  // the caller still receives its parsed data, exactly as before the seam existed.
+  const receipt: MutateReceipt = {}
+  await expect(mutateData(
+    '/api/v1/tasks',
+    'POST',
+    { probe: true },
+    okSchema,
+    undefined,
+    false,
+    { receipt },
+  )).resolves.toEqual({ ok: true })
+  expect(receipt.status).toBe(200)
+
+  const mutations = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/v1/tasks'))
+  expect(mutations).toHaveLength(1)
+})
+
+/**
+ * The opt-in GET receipt. The first test is the important one: the option exists so a
+ * route may read its own envelope `meta`, and a caller that does not ask for one must be
+ * exactly where it was — same single request, same headers, same closed `data` parse.
+ */
+
+test('a GET without a receipt is the read it has always been, meta present or not', async () => {
+  const control = countingFetch(() =>
+    jsonOk({ data: { ok: true }, meta: { occupancy: { request_count: 7 } } }),
+  )
+
+  await expect(getData('/api/v1/thing', okSchema)).resolves.toEqual({ ok: true })
+
+  expect(control.postCount()).toBe(1)
+  const sent = control.posts[0]
+  expect(sent.method).toBeUndefined()
+  expect(sent.body).toBeUndefined()
+  const headers = new Headers(sent.headers)
+  // A read still mints no CSRF token and sends no body headers.
+  expect(headers.get('X-WorkStack-CSRF')).toBeNull()
+  expect(headers.get('Content-Type')).toBeNull()
+  expect(headers.get('Idempotency-Key')).toBeNull()
+  expect([...headers.keys()]).toEqual(['accept'])
+})
+
+test('an opt-in GET receipt reports the status and meta of that same single answer', async () => {
+  const control = countingFetch(() =>
+    jsonOk({ data: { ok: true }, meta: { occupancy: { request_count: 7 } } }),
+  )
+  const receipt: ResponseReceipt = {}
+
+  await expect(getData('/api/v1/thing', okSchema, receipt)).resolves.toEqual({ ok: true })
+
+  expect(receipt).toEqual({ meta: { occupancy: { request_count: 7 } }, status: 200 })
+  // The meta is read off the answer already in hand. No second request, no second route.
+  expect(control.postCount()).toBe(1)
+})
+
+test('a receipt does not soften a refusal or widen the closed data parse', async () => {
+  const refused: ResponseReceipt = {}
+  const control = countingFetch(() =>
+    jsonOk({ error: { code: 'knowledge_backend_unsupported', message: 'refused' } }, 409),
+  )
+
+  await expect(getData('/api/v1/thing', okSchema, refused)).rejects.toBeInstanceOf(ApiError)
+  expect(refused.status).toBe(409)
+  // Nothing was admitted, so nothing was reported as meta either.
+  expect(refused.meta).toBeUndefined()
+  expect(control.postCount()).toBe(1)
+
+  const malformed: ResponseReceipt = {}
+  countingFetch(() => jsonOk({ data: { wrong: 'shape' }, meta: { occupancy: { request_count: 7 } } }))
+  // A well-formed meta beside a `data` the caller's schema refuses is still a refusal.
+  await expect(getData('/api/v1/thing', okSchema, malformed)).rejects.toThrow()
+})
+
+test('a GET receipt on a route that publishes no meta reports none', async () => {
+  countingFetch(() => jsonOk({ data: { ok: true } }))
+  const receipt: ResponseReceipt = {}
+
+  await expect(getData('/api/v1/thing', okSchema, receipt)).resolves.toEqual({ ok: true })
+
+  expect(receipt.status).toBe(200)
+  expect(receipt.meta).toBeUndefined()
 })
